@@ -137,6 +137,7 @@
         const keyMap = {
           ETHERSCAN_API_KEY: 'etherscanApiKey',
           HELIUS_API_KEY: 'heliusApiKey',
+          ALCHEMY_API_KEY: 'alchemyApiKey',
         };
         const localKey = keyMap[name];
         if (localKey) {
@@ -149,6 +150,22 @@
       if (typeof process !== 'undefined' && process && process.env && process.env[name]) return process.env[name];
     } catch (_) { }
     return '';
+  }
+
+  async function _getAlchemyKey() {
+    let key = _readEnvLike('ALCHEMY_API_KEY');
+    if (!key && window.electron && window.electron.readFile) {
+      try {
+        const txt = await window.electron.readFile('secrets/ALCHEMY-API-KEY.txt');
+        if (txt) key = txt.trim();
+      } catch (e) { }
+    }
+    return key || 'UNcUYppLXPl4s0jAkQe_J';
+  }
+
+  async function _alchemyUrl(chain) {
+    const key = await _getAlchemyKey();
+    return `https://${chain}-mainnet.g.alchemy.com/v2/${key}`;
   }
 
   function _etherscanV2Url(module, action) {
@@ -278,6 +295,52 @@
       ],
     };
   }
+
+  // ── ETH: Alchemy (PRIMARY) ────────────────────────────────────────
+
+  async function ethAlchemy() {
+    const POST = (method, params = []) => ({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    });
+    const url = await _alchemyUrl('eth');
+    const [bR, gR] = await Promise.allSettled([
+      getJson(url, POST('eth_blockNumber')),
+      getJson(url, POST('eth_gasPrice')),
+    ]);
+    const bRes = bR.status === 'fulfilled' ? bR.value : null;
+    const gRes = gR.status === 'fulfilled' ? gR.value : null;
+    
+    if (!bRes || !gRes || !bRes.result || !gRes.result) {
+      throw new Error('Alchemy ETH empty');
+    }
+    
+    const block   = parseInt(bRes.result, 16) || 0;
+    const gasWei  = parseInt(gRes.result, 16) || 0;
+    const gasGwei = gasWei / 1e9;
+    
+    if (!block && !gasGwei) throw new Error('Alchemy ETH empty');
+    
+    const score = gasGwei > 60 ? 0.50 : gasGwei > 25 ? 0.20 : gasGwei < 5 ? -0.15 : 0;
+    return {
+      sym: 'ETH', label: 'Ethereum', chain: 'Ethereum Mainnet',
+      source: 'Alchemy', explorerUrl: 'https://etherscan.io',
+      metrics: [
+        { k: 'Gas Avg',      v: gasGwei ? `${gasGwei.toFixed(1)} Gwei` : '—' },
+        { k: 'Gas Fast',     v: gasGwei ? `${(gasGwei * 1.2).toFixed(1)} Gwei` : '—' },
+        { k: 'Gas Slow',     v: gasGwei ? `${(gasGwei * 0.8).toFixed(1)} Gwei` : '—' },
+        { k: 'Block Height', v: block ? block.toLocaleString() : '—' },
+        { k: 'Txs Today',    v: '—' },
+        { k: 'Total Addrs',  v: '—' },
+      ],
+      congestion: gasGwei > 50 ? 'HIGH' : gasGwei > 20 ? 'MED' : 'LOW',
+      score, signal: scoreLabel(score), ts: Date.now(),
+      raw: { gasAvg: gasGwei, gasFast: gasGwei * 1.2, gasSlow: gasGwei * 0.8, txsToday: 0 },
+    };
+  }
+
+  // ── ETH: Blockscout (fallback) → Etherscan proxy/free (fallback) ──
 
   async function ethBlockscout() {
     const [sR, pR] = await Promise.allSettled([
@@ -416,6 +479,52 @@
     const wei = data?.result ? parseInt(data.result, 16) || 0 : 0;
     return wei > 0 ? wei / 1e9 : 0;
   }
+
+  // ── BNB: Alchemy (PRIMARY) ────────────────────────────────────────
+
+  async function bnbAlchemy() {
+    const POST = (method, params = []) => ({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    });
+    const url = await _alchemyUrl('bnb');
+    const [bR, gR] = await Promise.allSettled([
+      getJson(url, POST('eth_blockNumber')),
+      getJson(url, POST('eth_gasPrice')),
+    ]);
+    const bRes = bR.status === 'fulfilled' ? bR.value : null;
+    const gRes = gR.status === 'fulfilled' ? gR.value : null;
+    
+    if (!bRes || !gRes || !bRes.result || !gRes.result) {
+      throw new Error('Alchemy BNB empty');
+    }
+    
+    const block   = parseInt(bRes.result, 16) || 0;
+    const gasWei  = parseInt(gRes.result, 16) || 0;
+    const gasGwei = gasWei / 1e9;
+    
+    if (!block && !gasGwei) throw new Error('Alchemy BNB empty');
+    
+    const score = gasGwei > 8 ? 0.40 : gasGwei > 3 ? 0.10 : 0;
+    return {
+      sym: 'BNB', label: 'BNB Chain', chain: 'BSC Mainnet',
+      source: 'Alchemy', explorerUrl: 'https://bscscan.com',
+      metrics: [
+        { k: 'Gas Price',    v: gasGwei ? `${gasGwei.toFixed(2)} Gwei` : '—' },
+        { k: 'Block Height', v: block ? block.toLocaleString() : '—' },
+        { k: 'Gas Fast',     v: gasGwei ? `${(gasGwei * 1.2).toFixed(2)} Gwei` : '—' },
+        { k: 'Gas Slow',     v: gasGwei ? `${(gasGwei * 0.8).toFixed(2)} Gwei` : '—' },
+        { k: 'RPC Node',     v: 'Alchemy' },
+        { k: 'Status',       v: 'LIVE' },
+      ],
+      congestion: gasGwei > 5 ? 'HIGH' : gasGwei > 2 ? 'MED' : 'LOW',
+      score, signal: scoreLabel(score), ts: Date.now(),
+      raw: { gasAvg: gasGwei, gasFast: gasGwei * 1.2, gasSlow: gasGwei * 0.8, txsToday: 0 },
+    };
+  }
+
+  // ── BNB: Blockscout (fallback) → BSCScan proxy (fallback) ─────
 
   async function bnbBlockscout() {
     const gasAvg = parseFloat(await bscRpcGasPrice() || 0);
@@ -669,10 +778,9 @@
   }
 
   const ROUTES = [
-    { sym: 'BTC', handlers: [btcMempool, btcBlockchain] },
-    { sym: 'ETH', handlers: [ethBlockscout, ethEtherscan] },
-    {
-      sym: 'SOL', handlers: [
+    { sym: 'BTC',  handlers: [btcMempool, btcBlockchain] },
+    { sym: 'ETH',  handlers: [ethAlchemy, ethEtherscan, ethBlockscout] },
+    { sym: 'SOL',  handlers: [
         ..._solRpcCandidates().map((url) => () => solRpc(url)),
       ]
     },
@@ -682,8 +790,8 @@
         () => xrpLedger('https://s2.ripple.com:51234/'),
       ]
     },
-    { sym: 'BNB', handlers: [bnbAnkrRpc, bnbBscscan, bnbBlockscout] },
-    { sym: 'DOGE', handlers: [dogeBlockcypher, dogeBlockchair] },
+    { sym: 'BNB',  handlers: [bnbAlchemy, bnbAnkrRpc, bnbBscscan, bnbBlockscout] },
+    { sym: 'DOGE', handlers: [dogeBlockcypher, dogeChainSo, dogeBlockchair] },
     { sym: 'HYPE', handlers: [hypeHyperliquid] },
   ];
 
