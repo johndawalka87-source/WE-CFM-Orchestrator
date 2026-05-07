@@ -221,49 +221,102 @@
     }
   }
 
-  // ── ETH — Etherscan + Alchemy ─────────────────────────────────────────────
+  // ── ETH — Alchemy PRIMARY, Etherscan fallback ────────────────────────────────
   async function fetchETH() {
     try {
       const BASE_RPC = await _alchemy('base');
       const ETH_RPC = await _alchemy('eth');
-      const [blockR, gasR, baseGasR, ethGasR] = await Promise.allSettled([
-        safeJson(_etherscanV2Url('proxy', 'eth_blockNumber')),
-        safeJson(_etherscanV2Url('gastracker', 'gasoracle')),
-        safeJson(BASE_RPC, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_gasPrice', params: [] })
-        }),
-        safeJson(ETH_RPC, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'eth_gasPrice', params: [] })
-        }),
-      ]);
-      const block = blockR.status === 'fulfilled' ? parseInt(blockR.value?.result, 16) || 0 : 0;
-      let gasAvg = 0, gasFast = 0, gasSlow = 0;
       
-      const ethGasWei = ethGasR.status === 'fulfilled' && ethGasR.value?.result ? parseInt(ethGasR.value.result, 16) || 0 : 0;
-      const ethGasGwei = ethGasWei / 1e9;
-      
-      if (gasR.status === 'fulfilled' && gasR.value?.result && gasR.value.result.SafeGasPrice) {
-        const gas = gasR.value.result;
-        gasAvg = parseFloat(gas.ProposeGasPrice || gas.StandardGasPrice || gas.SafeGasPrice || 0);
-        gasFast = parseFloat(gas.FastGasPrice || gasAvg || 0);
-        gasSlow = parseFloat(gas.SafeGasPrice || gasAvg || 0);
-      } else {
-        // Fallback to Alchemy ETH gas price if Etherscan proxy fails
-        gasAvg = ethGasGwei;
-        gasFast = ethGasGwei * 1.2;
-        gasSlow = ethGasGwei * 0.8;
+      let gas = null;
+      let block = 0;
+      let baseGasGwei = 0;
+
+      // Primary: Alchemy (most reliable)
+      try {
+        const [blockR, gasR, baseGasR] = await Promise.allSettled([
+          safeJson(ETH_RPC, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] })
+          }),
+          safeJson(ETH_RPC, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'eth_gasPrice', params: [] })
+          }),
+          safeJson(BASE_RPC, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'eth_gasPrice', params: [] })
+          }),
+        ]);
+
+        if (blockR.status === 'fulfilled' && blockR.value?.result) {
+          block = parseInt(blockR.value.result, 16) || 0;
+        }
+        if (gasR.status === 'fulfilled' && gasR.value?.result) {
+          const gasWei = parseInt(gasR.value.result, 16);
+          const gasGwei = gasWei / 1e9;
+          gas = {
+            StandardGasPrice: gasGwei,
+            SafeGasPrice: gasGwei * 0.8,
+            FastGasPrice: gasGwei * 1.2
+          };
+        }
+        if (baseGasR.status === 'fulfilled' && baseGasR.value?.result) {
+          const baseGasWei = parseInt(baseGasR.value.result, 16);
+          baseGasGwei = baseGasWei / 1e9;
+        }
+      } catch (e) {
+        console.debug('[BlockchainScan] Alchemy primary failed for ETH, trying Etherscan:', e.message);
       }
-      
-      const baseGasWei = baseGasR.status === 'fulfilled' && baseGasR.value?.result ? parseInt(baseGasR.value.result, 16) || 0 : 0;
-      const baseGasGwei = baseGasWei / 1e9;
-      
-      if (!block && !gasAvg) throw new Error('Etherscan ETH and Alchemy empty');
+
+      // Fallback: Etherscan if Alchemy fails to get gas
+      if (!gas) {
+        try {
+          const [blockR, gasR] = await Promise.allSettled([
+            safeJson(_etherscanV2Url('proxy', 'eth_blockNumber')),
+            safeJson(_etherscanV2Url('gastracker', 'gasoracle')),
+          ]);
+          if (blockR.status === 'fulfilled') {
+            block = parseInt(blockR.value?.result, 16) || block;
+          }
+          if (gasR.status === 'fulfilled' && gasR.value?.result && gasR.value.result.SafeGasPrice) {
+            gas = gasR.value.result;
+          }
+        } catch (e) {
+          console.debug('[BlockchainScan] Etherscan fallback failed:', e.message);
+        }
+      }
+
+      // Safe defaults
+      gas = gas || {};
+      const gasAvg = parseFloat(gas.ProposeGasPrice || gas.StandardGasPrice || gas.SafeGasPrice || gas.average || 0);
+      const gasFast = parseFloat(gas.FastGasPrice || gasAvg || 0);
+      const gasSlow = parseFloat(gas.SafeGasPrice || gasAvg * 0.8 || 0);
+
+      if (!block && !gasAvg) throw new Error('All ETH sources failed');
+
       const score = gasAvg > 60 ? 0.5 : gasAvg > 25 ? 0.2 : gasAvg < 5 ? -0.15 : 0;
       return {
         sym: 'ETH', label: 'Ethereum / Base', chain: 'Ethereum Mainnet',
-        source: 'Etherscan / Alchemy RPC', explorerUrl: 'https://etherscan.io',
+        source: block ? 'Alchemy' : 'Etherscan', explorerUrl: 'https://etherscan.io',
+        metrics: [
+          { k: 'L1 Gas Avg', v: gasAvg ? `${gasAvg.toFixed(1)} Gwei` : '—' },
+          { k: 'L1 Gas Fast', v: gasFast ? `${gasFast.toFixed(1)} Gwei` : '—' },
+          { k: 'Base L2 Gas', v: baseGasGwei ? `${baseGasGwei.toFixed(4)} Gwei` : '—' },
+          { k: 'Block Height', v: block ? block.toLocaleString() : '—' },
+          { k: 'Txs Today', v: '—' },
+          { k: 'Total Addrs', v: '—' },
+        ],
+        congestion: gasAvg > 50 ? 'HIGH' : gasAvg > 20 ? 'MED' : 'LOW',
+        score, signal: scoreLabel(score), ts: Date.now(),
+      };
+    } catch (e) {
+      console.debug('[BlockchainScan] ETH fetch error:', e.message);
+      return { sym: 'ETH', label: 'Ethereum / Base', chain: 'Ethereum Mainnet', error: e.message, metrics: [], score: 0 };
+    }
+  }
         metrics: [
           { k: 'L1 Gas Avg', v: gasAvg ? `${gasAvg.toFixed(1)} Gwei` : '—' },
           { k: 'L1 Gas Fast', v: gasFast ? `${gasFast.toFixed(1)} Gwei` : '—' },
@@ -432,6 +485,45 @@
 
   async function fetchBNB() {
     try {
+      // Primary: Alchemy (most reliable)
+      try {
+        const [gpR, bnR] = await Promise.allSettled([
+          safeJson('https://bnb-mainnet.g.alchemy.com/v2/UNcUYppLXPl4s0jAkQe_J', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_gasPrice', params: [] })
+          }),
+          safeJson('https://bnb-mainnet.g.alchemy.com/v2/UNcUYppLXPl4s0jAkQe_J', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'eth_blockNumber', params: [] })
+          }),
+        ]);
+        const gpWei  = gpR.status === 'fulfilled' ? parseInt(gpR.value.result, 16) : 0;
+        const block  = bnR.status === 'fulfilled' ? parseInt(bnR.value.result, 16) : 0;
+        if (gpWei || block) {
+          const gasGwei = gpWei / 1e9;
+          const score   = gasGwei > 8 ? 0.4 : gasGwei > 3 ? 0.1 : 0;
+          return {
+            sym: 'BNB', label: 'BNB Chain', chain: 'BSC Mainnet',
+            source: 'Alchemy', explorerUrl: 'https://bscscan.com',
+            metrics: [
+              { k: 'Gas Price',    v: gasGwei ? `${gasGwei.toFixed(2)} Gwei` : '—' },
+              { k: 'Block Height', v: block   ? block.toLocaleString()        : '—' },
+              { k: 'Gas Fast',     v: gasGwei ? `${(gasGwei * 1.2).toFixed(2)} Gwei` : '—' },
+              { k: 'Gas Slow',     v: gasGwei ? `${(gasGwei * 0.8).toFixed(2)} Gwei` : '—' },
+              { k: 'RPC Node',     v: 'Alchemy' },
+              { k: 'Status',       v: 'LIVE' },
+            ],
+            congestion: gasGwei > 5 ? 'HIGH' : gasGwei > 2 ? 'MED' : 'LOW',
+            score, signal: scoreLabel(score), ts: Date.now(),
+          };
+        }
+      } catch (e) {
+        console.debug('[BlockchainScan] Alchemy primary failed for BNB, trying BSC RPC:', e.message);
+      }
+      
+      // Fallback: BSC RPC nodes
       return await fetchBNBviaRPC();
     } catch (e) {
       console.debug('[BlockchainScan] BNB fetch error:', e.message);
