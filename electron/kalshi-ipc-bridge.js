@@ -289,8 +289,11 @@ ipcMain.handle('kalshi:balance', async () => {
  * kalshi:markets — Get markets list
  */
 ipcMain.handle('kalshi:markets', async (event, options = {}) => {
-  const limit = options.limit || 50;
-  return await proxyToWorker('GET', `/markets?limit=${limit}`);
+  const qs = new URLSearchParams();
+  qs.set('limit', String(options.limit || 50));
+  if (options.series_ticker) qs.set('series_ticker', options.series_ticker);
+  if (options.status) qs.set('status', options.status);
+  return await proxyToWorker('GET', `/markets?${qs}`);
 });
 
 /**

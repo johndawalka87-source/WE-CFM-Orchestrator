@@ -7,7 +7,33 @@
 
   const MAX_ENTRIES = 500;
   const entries = [];
+  const dedupe = new Map();
+  const recentFailures = [];
+  const OPTIONAL_DEDUPE_MS = 20_000;
+  const BASE_DEDUPE_MS = 6_000;
   let seq = 0;
+  const PROVIDER_ALIASES = {
+    kalshi: 'Kalshi',
+    polymarket: 'Polymarket',
+    pyth: 'Pyth',
+    proxyorchestrator: 'ProxyOrchestrator',
+    'alternative.me': 'Alternative.me',
+    coinmarketcap: 'CoinMarketCap',
+    coingecko: 'CoinGecko',
+    localproxy: 'LocalProxy',
+    bybit: 'Bybit',
+    etherscan: 'Etherscan',
+    bscscan: 'BSCScan',
+    binance: 'Binance',
+    'crypto.com': 'Crypto.com',
+  };
+  function canonicalProviderName(input) {
+    const raw = String(input || '').trim();
+    if (!raw) return 'Network';
+    const alias = PROVIDER_ALIASES[raw.toLowerCase()];
+    return alias || raw;
+  }
+
 
   function now() {
     return Date.now();
@@ -47,16 +73,103 @@
 
   function providerFor(raw) {
     const host = hostname(raw).toLowerCase();
+    if (host.includes('127.0.0.1') || host.includes('localhost')) {
+      try {
+        const prefix = new URL(raw, location.href).pathname.split('/').filter(Boolean)[0] || '';
+        const proxyProviders = {
+          'kalshi': 'Kalshi',
+          'polymarket': 'Polymarket',
+          'polymarket-clob': 'Polymarket',
+          'binance': 'Binance',
+          'binance-f': 'Binance',
+          'coinbase': 'Coinbase',
+          'coinbase-ex': 'Coinbase',
+          'coingecko': 'CoinGecko',
+          'blockscout-eth': 'Blockscout',
+          'blockscout-bsc': 'Blockscout',
+          'bscscan': 'BSCScan',
+          'etherscan': 'Etherscan',
+          'bybit': 'Bybit',
+          'okx': 'OKX',
+          'kraken': 'Kraken',
+          'crypto-com': 'Crypto.com',
+          'dexscreener': 'DexScreener',
+          'hyperliquid': 'Hyperliquid',
+        };
+        if (proxyProviders[prefix]) return proxyProviders[prefix];
+      } catch (_) { }
+      return 'LocalProxy';
+    }
     if (host.includes('kalshi')) return 'Kalshi';
     if (host.includes('polymarket')) return 'Polymarket';
     if (host.includes('pyth') || host.includes('hermes')) return 'Pyth';
+    if (host.includes('coinmarketcap')) return 'CoinMarketCap';
+    if (host.includes('alternative.me')) return 'Alternative.me';
+    if (host.includes('blockscout')) return 'Blockscout';
     if (host.includes('coingecko')) return 'CoinGecko';
     if (host.includes('coinbase')) return 'Coinbase';
     if (host.includes('crypto.com')) return 'Crypto.com';
     if (host.includes('binance')) return 'Binance';
     if (host.includes('bybit')) return 'Bybit';
-    if (host.includes('127.0.0.1') || host.includes('localhost')) return 'LocalProxy';
     return host || 'Network';
+  }
+
+  function isTransient(entry) {
+    const text = `${entry.error || ''} ${entry.status || ''} ${entry.statusText || ''}`.toLowerCase();
+    return (
+      /abort|timed?\s*out|timeout|network\s*changed|econnreset|socket hang up|failed to fetch/.test(text) ||
+      [429, 502, 503, 504].includes(entry.status)
+    );
+  }
+
+  function classifyFailure(detail = {}) {
+    const text = `${detail.error || ''} ${detail.statusText || ''}`.toLowerCase();
+    const status = Number(detail.status || 0);
+    if (text.includes('name_not_resolved') || text.includes('enotfound') || text.includes('eai_again') || text.includes('dns')) return 'dns-fail';
+    if (text.includes('cert') || text.includes('ssl') || text.includes('tls') || [495, 496, 525, 526].includes(status)) return 'tls-fail';
+    if (text.includes('handshake') || text.includes('unexpected-response') || text.includes('upgrade')) return 'handshake-fail';
+    if (text.includes('timeout') || text.includes('timed out') || text.includes('abort')) return 'timeout';
+    if (text.includes('network changed') || text.includes('err_network_changed')) return 'route-change';
+    if (text.includes('econnreset') || text.includes('socket hang up')) return 'socket-reset';
+    if (status >= 500) return 'upstream-http-fail';
+    return 'network-fail';
+  }
+
+  function isOptionalProvider(provider) {
+    return new Set(['Alternative.me', 'CoinMarketCap', 'CoinGecko', 'Blockscout', 'LocalProxy']).has(provider);
+  }
+
+  function healthStatusFor(entry) {
+    if (!entry) return 'unknown';
+    const optional = isOptionalProvider(entry.provider);
+    const transient = isTransient(entry);
+
+    if (entry.status === 401) return optional ? 'degraded' : 'down';
+    if (entry.status && entry.status >= 500) return (optional || transient) ? 'degraded' : 'down';
+    if (entry.type === 'NETWORK_ERROR') return (optional || transient) ? 'degraded' : 'down';
+    return 'degraded';
+  }
+
+  function inferRouteHint(entry) {
+    const nowTs = now();
+    recentFailures.push({
+      ts: nowTs,
+      provider: entry.provider,
+      failureClass: entry.failureClass,
+    });
+    while (recentFailures.length && (nowTs - recentFailures[0].ts) > 45_000) recentFailures.shift();
+
+    if (entry.failureClass === 'dns-fail') {
+      const distinctProviders = new Set(
+        recentFailures.filter((row) => row.failureClass === 'dns-fail').map((row) => row.provider)
+      );
+      if (distinctProviders.size >= 3) return 'possible-exit-node-dns';
+    }
+    if (entry.failureClass === 'route-change') {
+      const routeChanges = recentFailures.filter((row) => row.failureClass === 'route-change').length;
+      if (routeChanges >= 2) return 'possible-exit-node-route-change';
+    }
+    return '';
   }
 
   function record(type, detail) {
@@ -65,14 +178,23 @@
       id: ++seq,
       ts: now(),
       type,
-      provider: detail.provider || providerFor(rawUrl),
+      provider: canonicalProviderName(detail.provider || providerFor(rawUrl)),
       url: sanitizeUrl(rawUrl),
       method: detail.method || 'GET',
       status: Number.isFinite(detail.status) ? detail.status : null,
       statusText: detail.statusText || '',
       durationMs: Number.isFinite(detail.durationMs) ? Math.round(detail.durationMs) : null,
       error: detail.error || '',
+      failureClass: detail.failureClass || classifyFailure(detail),
     };
+    entry.routeHint = inferRouteHint(entry);
+
+    const dedupeKey = `${entry.provider}|${entry.type}|${entry.status || 0}|${String(entry.error || '').slice(0, 80)}`;
+    const nowTs = now();
+    const dedupeWindow = isOptionalProvider(entry.provider) ? OPTIONAL_DEDUPE_MS : BASE_DEDUPE_MS;
+    const lastSeen = dedupe.get(dedupeKey) || 0;
+    if ((nowTs - lastSeen) < dedupeWindow) return null;
+    dedupe.set(dedupeKey, nowTs);
 
     entries.push(entry);
     if (entries.length > MAX_ENTRIES) entries.shift();
@@ -84,16 +206,18 @@
     try {
       if (window.NetworkHealth?.update) {
         window.NetworkHealth.update(entry.provider, {
-          status: entry.status && entry.status < 500 ? 'degraded' : 'down',
+          status: healthStatusFor(entry),
           lastFetch: entry.ts,
           fallback: false,
-          reason: entry.error || `${entry.status || 'network'} ${entry.statusText}`.trim(),
+          transient: isTransient(entry),
+          reason: `${entry.error || `${entry.status || 'network'} ${entry.statusText}`.trim()}${entry.routeHint ? ` (${entry.routeHint})` : ''}`,
+          failureClass: entry.failureClass,
         });
       }
     } catch (_) {}
 
     try {
-      const line = `${entry.provider} ${entry.method} ${entry.status || type} ${entry.url} ${entry.error}`.slice(0, 1800);
+      const line = `${entry.provider} ${entry.method} ${entry.status || type} [${entry.failureClass}] ${entry.url} ${entry.error}`.slice(0, 1800);
       window.desktopApp?.networkError?.(type, line).catch(() => {});
     } catch (_) {}
 

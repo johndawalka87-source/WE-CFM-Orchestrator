@@ -24,6 +24,7 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
   const TRADE_WINDOW_MS = 120000;
   const RECONNECT_BASE_MS = 3000;
   const RECONNECT_MAX_MS = 45000;
+  const RECONNECT_JITTER_RATIO = 0.35;
 
   const STORE = {}; // provider -> sym -> snapshot
   const MEMPOOL = { btcUnconfirmed: 0, btcValue: 0, lastTxTs: 0 };
@@ -208,6 +209,12 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
     }
   }
 
+  function jitterMs(baseMs) {
+    const normalized = Math.max(250, Number(baseMs) || RECONNECT_BASE_MS);
+    const extra = Math.floor(normalized * RECONNECT_JITTER_RATIO * Math.random());
+    return normalized + extra;
+  }
+
   function scheduleReconnect(name, reconnectFn) {
     const c = conn(name);
     if (!c.active) return;
@@ -219,23 +226,32 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
       c.timer = setTimeout(() => reconnectFn(), wait + 1000);
       return;
     }
-    c.timer = setTimeout(() => reconnectFn(), c.reconnectMs);
+    const delay = jitterMs(c.reconnectMs);
+    c.timer = setTimeout(() => reconnectFn(), delay);
     c.reconnectMs = Math.min(Math.floor(c.reconnectMs * 1.5), RECONNECT_MAX_MS);
   }
 
   function bindCloseReconnect(name, reconnectFn) {
     const c = conn(name);
     if (!c.ws) return;
-    c.ws.onclose = () => {
+    c.extra.lastFailureAt = 0;
+    c.ws.onclose = (ev) => {
       c.ws = null;
       if (c.extra.pingTimer) {
         clearInterval(c.extra.pingTimer);
         c.extra.pingTimer = null;
       }
-      recordFailure(name);
+      const code = Number(ev?.code || 0);
+      const cleanClose = ev?.wasClean === true || code === 1000;
+      const duplicateFailure = c.extra.lastFailureAt && (Date.now() - c.extra.lastFailureAt) < 1200;
+      if (!cleanClose && !duplicateFailure) {
+        c.extra.lastFailureAt = Date.now();
+        recordFailure(name);
+      }
       scheduleReconnect(name, reconnectFn);
     };
     c.ws.onerror = () => {
+      c.extra.lastFailureAt = Date.now();
       recordFailure(name);
       try { c.ws && c.ws.close(); } catch (_) { }
     };

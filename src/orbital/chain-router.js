@@ -371,43 +371,38 @@
     };
   }
 
-  // ── BNB: BSC Blockscout (primary) → BSCScan proxy (fallback) ─────
+  // ── BNB: public BSC RPC gas signal ───────────────────────────────
+
+  async function bscRpcGasPrice() {
+    const data = await getJson('https://bsc-dataseed.binance.org/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_gasPrice', params: [] }),
+    });
+    const wei = data?.result ? parseInt(data.result, 16) || 0 : 0;
+    return wei > 0 ? wei / 1e9 : 0;
+  }
 
   async function bnbBlockscout() {
-    const [sR, pR] = await Promise.allSettled([
-      getJson('https://bsc.blockscout.com/api/v2/stats'),
-      getJson('https://api.bscscan.com/api?module=proxy&action=eth_gasPrice'),
-    ]);
-    const s = sR.status === 'fulfilled' ? sR.value : {};
-    const p = pR.status === 'fulfilled' ? pR.value : {};
-
-    // Validate we have actual data, not just empty objects
-    if (!s || !Object.keys(s).length) {
-      throw new Error('Blockscout BSC empty');
-    }
-
-    const gasFromProxy = (() => {
-      const wei = p?.result ? parseInt(p.result, 16) || 0 : 0;
-      return wei > 0 ? (wei / 1e9) : 0;
-    })();
-    const gasAvg = parseFloat(gasFromProxy || 0);
-    const gasFast = parseFloat(gasFromProxy || gasAvg || 0);
-    const gasSlow = parseFloat(gasFromProxy || gasAvg || 0);
+    const gasAvg = parseFloat(await bscRpcGasPrice() || 0);
+    if (!gasAvg) throw new Error('BSC RPC gas empty');
+    const gasFast = gasAvg;
+    const gasSlow = gasAvg;
     const score = gasAvg > 8 ? 0.40 : gasAvg > 3 ? 0.10 : 0;
     return {
       sym: 'BNB', label: 'BNB Chain', chain: 'BSC Mainnet',
-      source: 'BSCScan/Blockscout', explorerUrl: 'https://bscscan.com',
+      source: 'BSC RPC', explorerUrl: 'https://bscscan.com',
       metrics: [
         { k: 'Gas Avg', v: gasAvg ? `${gasAvg.toFixed(2)} Gwei` : '—' },
         { k: 'Gas Fast', v: gasFast ? `${gasFast.toFixed(2)} Gwei` : '—' },
         { k: 'Gas Slow', v: gasSlow ? `${gasSlow.toFixed(2)} Gwei` : '—' },
-        { k: 'Txs Today', v: s.transactions_today ? parseInt(s.transactions_today).toLocaleString() : '—' },
-        { k: 'Total Addrs', v: s.total_addresses ? parseInt(s.total_addresses).toLocaleString() : '—' },
-        { k: 'Total Txs', v: s.total_transactions ? parseInt(s.total_transactions).toLocaleString() : '—' },
+        { k: 'Txs Today', v: '—' },
+        { k: 'Total Addrs', v: '—' },
+        { k: 'Total Txs', v: '—' },
       ],
       congestion: gasAvg > 5 ? 'HIGH' : gasAvg > 2 ? 'MED' : 'LOW',
       score, signal: scoreLabel(score), ts: Date.now(),
-      raw: { gasAvg, gasFast, gasSlow, txsToday: parseInt(s.transactions_today || 0) },
+      raw: { gasAvg, gasFast, gasSlow, txsToday: 0 },
     };
   }
 

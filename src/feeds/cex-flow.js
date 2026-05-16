@@ -15,6 +15,7 @@
   'use strict';
 
   const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'HYPE'];
+  const BINANCE_SPOT_SYMS = new Set(['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE']);
   const POLL_MS = 15000;
   const TIMEOUT = 9000;
   const CACHE = {};        // sym → { exchanges[], aggregate, ts }
@@ -109,13 +110,16 @@
 
   async function fetchBinance(sym) {
     const exchange = 'Binance';
+    if (!BINANCE_SPOT_SYMS.has(sym)) {
+      return { exchange, available: false, reason: 'Unsupported symbol' };
+    }
     const ws = wsSnapshot(exchange, sym);
     if (ws) return ws;
     try {
       // HYPE not on Binance futures but we still try spot
       const [tradesRes, tickerRes] = await Promise.allSettled([
-        getJson(`https://api.binance.us/api/v3/aggTrades?symbol=${sym}USDT&limit=500`),
-        getJson(`https://api.binance.us/api/v3/ticker/24hr?symbol=${sym}USDT`),
+        getJson(`https://data-api.binance.vision/api/v3/aggTrades?symbol=${sym}USDT&limit=500`),
+        getJson(`https://data-api.binance.vision/api/v3/ticker/24hr?symbol=${sym}USDT`),
       ]);
 
       if (tradesRes.status === 'rejected') throw new Error(tradesRes.reason?.message || 'trades failed');
@@ -292,6 +296,9 @@
   // Binance global has identical liquidity profile and the same futures funding rate feed.
   async function fetchBybitViaBinanceFallback(sym) {
     const exchange = 'Bybit';
+    if (!BINANCE_SPOT_SYMS.has(sym)) {
+      return { exchange, available: false, reason: 'Unsupported symbol' };
+    }
     try {
       const [tradesRes, fundRes] = await Promise.allSettled([
         getJson(`https://api.binance.com/api/v3/trades?symbol=${sym}USDT&limit=200`),

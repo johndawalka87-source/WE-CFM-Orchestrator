@@ -9,11 +9,11 @@
   'use strict';
 
   const DEFAULT_LANES = {
-    microstructure: { concurrency: 4, gapMs: 10 },
-    price: { concurrency: 3, gapMs: 25 },
-    momentum: { concurrency: 3, gapMs: 75 },
-    validation: { concurrency: 1, gapMs: 250 },
-    background: { concurrency: 2, gapMs: 150 },
+    microstructure: { concurrency: 4, gapMs: 10, maxJobMs: 12000 },
+    price: { concurrency: 3, gapMs: 25, maxJobMs: 20000 },
+    momentum: { concurrency: 3, gapMs: 75, maxJobMs: 22000 },
+    validation: { concurrency: 1, gapMs: 250, maxJobMs: 15000 },
+    background: { concurrency: 2, gapMs: 150, maxJobMs: 25000 },
   };
 
   const DEFAULT_PROVIDERS = {
@@ -35,6 +35,7 @@
       lanes[name] = {
         concurrency: Math.max(1, Number(lane.concurrency) || 1),
         gapMs: Math.max(0, Number(lane.gapMs) || 0),
+        maxJobMs: Math.max(0, Number(lane.maxJobMs) || 0),
         active: 0,
         lastStart: 0,
         queue: [],
@@ -204,13 +205,15 @@
       const providerName = String(job.provider || 'default');
       const provider = this.providers[providerName] || this.providers.default || DEFAULT_PROVIDERS.default;
       const state = this._providerState(providerName);
+      const laneName = this.lanes[job.options?.lane] ? job.options.lane : 'background';
+      const lane = this.lanes[laneName];
       const waitUntil = Math.max(state.cooldownUntil || 0, state.circuitUntil || 0, job.earliestAt || 0);
       if (waitUntil > now()) {
         await sleep(waitUntil - now());
       }
 
       try {
-        const timeoutMs = Number(job.options.timeoutMs) || 0;
+        const timeoutMs = Number(job.options.timeoutMs) || Number(lane?.maxJobMs) || 0;
         const result = timeoutMs > 0
           ? await this._withTimeout(job.work, timeoutMs, job.options.tag)
           : await job.work();

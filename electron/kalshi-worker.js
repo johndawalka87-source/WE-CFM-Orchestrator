@@ -214,8 +214,10 @@ async function handleGetRequest(req, res) {
 
     // Get markets
     if (path === '/markets') {
-      const limit = url.searchParams.get('limit') || 50;
-      const result = await state.rest.getMarkets({ limit });
+      const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+      const series_ticker = url.searchParams.get('series_ticker') || undefined;
+      const status = url.searchParams.get('status') || undefined;
+      const result = await state.rest.getMarkets({ limit, series_ticker, status });
       res.writeHead(result.success ? 200 : 400);
       res.end(JSON.stringify(result));
       return;

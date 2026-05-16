@@ -23,12 +23,12 @@
 
   const CDC_BASE = 'https://api.crypto.com/exchange/v1/public';
   const GECKO_BASE = 'https://api.coingecko.com/api/v3';
-  const BIN_BASE = 'https://api.binance.us/api/v3';  // .com → 451 from US
+  const BIN_BASE = 'https://data-api.binance.vision/api/v3';  // market-data fallback after WS
   const MEXC_BASE = 'https://api.mexc.com/api/v3';
   const CB_EXCH_BASE = 'https://api.exchange.coinbase.com';
   const CB_EXCH_SYMS = { BTC: 'BTC-USD', ETH: 'ETH-USD', SOL: 'SOL-USD', XRP: 'XRP-USD', DOGE: 'DOGE-USD', BNB: 'BNB-USD', HYPE: 'HYPE-USD' };
   const GECKO_ONLY = new Set(['BNB']);
-  const BIN_SYMS = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', HYPE: 'HYPEUSDT', DOGE: 'DOGEUSDT', BNB: 'BNBUSDT' };
+  const BIN_SYMS = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', DOGE: 'DOGEUSDT', BNB: 'BNBUSDT' };
   const MEXC_SYMS = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', HYPE: 'HYPEUSDT', DOGE: 'DOGEUSDT', BNB: 'BNBUSDT' };
   const BYBIT_BASE = 'https://api.bybit.com/v5';
   function getBybitUrl(path) { return `${BYBIT_BASE}${path}`; }
@@ -139,17 +139,17 @@
     // Throttle on attempt (not only success) so transient outages don't spam requests.
     _fngCache.ts = now;
     try {
-      // Reduced timeout to 2s (fail fast for non-critical indicator)
-      const res = await fetchAnalyticsWithRoute('https://api.alternative.me/fng/?limit=1', 2000);
+      // Non-critical indicator; keep timeout moderate to avoid noisy false negatives on slow routes.
+      const res = await fetchAnalyticsWithRoute('https://api.alternative.me/fng/?limit=1', 5000);
       if (!res.ok) {
-        console.warn(`[FNG] HTTP ${res.status} after 2s - using cached value`);
+        console.warn(`[FNG] HTTP ${res.status} after 5s - using cached value`);
         return _fngCache.value;
       }
       const data = await res.json();
       _fngCache.value = parseInt(data.data[0].value, 10);
       console.info(`[FNG] Updated: ${_fngCache.value}`);
     } catch (e) {
-      console.warn(`[FNG] Timeout/error after 2s: ${e.message} - using cached value`);
+      console.warn(`[FNG] Timeout/error after 5s: ${e.message} - using cached value`);
       /* use cached value */
     }
     return _fngCache.value;
@@ -6583,7 +6583,7 @@
     try {
       const data = await fetchGeckoJSON('/derivatives?include_tickers=unexpired', { minGapMs: 1800, retries: 4 }).catch(() => null);
       if (!Array.isArray(data)) return;
-      const symMap = { BTCUSDT: 'BTC', ETHUSDT: 'ETH', SOLUSDT: 'SOL', XRPUSDT: 'XRP', DOGEUSDT: 'DOGE', BNBUSDT: 'BNB', HYPEUSDT: 'HYPE' };
+      const symMap = { BTCUSDT: 'BTC', ETHUSDT: 'ETH', SOLUSDT: 'SOL', XRPUSDT: 'XRP', DOGEUSDT: 'DOGE', BNBUSDT: 'BNB' };
       data.forEach(d => {
         const sym = symMap[d.symbol];
         if (!sym) return;

@@ -38,9 +38,10 @@ window.Kalshi = {
   },
 
   // Market Data
-  getMarkets: async (limit = 50) => {
+  getMarkets: async (options = {}) => {
     if (!window.electron?.invoke) throw new Error('Electron IPC not available');
-    return await window.electron.invoke('kalshi:markets', { limit });
+    const opts = typeof options === 'number' ? { limit: options } : (options || {});
+    return await window.electron.invoke('kalshi:markets', opts);
   },
 
   getEvents: async (ticker = null) => {

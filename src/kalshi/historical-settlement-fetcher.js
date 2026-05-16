@@ -12,6 +12,7 @@ class HistoricalSettlementFetcher {
     this.kalshiBase = 'https://api.elections.kalshi.com/trade-api/v2';
     this.polyBase = 'https://gamma-api.polymarket.com';
     this.coinbaseBase = 'https://api.exchange.coinbase.com';
+    this.coinbasePredictionsEnabled = this._readFlag('enableCoinbasePredictions');
 
     // Cache for settled contracts (avoid redundant API calls)
     this.settledCache = {
@@ -29,6 +30,15 @@ class HistoricalSettlementFetcher {
     this.cacheTTL = 300_000; // 5 minutes
 
     console.log('[HistoricalSettlementFetcher] Initialized');
+  }
+
+  _readFlag(name) {
+    try {
+      const v = localStorage.getItem(name);
+      return v === '1' || v === 'true';
+    } catch (_) {
+      return false;
+    }
   }
 
   /**
@@ -218,6 +228,11 @@ class HistoricalSettlementFetcher {
    */
   async fetchCoinbasePredictionsSettled(hoursBack = 24, limit = 50) {
     const now = Date.now();
+
+    if (!this.coinbasePredictionsEnabled) {
+      this.lastFetch.coinbase = now;
+      return this.settledCache.coinbase;
+    }
 
     // Check cache
     if (this.settledCache.coinbase.length > 0 && now - this.lastFetch.coinbase < this.cacheTTL) {

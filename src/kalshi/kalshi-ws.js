@@ -30,7 +30,15 @@
 
   // Heartbeat: Kalshi closes idle connections; ping every 20 s
   const HEARTBEAT_INTERVAL_MS = 20_000;
+  const RECONNECT_BASE_MS = 1_000;
+  const RECONNECT_MAX_MS = 30_000;
+  const CONNECT_ATTEMPT_TIMEOUT_MS = 20_000;
+  const STALE_MESSAGE_MS = 75_000;
+  const STALE_CHECK_MS = 12_000;
+  const STALE_CONFIRM_WINDOWS = 2;
+  const STALE_RECONNECT_MIN_MS = 24_000;
   let _heartbeatTimer = null;
+  let _staleTimer = null;
 
   // Credentials from KALSHI-API-KEY.txt (first line = UUID, lines 5+ = RSA private key)
   const KALSHI_API_KEY = 'a8f1995c-7b78-430b-a1fe-7c415c67cc91'; // Replace with actual value
@@ -109,86 +117,353 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
   let connected = false;
   let authenticated = false;
   let reconnectAttempts = 0;
-  const maxReconnectAttempts = 5;
-  let reconnectDelay = 2000;
   let messageId = 1;
   let messageQueue = [];
   let readyToSend = false;
+  let connectPromise = null;
+  let reconnectTimer = null;
+  let reconnectDueAt = 0;
+  let intentionalDisconnect = false;
+  let connecting = false;
+  let connectStartedAt = 0;
+  let connectAttemptSeq = 0;
+  let lastConnectAttempt = null;
+  let lastMessageTs = 0;
+  let lastConnectTs = 0;
+  let lastCloseReason = '';
+  let lastCloseCode = null;
+  let lastError = '';
+  let lastRouteEventReason = '';
+  let lastRouteReconnectTs = 0;
+  let staleWindowCount = 0;
+  let staleSinceTs = 0;
+  let lastAuthStatus = 'not-attempted';
+  let lastAuthError = '';
+  let lastFailureClass = '';
+  const pendingSubscriptions = new Map();
+  const desiredMarketTickers = new Set();
 
   // Markets to subscribe to — resolved dynamically by market-resolver.js.
   // Falls back to these if resolver hasn't run yet.
   // Series tickers for active BTC/ETH/SOL/XRP 15-min contracts on Kalshi.
-  const DEFAULT_MARKETS = [
-    'KXBTC-15M',   // BTC 15-minute binary
-    'KXETH-15M',   // ETH 15-minute binary
-    'KXSOL-15M',   // SOL 15-minute binary
-    'KXXRP-15M',   // XRP 15-minute binary
-  ];
+  // Series tickers — resolved to live market_tickers via market-resolver / PredictionMarkets
+  const DEFAULT_SERIES = ['KXBTC15M', 'KXETH15M', 'KXSOL15M', 'KXXRP15M'];
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Connection Management
   // ─────────────────────────────────────────────────────────────────────────────
 
-  async function connect() {
-    return new Promise((resolve, reject) => {
-      try {
-        console.log('[KalshiWS] Connecting to', WS_URL);
-        // Use WebSocket from preload (Electron context) or native browser WebSocket
-        const WebSocketClass = (typeof window !== 'undefined' && window.desktopApp?.ws) ? window.desktopApp.ws : WebSocket;
-        ws = new WebSocketClass(WS_URL);
+  function _jitter(ms) {
+    const extra = Math.floor(Math.random() * Math.max(80, Math.floor(ms * 0.35)));
+    return ms + extra;
+  }
 
-        ws.on('open', onOpen);
-        ws.on('message', onMessage);
-        ws.on('error', onError);
-        ws.on('close', onClose);
+  function _logTransport(type, detail = {}) {
+    try {
+      window.NetworkLog?.record?.(type, {
+        provider: 'Kalshi',
+        url: 'kalshi://wss',
+        ...detail,
+      });
+    } catch (_) { }
+  }
 
-        // Timeout fallback
-        const timeout = setTimeout(() => {
-          if (!connected) {
-            reject(new Error('Connection timeout (30s)'));
-          }
-        }, 30000);
+  function _isStale() {
+    if (!connected) return true;
+    if (!lastMessageTs) return false;
+    return (Date.now() - lastMessageTs) > STALE_MESSAGE_MS;
+  }
 
-        ws.once('open', () => {
-          clearTimeout(timeout);
-          resolve();
-        });
-        ws.once('error', (err) => {
-          clearTimeout(timeout);
-          reject(err);
-        });
-      } catch (err) {
-        reject(err);
+  function _resetStaleCounters() {
+    staleWindowCount = 0;
+    staleSinceTs = 0;
+  }
+
+  function _emitStatusUpdate(reason = '') {
+    try {
+      window.dispatchEvent(new CustomEvent('kalshi:ws-state', {
+        detail: {
+          connected,
+          reconnectAttempts,
+          stale: _isStale(),
+          reason: reason || lastCloseReason || '',
+          ts: Date.now(),
+        },
+      }));
+    } catch (_) { }
+  }
+
+  function _formatError(err) {
+    if (!err) return '';
+    if (typeof err === 'string') return err;
+    if (err.message) return String(err.message);
+    return String(err);
+  }
+
+  function _classifyFailure(errLike) {
+    const msg = _formatError(errLike).toLowerCase();
+    if (msg.includes('name_not_resolved') || msg.includes('enotfound') || msg.includes('eai_again') || msg.includes('dns')) return 'dns-fail';
+    if (msg.includes('cert') || msg.includes('ssl') || msg.includes('tls') || msg.includes('self signed')) return 'tls-fail';
+    if (msg.includes('unexpected-response') || msg.includes('handshake') || msg.includes('upgrade')) return 'handshake-fail';
+    if (msg.includes('timed out') || msg.includes('timeout') || msg.includes('abort')) return 'timeout';
+    if (msg.includes('network changed') || msg.includes('err_network_changed')) return 'route-change';
+    if (msg.includes('econnreset') || msg.includes('socket hang up')) return 'socket-reset';
+    return 'network-fail';
+  }
+
+  function _setConnectAttemptStatus(status, extra = {}) {
+    if (!lastConnectAttempt) return;
+    lastConnectAttempt = {
+      ...lastConnectAttempt,
+      status,
+      endedAt: Date.now(),
+      ...extra,
+    };
+  }
+
+  function _attachSocketHandlers(socket, handlers) {
+    if (!socket) return;
+    const add = (eventName, fn) => {
+      if (typeof socket.on === 'function') {
+        socket.on(eventName, fn);
+      } else if (typeof socket.addEventListener === 'function') {
+        socket.addEventListener(eventName, fn);
+      }
+    };
+
+    add('open', () => handlers.onOpen?.());
+    add('message', (...args) => {
+      const first = args[0];
+      const payload = first && typeof first === 'object' && Object.prototype.hasOwnProperty.call(first, 'data')
+        ? first.data
+        : first;
+      handlers.onMessage?.(payload);
+    });
+    add('error', (...args) => {
+      const first = args[0];
+      const payload = first && typeof first === 'object' && first.error ? first.error : first;
+      handlers.onError?.(payload);
+    });
+    add('close', (...args) => {
+      const first = args[0];
+      if (first && typeof first === 'object' && Object.prototype.hasOwnProperty.call(first, 'code')) {
+        handlers.onClose?.(first.code, first.reason);
+      } else {
+        handlers.onClose?.(first, args[1]);
       }
     });
+  }
+
+  function _onceSocketEvent(socket, eventName, handler) {
+    if (!socket) return () => { };
+    if (typeof socket.once === 'function') {
+      socket.once(eventName, handler);
+      return () => { };
+    }
+    if (typeof socket.addEventListener === 'function') {
+      const wrapped = (...args) => {
+        try {
+          socket.removeEventListener(eventName, wrapped);
+        } catch (_) { }
+        handler(...args);
+      };
+      socket.addEventListener(eventName, wrapped);
+      return () => {
+        try {
+          socket.removeEventListener(eventName, wrapped);
+        } catch (_) { }
+      };
+    }
+    return () => { };
+  }
+
+  function _currentDesiredMarkets() {
+    if (desiredMarketTickers.size) return [...desiredMarketTickers];
+    const active = Array.isArray(window._kalshiActiveMarkets) ? window._kalshiActiveMarkets.filter(Boolean) : [];
+    if (active.length) return active;
+    try {
+      const pm = window.PredictionMarkets?.getAll?.() || {};
+      const inferred = Object.values(pm)
+        .map((coin) => coin?.kalshi15m?.ticker)
+        .filter(Boolean);
+      return inferred;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function _startStaleWatchdog() {
+    _stopStaleWatchdog();
+    _staleTimer = setInterval(() => {
+      if (!connected) {
+        _resetStaleCounters();
+        return;
+      }
+      if (!_isStale()) {
+        _resetStaleCounters();
+        return;
+      }
+      staleWindowCount += 1;
+      if (!staleSinceTs) staleSinceTs = Date.now();
+      const ageSec = Math.round((Date.now() - lastMessageTs) / 1000);
+      const staleForMs = Date.now() - staleSinceTs;
+      const staleForSec = Math.round(staleForMs / 1000);
+      const hasEnoughWindows = staleWindowCount >= STALE_CONFIRM_WINDOWS;
+      const hasEnoughDuration = staleForMs >= STALE_RECONNECT_MIN_MS;
+      if (!hasEnoughWindows && !hasEnoughDuration) {
+        _emitStatusUpdate(`stale-pending:${ageSec}s`);
+        return;
+      }
+      const reason = `stale stream (${ageSec}s without messages)`;
+      console.warn(`[KalshiWS] ${reason}; forcing reconnect`);
+      _logTransport('TRANSPORT_FAIL', { error: `${reason}; confirmed ${staleWindowCount} window(s), stale ${staleForSec}s` });
+      _resetStaleCounters();
+      reconnect('stale-watchdog');
+    }, STALE_CHECK_MS);
+  }
+
+  function _stopStaleWatchdog() {
+    if (_staleTimer) {
+      clearInterval(_staleTimer);
+      _staleTimer = null;
+    }
+  }
+
+  function _closeSocketSafely() {
+    if (!ws) return;
+    ws = null;
+  }
+
+  function _resubscribeAfterConnect() {
+    const activeMarkets = _currentDesiredMarkets();
+    subscribeToTicker(activeMarkets);
+    if (activeMarkets.length) {
+      subscribeToOrderbook(activeMarkets);
+      subscribeToTrades(activeMarkets);
+    }
+  }
+
+  async function connect(meta = {}) {
+    if (connected && ws) return ws;
+    if (connectPromise) return connectPromise;
+    connectPromise = new Promise((resolve, reject) => {
+      try {
+        connecting = true;
+        connectStartedAt = Date.now();
+        const attemptId = ++connectAttemptSeq;
+        lastConnectAttempt = {
+          id: attemptId,
+          status: 'connecting',
+          reason: String(meta.reason || 'manual-connect'),
+          startedAt: connectStartedAt,
+          endedAt: null,
+          error: '',
+        };
+        const why = meta.reason ? ` (${meta.reason})` : '';
+        console.log(`[KalshiWS] Connecting to ${WS_URL}${why} [attempt ${attemptId}]`);
+        const WebSocketClass = (typeof window !== 'undefined' && window.desktopApp?.ws) ? window.desktopApp.ws : WebSocket;
+        const usingNodeWs = !!(typeof window !== 'undefined' && window.desktopApp?.ws && WebSocketClass === window.desktopApp.ws);
+        ws = usingNodeWs
+          ? new WebSocketClass(WS_URL, { handshakeTimeout: CONNECT_ATTEMPT_TIMEOUT_MS, perMessageDeflate: false })
+          : new WebSocketClass(WS_URL);
+        _attachSocketHandlers(ws, { onOpen, onMessage, onError, onClose });
+
+        let settled = false;
+        const settle = (ok, err) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          stopOpenOnce();
+          stopErrorOnce();
+          stopCloseOnce();
+          connecting = false;
+          if (ok) {
+            _setConnectAttemptStatus('connected', { error: '' });
+            resolve();
+          } else {
+            const errorText = _formatError(err) || 'connect attempt failed';
+            const failureClass = _classifyFailure(err);
+            lastFailureClass = failureClass;
+            _setConnectAttemptStatus('failed', { error: errorText, failureClass });
+            reject(err instanceof Error ? err : new Error(errorText));
+          }
+          _emitStatusUpdate(ok ? 'connect-open' : `connect-failed:${_formatError(err)}`);
+        };
+
+        const timeout = setTimeout(() => {
+          settle(false, new Error(`Connection timeout (${Math.round(CONNECT_ATTEMPT_TIMEOUT_MS / 1000)}s)`));
+          try { ws?.close?.(); } catch (_) { }
+        }, CONNECT_ATTEMPT_TIMEOUT_MS);
+
+        const stopOpenOnce = _onceSocketEvent(ws, 'open', () => settle(true));
+        const stopErrorOnce = _onceSocketEvent(ws, 'error', (err) => settle(false, err));
+        const stopCloseOnce = _onceSocketEvent(ws, 'close', (...args) => {
+          if (connected) return;
+          const first = args[0];
+          const closeCode = first && typeof first === 'object' && Object.prototype.hasOwnProperty.call(first, 'code')
+            ? first.code
+            : first;
+          const closeReason = first && typeof first === 'object' && Object.prototype.hasOwnProperty.call(first, 'reason')
+            ? first.reason
+            : args[1];
+          settle(false, new Error(`closed-before-open code=${closeCode || 'n/a'} reason=${String(closeReason || '').trim() || 'none'}`));
+        });
+        if (typeof ws.on === 'function') {
+          ws.once('unexpected-response', (_req, res) => {
+            const code = res?.statusCode || 'n/a';
+            const text = res?.statusMessage || 'unexpected response';
+            settle(false, new Error(`unexpected-response ${code} ${text}`));
+          });
+        }
+      } catch (err) {
+        connecting = false;
+        _setConnectAttemptStatus('failed', { error: _formatError(err) });
+        reject(err);
+      }
+    }).finally(() => {
+      connectPromise = null;
+    });
+    return connectPromise;
   }
 
   function onOpen() {
     console.log('[KalshiWS] Connected');
     connected = true;
+    intentionalDisconnect = false;
     reconnectAttempts = 0;
     readyToSend = true;
+    connecting = false;
+    connectStartedAt = 0;
+    lastConnectTs = Date.now();
+    lastMessageTs = Date.now();
+    lastCloseCode = null;
+    lastCloseReason = '';
+    lastError = '';
+    lastFailureClass = '';
+    _resetStaleCounters();
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      reconnectDueAt = 0;
+    }
 
-    // Flush queued messages
     while (messageQueue.length > 0) {
       const msg = messageQueue.shift();
       ws.send(JSON.stringify(msg));
     }
 
-    // Start heartbeat — Kalshi closes idle connections without it
     _startHeartbeat();
-
-    // Start subscriptions
-    subscribeToTicker();
-    // Use dynamically resolved market IDs if available, else fall back to defaults
-    const activeMarkets = (window._kalshiActiveMarkets && window._kalshiActiveMarkets.length)
-      ? window._kalshiActiveMarkets
-      : DEFAULT_MARKETS;
-    subscribeToOrderbook(activeMarkets);
-    subscribeToTrades(activeMarkets);
+    _startStaleWatchdog();
+    authenticatePrivate();
+    _resubscribeAfterConnect();
+    _logTransport('TRANSPORT_OK', { error: 'kalshi-wss-connected' });
+    _emitStatusUpdate('connected');
   }
 
   function onMessage(data) {
+    lastMessageTs = Date.now();
+    _resetStaleCounters();
+    _emitStatusUpdate('message');
     try {
       const msg = JSON.parse(data.toString());
       handleMessage(msg);
@@ -198,31 +473,60 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
   }
 
   function onError(err) {
-    console.error('[KalshiWS] Error:', err.message);
+    lastError = String(err?.message || err || 'unknown');
+    lastFailureClass = _classifyFailure(err);
+    console.error('[KalshiWS] Error:', lastFailureClass, lastError);
+    _emitStatusUpdate(`socket-error:${lastFailureClass}:${lastError}`);
   }
 
-  function onClose() {
-    console.log('[KalshiWS] Disconnected');
+  function onClose(code, reason) {
+    lastCloseCode = Number.isFinite(code) ? code : null;
+    lastCloseReason = String(reason || '').trim() || lastError || 'socket closed';
+    if (!lastFailureClass) {
+      lastFailureClass = _classifyFailure(lastCloseReason || `code-${lastCloseCode || 'unknown'}`);
+    }
+    console.log('[KalshiWS] Disconnected', lastCloseCode || '', lastCloseReason);
     connected = false;
     authenticated = false;
     readyToSend = false;
+    connecting = false;
+    connectStartedAt = 0;
+    _resetStaleCounters();
     _stopHeartbeat();
-    reconnect();
+    _stopStaleWatchdog();
+    _closeSocketSafely();
+    _logTransport('TRANSPORT_FAIL', {
+      error: `kalshi-wss-closed ${lastCloseCode || ''} ${lastCloseReason}`.trim(),
+      failureClass: lastFailureClass || '',
+    });
+    _emitStatusUpdate(lastCloseReason);
+    if (!intentionalDisconnect) reconnect('close');
   }
 
-  function reconnect() {
-    if (reconnectAttempts >= maxReconnectAttempts) {
-      console.error('[KalshiWS] Max reconnection attempts reached');
-      return;
+  function reconnect(reason = 'unknown') {
+    if (intentionalDisconnect) return;
+    if (reconnectTimer) return;
+    if (connected && ws) {
+      try {
+        ws.close();
+      } catch (_) { }
+      connected = false;
+      readyToSend = false;
+      _emitStatusUpdate(`reconnect-closing:${reason}`);
     }
-
     reconnectAttempts++;
-    const delay = reconnectDelay * Math.pow(2, reconnectAttempts - 1);
-    console.log(`[KalshiWS] Reconnecting in ${delay}ms... (attempt ${reconnectAttempts})`);
-
-    setTimeout(() => {
-      connect().catch((err) => {
-        console.error('[KalshiWS] Reconnect failed:', err.message);
+    const expMs = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * Math.pow(2, Math.max(0, reconnectAttempts - 1)));
+    const delay = _jitter(expMs);
+    console.warn(`[KalshiWS] Reconnecting in ${delay}ms (attempt ${reconnectAttempts}, reason: ${reason})`);
+    _emitStatusUpdate(`reconnecting:${reason}`);
+    reconnectDueAt = Date.now() + delay;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      reconnectDueAt = 0;
+      connect({ reason: `reconnect:${reason}` }).catch((err) => {
+        lastError = String(err?.message || err || 'connect failed');
+        console.error('[KalshiWS] Reconnect failed:', lastError);
+        reconnect(`connect-failed:${lastError}`);
       });
     }, delay);
   }
@@ -235,6 +539,12 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
     const timestamp = Date.now();
     // BUG FIX: was generateSignature(KALSHI_SECRET, ...) — KALSHI_SECRET undefined
     const signature = generateSignature(timestamp);
+    if (!signature) {
+      lastAuthStatus = 'failed';
+      lastAuthError = 'signature generation failed';
+      console.warn('[KalshiWS] Auth skipped: signature generation failed');
+      return false;
+    }
 
     const authMsg = {
       type: 'login',
@@ -244,7 +554,10 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
     };
 
     sendMessage(authMsg);
+    lastAuthStatus = 'sent';
+    lastAuthError = '';
     console.log('[KalshiWS] Authentication request sent');
+    return true;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -260,6 +573,20 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
         if (!authenticated) {
           authenticated = true;
           console.log('[KalshiWS] Authenticated ✓');
+        }
+        {
+          const subPayload = payload && typeof payload === 'object' ? payload : {};
+          const ackId = subPayload.id ?? subPayload.request_id ?? null;
+          const pending = ackId ? pendingSubscriptions.get(ackId) : null;
+          if (ackId) pendingSubscriptions.delete(ackId);
+          const ackChannels = subPayload.channels || subPayload.channel || pending?.channels || [];
+          console.info('[KalshiWS] Subscription ack', {
+            ackId,
+            channels: Array.isArray(ackChannels) ? ackChannels : [ackChannels].filter(Boolean),
+            sid: subPayload.sid ?? null,
+            marketTickers: subPayload.market_tickers || pending?.marketTickers || [],
+          });
+          _emitStatusUpdate('subscription-ack');
         }
         break;
       case 'ticker':
@@ -278,6 +605,11 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
         // Heartbeat acknowledged — nothing to do
         break;
       case 'error':
+        if (payload?.code === 9) {
+          lastAuthStatus = 'failed';
+          lastAuthError = String(payload?.msg || 'authentication required');
+          authenticated = false;
+        }
         handleError(payload);
         break;
       default:
@@ -503,16 +835,23 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
   // Subscriptions
   // ─────────────────────────────────────────────────────────────────────────────
 
-  function subscribeToTicker() {
+  function subscribeToTicker(marketTickers = []) {
+    const list = (Array.isArray(marketTickers) ? marketTickers : []).filter(Boolean);
     const msg = {
       id: messageId++,
       cmd: 'subscribe',
       params: {
-        channels: ['ticker'],
+        channels: ['ticker', 'market_lifecycle_v2'],
+        ...(list.length ? { market_tickers: list } : {}),
       },
     };
+    pendingSubscriptions.set(msg.id, {
+      channels: [...msg.params.channels],
+      marketTickers: list,
+      ts: Date.now(),
+    });
     sendMessage(msg);
-    console.log('[KalshiWS] Subscribing to ticker channel');
+    console.log(`[KalshiWS] Subscribing to ticker channel (${list.length || 'global'} markets)`);
   }
 
   function subscribeToOrderbook(marketTickers) {
@@ -529,6 +868,11 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
         market_tickers: marketTickers,
       },
     };
+    pendingSubscriptions.set(msg.id, {
+      channels: [...msg.params.channels],
+      marketTickers: [...marketTickers],
+      ts: Date.now(),
+    });
     sendMessage(msg);
     console.log(`[KalshiWS] Subscribing to orderbook for ${marketTickers.length} markets`);
   }
@@ -547,6 +891,11 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
         market_tickers: marketTickers,
       },
     };
+    pendingSubscriptions.set(msg.id, {
+      channels: [...msg.params.channels],
+      marketTickers: [...marketTickers],
+      ts: Date.now(),
+    });
     sendMessage(msg);
     console.log(`[KalshiWS] Subscribing to trades for ${marketTickers.length} markets`);
   }
@@ -587,13 +936,22 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
   }
 
   async function disconnect() {
+    intentionalDisconnect = true;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      reconnectDueAt = 0;
+    }
     _stopHeartbeat();
+    _stopStaleWatchdog();
     if (ws) {
       ws.close();
       ws = null;
     }
     connected = false;
     authenticated = false;
+    readyToSend = false;
+    _emitStatusUpdate('disconnected');
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -621,9 +979,26 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
   }
 
   function getState() {
+    const reconnectInMs = reconnectTimer ? Math.max(0, reconnectDueAt - Date.now()) : 0;
+    const connectingForMs = connecting && connectStartedAt ? Math.max(0, Date.now() - connectStartedAt) : 0;
     return {
       connected,
+      connecting,
+      connectingForMs,
       authenticated,
+      stale: _isStale(),
+      reconnectAttempts,
+      reconnectInMs,
+      lastMessageTs: lastMessageTs || null,
+      lastConnectTs: lastConnectTs || null,
+      lastCloseCode,
+      lastCloseReason,
+      lastError,
+      lastFailureClass,
+      lastRouteEventReason,
+      lastConnectAttempt,
+      lastAuthStatus,
+      lastAuthError,
       tickers: Object.keys(store.tickers).length,
       trades: Object.values(store.trades).reduce((sum, t) => sum + t.length, 0),
       fills: store.fills.length,
@@ -639,13 +1014,39 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
   // Export
   // ─────────────────────────────────────────────────────────────────────────────
 
+  function subscribeMarkets(marketTickers) {
+    const list = (Array.isArray(marketTickers) ? marketTickers : []).filter(Boolean);
+    if (!list.length) return;
+    window._kalshiActiveMarkets = list;
+    desiredMarketTickers.clear();
+    for (const ticker of list) desiredMarketTickers.add(ticker);
+    if (!connected) return;
+    subscribeToTicker(list);
+    subscribeToOrderbook(list);
+    subscribeToTrades(list);
+  }
+
+  function reconnectNow(reason = 'manual') {
+    intentionalDisconnect = false;
+    lastRouteEventReason = reason;
+    reconnectAttempts = 0;
+    if (connected && ws) {
+      try { ws.close(); } catch (_) { }
+      return;
+    }
+    reconnect(reason);
+  }
+
   const KalshiWS = {
     connect,
     disconnect,
+    reconnectNow,
     sendMessage,
     getState,
     getSnapshot,
+    subscribeMarkets,
     store, // Direct access for debugging
+    DEFAULT_SERIES,
   };
 
   if (typeof module !== 'undefined' && module.exports) {
@@ -653,6 +1054,30 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
   }
 
   if (typeof window !== 'undefined') {
+    window.addEventListener('proxy-route-change', (event) => {
+      const detail = event?.detail || {};
+      const stage = String(detail.stage || '');
+      const reason = String(detail.reason || 'route-change');
+      const proxied = String(detail.proxied || '').toLowerCase();
+      const reasonLower = reason.toLowerCase();
+      const provider = String(detail.provider || '').toLowerCase();
+      const kalshiScoped = provider === 'kalshi' || proxied.includes('/kalshi') || reasonLower.includes('kalshi');
+      const wsUnhealthy = !connected || _isStale();
+      const nowTs = Date.now();
+      const cooldownOk = (nowTs - lastRouteReconnectTs) > 12_000;
+
+      // Avoid reconnect storms from optional-provider proxy churn.
+      if ((stage === 'reinit-done' || stage === 'route-error') && cooldownOk && kalshiScoped) {
+        lastRouteReconnectTs = nowTs;
+        lastRouteEventReason = reason;
+        console.info(`[KalshiWS] Route change event (${stage}) → reconnect (${reason})`);
+        reconnectNow(`route:${reason}`);
+      } else if (!kalshiScoped && wsUnhealthy && stage === 'network-failure') {
+        lastFailureClass = String(detail.failureClass || 'network-fail');
+        _emitStatusUpdate(`non-kalshi-network-failure:${lastFailureClass}`);
+      }
+    });
+
     window.KalshiWS = KalshiWS;
   }
 })();

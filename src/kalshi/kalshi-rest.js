@@ -417,6 +417,46 @@ class KalshiRestClient {
   }
 
   /**
+   * List markets (public endpoint — no auth required for market data)
+   */
+  async getMarkets(filters = {}) {
+    try {
+      this.stats.calls++;
+      this.stats.lastCall = Date.now();
+
+      const params = new URLSearchParams();
+      if (filters.series_ticker) params.set('series_ticker', filters.series_ticker);
+      if (filters.status) params.set('status', filters.status);
+      if (filters.event_ticker) params.set('event_ticker', filters.event_ticker);
+      if (filters.cursor) params.set('cursor', filters.cursor);
+      if (filters.limit != null) params.set('limit', String(filters.limit));
+      if (filters.search) params.set('search', filters.search);
+
+      const url = `${this.baseUrl}/markets?${params.toString()}`;
+      const res = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      return {
+        success: true,
+        data,
+        count: data?.markets?.length || 0,
+        timestamp: Date.now(),
+      };
+    } catch (error) {
+      this.stats.errors++;
+      this.stats.lastError = error.message;
+      return {
+        success: false,
+        error: error.message,
+        code: error.response?.status || 'UNKNOWN',
+        timestamp: Date.now(),
+      };
+    }
+  }
+
+  /**
    * Search markets by query
    */
   async searchMarkets(query, limit = 20) {

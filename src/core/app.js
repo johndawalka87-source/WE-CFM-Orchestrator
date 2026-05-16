@@ -369,6 +369,8 @@
           background: { concurrency: 2, gapMs: 180 },
         },
         providers: {
+          kalshi: { cooldownMs: 250, cooldownMaxMs: 3000, circuitThreshold: 10, circuitMs: 12000 },
+          polymarket: { cooldownMs: 350, cooldownMaxMs: 4500, circuitThreshold: 8, circuitMs: 15000 },
           gecko: { cooldownMs: 3500, cooldownMaxMs: 120000, circuitThreshold: 5, circuitMs: 180000 },
           llm: { cooldownMs: 15000, cooldownMaxMs: 300000, circuitThreshold: 2, circuitMs: 300000 },
           'pyth-lazer': { cooldownMs: 750, cooldownMaxMs: 8000, circuitThreshold: 3, circuitMs: 12000 },
@@ -1786,7 +1788,7 @@
 
   const CDC_BASE = 'https://api.crypto.com/exchange/v1/public';
   const GECKO_BASE = 'https://api.coingecko.com/api/v3';
-  const BIN_BASE = 'https://api.binance.us/api/v3';   // .com → 451 from US
+  const BIN_BASE = 'https://data-api.binance.vision/api/v3';   // market-data fallback after WS
   const MEXC_BASE = 'https://api.mexc.com/api/v3';
   const PYTH_HERMES = 'https://hermes.pyth.network';
   const PYTH_LAZER_PROXIES = [
@@ -1811,7 +1813,7 @@
     'RENDERUSD': 'RENDERUSDT', 'FETUSD': 'FETUSDT', 'TAOUSD': 'TAOUSDT',
     'XLMUSD': 'XLMUSDT', 'LINKUSD': 'LINKUSDT', 'UNIUSD': 'UNIUSDT',
     'AAVEUSD': 'AAVEUSDT', 'ICPUSD': 'ICPUSDT', 'HBARUSD': 'HBARUSDT',
-    'XRPUSD': 'XRPUSDT', 'DOGEUSD': 'DOGEUSDT', 'HYPEUSD': 'HYPEUSDT',
+    'XRPUSD': 'XRPUSDT', 'DOGEUSD': 'DOGEUSDT',
     'BNBUSD': 'BNBUSDT',
   };
   const BIN_ALL_SYM_TO_INSTRUMENT = Object.fromEntries(

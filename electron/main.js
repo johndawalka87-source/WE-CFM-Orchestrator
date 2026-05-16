@@ -409,7 +409,7 @@ host         = "127.0.0.1"
 port         = ${port}
 timeout_secs = 12
 [exchanges]
-binance         = "https://api.binance.us"
+binance         = "https://data-api.binance.vision"
 binance-f       = "https://fapi.binance.com"
 coingecko       = "https://api.coingecko.com"
 coinbase        = "https://api.coinbase.com"

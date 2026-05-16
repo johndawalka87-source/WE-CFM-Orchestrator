@@ -48,14 +48,26 @@
     return `https://api.etherscan.io/v2/api?${qs.toString()}`;
   }
 
+  function normalizeKrakenPairToBinanceSymbol(pairRaw) {
+    const pair = String(pairRaw || '').toUpperCase().replace(/[^A-Z]/g, '');
+    if (!pair) return '';
+    const normalized = pair.replace(/^XBT/, 'BTC');
+    if (normalized.endsWith('USD')) return `${normalized}T`;
+    return normalized;
+  }
+
   // Fallback URLs for APIs that fail frequently
   const FALLBACK_URLS = {
     // Kraken → fallback to Binance for ticker data
     'api.kraken.com/0/public/Ticker': [
       url => url,
       // Fallback 1: Try Binance spot
-      url => url.replace(/api\.kraken\.com\/0\/public\/Ticker\?pair=(.+)/,
-        'api.binance.us/api/v3/ticker?symbols=$1'),
+      (url) => {
+        const pair = (url.match(/[?&]pair=([^&]+)/i) || [])[1] || '';
+        const symbol = normalizeKrakenPairToBinanceSymbol(decodeURIComponent(pair));
+        if (!symbol) return url;
+        return `https://data-api.binance.vision/api/v3/ticker/price?symbol=${encodeURIComponent(symbol)}`;
+      },
     ],
     // Coinbase → fallback to Kraken
     'api.exchange.coinbase.com/products': [
@@ -70,7 +82,7 @@
       url => url,
       // Fallback 1: Try Binance spot
       url => url.replace(/api\.bybit\.com\/v5\/market\/recent-trade\?category=spot&symbol=(.+?)USDT/,
-        'api.binance.us/api/v3/trades?symbol=$1USDT'),
+        'data-api.binance.vision/api/v3/trades?symbol=$1USDT'),
     ],
     // Blockscout gas → fallback to etherscan
     'eth.blockscout.com/api/v2/gas-price-oracle': [
@@ -116,28 +128,39 @@
     return new Promise(r => setTimeout(r, ms));
   }
 
+  function jitterDelay(baseMs) {
+    const jitter = Math.floor(Math.random() * Math.max(60, Math.floor(baseMs * 0.4)));
+    return baseMs + jitter;
+  }
+
   // Try a single URL with one retry loop + timeout
   async function tryUrl(url, options = {}, attemptNum = 0) {
     if (typeof url !== 'string' || !url) {
       throw new Error('Invalid URL passed to tryUrl');
     }
+    let timeoutId = null;
     try {
       // Create abort controller for timeout (default 5s)
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-      const requestOptions = { ...options, signal: controller.signal };
+      timeoutId = setTimeout(() => {
+        try {
+          controller.abort(new Error('timeout'));
+        } catch (_) {
+          controller.abort();
+        }
+      }, TIMEOUT_MS);
+      const requestOptions = { ...options, signal: options.signal || controller.signal };
 
       const fetchImpl = typeof window.throttledFetch === 'function'
         ? window.throttledFetch.bind(window)
         : window.fetch.bind(window);
       const res = await fetchImpl(url, requestOptions);
-      clearTimeout(timeoutId);
 
       if (res.ok || res.status < 500) return res; // Accept 2xx, 3xx, 4xx; retry on 5xx
 
       // 5xx → retry
       if (attemptNum < MAX_RETRIES) {
-        const delay = RETRY_DELAY_MS * Math.pow(2, attemptNum);
+        const delay = jitterDelay(RETRY_DELAY_MS * Math.pow(2, attemptNum));
         await sleep(delay);
         return tryUrl(url, options, attemptNum + 1);
       }
@@ -145,16 +168,24 @@
     } catch (err) {
       // Check for timeout
       const isTimeout = err.name === 'AbortError';
-      const isNetwork = err.message.includes('fetch') || err.message.includes('ERR_');
+      const errMsg = String(err?.message || '');
+      const isNetwork =
+        errMsg.includes('fetch') ||
+        errMsg.includes('ERR_') ||
+        errMsg.includes('ECONNRESET') ||
+        errMsg.includes('socket hang up') ||
+        errMsg.includes('network changed');
 
       if ((isTimeout || isNetwork) && attemptNum < MAX_RETRIES) {
-        const delay = RETRY_DELAY_MS * Math.pow(2, attemptNum);
+        const delay = jitterDelay(RETRY_DELAY_MS * Math.pow(2, attemptNum));
         const reason = isTimeout ? '(timeout)' : `(${err.message})`;
         console.warn(`[ResilientFetch] Retry attempt ${attemptNum + 1}/${MAX_RETRIES + 1} for ${url.slice(0, 60)} ${reason}`);
         await sleep(delay);
         return tryUrl(url, options, attemptNum + 1);
       }
       throw err; // Throw after all retries
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
     }
   }
 

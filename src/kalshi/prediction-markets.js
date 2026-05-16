@@ -142,49 +142,103 @@
   //
   // Fallback to direct fetch if ProxyOrchestrator not initialized.
 
+  function parseKalshiUrl(url) {
+    try {
+      const u = new URL(url);
+      return {
+        series_ticker: u.searchParams.get('series_ticker') || null,
+        status: u.searchParams.get('status') || 'open',
+        limit: parseInt(u.searchParams.get('limit') || String(KALSHI_MARKET_LIMIT), 10),
+      };
+    } catch (_) {
+      return { series_ticker: null, status: 'open', limit: KALSHI_MARKET_LIMIT };
+    }
+  }
+
   async function kalshiFetch(url, attempt = 0) {
-    // Try ProxyOrchestrator if available
-    if (typeof window.ProxyOrchestrator !== 'undefined' && window._proxyOrchestrator) {
+    if (_rateLimitUntil > Date.now()) {
+      console.warn(`[PredictionMarkets] Rate limited until ${new Date(_rateLimitUntil).toISOString()}`);
+      return null;
+    }
+
+    const params = parseKalshiUrl(url);
+    let data = null;
+    let transport = 'http';
+
+    if (window.EndpointTransport?.fetchKalshiMarkets) {
       try {
-        return await window._proxyOrchestrator.fetch(url, {
-          endpoint: 'kalshi-markets-legacy',
-          cacheType: 'market-data',
-          fallbackChain: ['kalshi', 'polymarket', 'cache'],
-        });
+        data = await window.EndpointTransport.fetchKalshiMarkets(params);
+        transport = data?._transport || 'rpc/http';
       } catch (err) {
-        // If proxy fails, fall through to legacy logic
-        console.warn(`[PredictionMarkets] ProxyOrchestrator failed:`, err.message);
+        console.warn(`[PredictionMarkets] EndpointTransport failed:`, err?.message || err);
       }
     }
 
-    // Legacy fallback: direct fetch with rate limiting
-    if (_rateLimitUntil > Date.now()) {
-      console.warn(`[PredictionMarkets] Rate limited until ${new Date(_rateLimitUntil).toISOString()}`);
-      return null; // global back-off active
-    }
-    try {
-      const res = await fetch(url, { headers: { Accept: 'application/json' } });
-      if (res.status === 429 || res.status === 503) {
-        _consecutive429++;
-        const wait = _consecutive429 >= 3
-          ? 60_000                                   // hard back-off after 3 in a row
-          : Math.min(30_000, 3_000 * (2 ** attempt)); // 3s, 6s, 12s, 24s…
-        console.warn(`[PredictionMarkets] HTTP ${res.status} — backoff ${wait}ms (consec=${_consecutive429})`);
-        _rateLimitUntil = Date.now() + wait;
-        await new Promise(r => setTimeout(r, wait));
-        _rateLimitUntil = 0;
-        return attempt < 2 ? kalshiFetch(url, attempt + 1) : null;
-      }
-      _consecutive429 = 0; // reset on success
-      if (!res.ok) {
-        console.error(`[PredictionMarkets] Fetch failed HTTP ${res.status} for ${url}`);
+    if (!data) {
+      try {
+        data = await apiFetch(url);
+        transport = 'http';
+      } catch (err) {
+        console.error(`[PredictionMarkets] Fetch error for ${url}:`, err?.message || err);
         return null;
       }
-      return res.json();
-    } catch (err) {
-      console.error(`[PredictionMarkets] Fetch error for ${url}:`, err.message);
-      return null;
     }
+
+    if (data && typeof data === 'object' && data.status === 429) {
+      _consecutive429++;
+      const wait = _consecutive429 >= 3
+        ? 60_000
+        : Math.min(30_000, 3_000 * (2 ** attempt));
+      console.warn(`[PredictionMarkets] HTTP 429 — backoff ${wait}ms`);
+      _rateLimitUntil = Date.now() + wait;
+      await new Promise(r => setTimeout(r, wait));
+      _rateLimitUntil = 0;
+      return attempt < 2 ? kalshiFetch(url, attempt + 1) : null;
+    }
+
+    _consecutive429 = 0;
+    if (data && transport) {
+      try {
+        window.NetworkHealth?.update?.('Kalshi', {
+          status: 'healthy',
+          lastFetch: Date.now(),
+          fallback: transport !== 'wss',
+          reason: transport,
+        });
+      } catch (_) { }
+    }
+    return data;
+  }
+
+  function applyWsTickerToContract(contract) {
+    if (!contract?.ticker || !window.KalshiWS?.getSnapshot) return contract;
+    const tick = window.KalshiWS.getSnapshot().tickers?.[contract.ticker];
+    if (!tick || Date.now() - (tick.ts || 0) > 45_000) return contract;
+
+    const yesAsk = parseFloat(tick.yes_ask || 0);
+    const yesBid = parseFloat(tick.yes_bid || 0);
+    const noAsk = parseFloat(tick.no_ask || 0);
+    const noBid = parseFloat(tick.no_bid || 0);
+    const last = parseFloat(tick.last_traded || 0);
+
+    let probability = contract.probability;
+    if (yesAsk > 0 && yesBid > 0) probability = (yesAsk + yesBid) / 2;
+    else if (yesAsk > 0) probability = yesAsk;
+    else if (yesBid > 0) probability = yesBid;
+    else if (noAsk > 0 && noBid > 0) probability = 1 - (noAsk + noBid) / 2;
+    else if (last > 0) probability = last;
+    if (probability != null) {
+      probability = Math.min(0.99, Math.max(0.01, probability));
+    }
+
+    return {
+      ...contract,
+      probability,
+      yesAsk: yesAsk || contract.yesAsk,
+      yesBid: yesBid || contract.yesBid,
+      last: last || contract.last,
+      _liveTransport: 'wss',
+    };
   }
 
   function toMs(ts) {
@@ -327,20 +381,32 @@
       return null;
     }
 
-    const m = selectKalshiContract(d?.markets || [], {
+    const markets = d?.markets || [];
+    let nearClose = false;
+    let m = selectKalshiContract(markets, {
       nowMs: Date.now(),
       bucketMs,
       minTradableMs,
       strictQuarterHour,
     });
+    if (!m && opts.allowNearExpiry !== false && markets.length) {
+      m = selectKalshiContract(markets, {
+        nowMs: Date.now(),
+        bucketMs,
+        minTradableMs: 0,
+        strictQuarterHour,
+      });
+      nearClose = !!m;
+    }
     if (!m) {
       if (!suppressWarnings) {
-        console.warn(`[PredictionMarkets] No open markets found for series ${series}. Markets available: ${d?.markets?.length || 0}`);
+        console.warn(`[PredictionMarkets] No open markets found for series ${series}. Markets available: ${markets.length}`);
       }
       return null;
     }
 
-    return buildKalshiContractData(m);
+    const built = buildKalshiContractData(m, nearClose ? { tradable: false, nearClose: true } : { tradable: true });
+    return applyWsTickerToContract(built);
   }
 
   // ---- Kalshi 15M (sequential with 200ms stagger to avoid burst rate limits) ---
@@ -751,7 +817,39 @@
 
     cache = next;
     lastFetch = Date.now();
+
+    const liveTickers = Object.values(next)
+      .map(c => c?.kalshi15m?.ticker)
+      .filter(Boolean);
+    window.EndpointTransport?.subscribeKalshiMarketTickers?.(liveTickers);
+
     window.dispatchEvent(new CustomEvent('predictionmarketsready', { detail: next }));
+  }
+
+  function onKalshiTicker(e) {
+    const { market_ticker } = e.detail || {};
+    if (!market_ticker) return;
+    let touched = false;
+    for (const sym of Object.keys(cache)) {
+      const k15 = cache[sym]?.kalshi15m;
+      if (!k15 || k15.ticker !== market_ticker) continue;
+      const updated = applyWsTickerToContract(k15);
+      if (updated.probability === k15.probability) continue;
+      cache[sym] = { ...cache[sym], kalshi15m: updated, kalshi: updated.probability };
+      if (cache[sym].combinedProb != null && cache[sym].sources?.length) {
+        const kSrc = cache[sym].sources.find(s => s.name === 'Kalshi15M');
+        if (kSrc) kSrc.prob = updated.probability;
+        const weights = { Kalshi15M: 0.5, Polymarket: 0.5 };
+        const tw = cache[sym].sources.reduce((s, x) => s + (weights[x.name] || 0.5), 0);
+        cache[sym].combinedProb = Math.min(0.99, Math.max(0.01,
+          cache[sym].sources.reduce((s, x) => s + x.prob * (weights[x.name] || 0.5), 0) / tw
+        ));
+      }
+      touched = true;
+    }
+    if (touched) {
+      window.dispatchEvent(new CustomEvent('predictionmarketsready', { detail: cache }));
+    }
   }
 
   async function fetchAll() {
@@ -766,6 +864,11 @@
     start() {
       if (PredictionMarkets._started) return;
       PredictionMarkets._started = true;
+      window.EndpointTransport?.ensureKalshiWs?.();
+      if (!PredictionMarkets._tickerBound) {
+        PredictionMarkets._tickerBound = true;
+        window.addEventListener('kalshi:ticker', onKalshiTicker);
+      }
       if (timer) return;
       fetchAll();
       timer = setInterval(() => { if (!document.hidden) fetchAll(); }, POLL_MS);

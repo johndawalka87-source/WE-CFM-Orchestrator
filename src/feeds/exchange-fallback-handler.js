@@ -65,7 +65,7 @@
 
   // Symbol mappings for each exchange
   const SYMBOL_MAPS = {
-    BINANCE: { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', BNB: 'BNBUSDT', DOGE: 'DOGEUSDT', HYPE: 'HYPEUSDT' },
+    BINANCE: { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', BNB: 'BNBUSDT', DOGE: 'DOGEUSDT' },
     BYBIT: { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', BNB: 'BNBUSDT', DOGE: 'DOGEUSDT', HYPE: 'HYPEUSDT' },
     KRAKEN: { BTC: 'XBTUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', DOGE: 'DOGEUSDT' },
     CRYPTO_COM: { BTC: 'BTCUSD', ETH: 'ETHUSD', SOL: 'SOLUSD', XRP: 'XRPUSD' },
@@ -96,7 +96,22 @@
     async fetchCandles(symbol, interval = '15m', limit = 300) {
       console.info(`[ExchangeFallback] Fetching ${symbol} ${interval} candles...`);
 
+      // gRPC first when handler is registered (priority 2 in EXCHANGES, tried before REST)
+      if (typeof window.grpcBinanceHandler === 'function') {
+        try {
+          const grpcKey = 'BINANCE_GRPC';
+          const candles = await this._fetchFromExchange(grpcKey, symbol, interval, limit);
+          if (candles && candles.length > 0) {
+            console.info(`[ExchangeFallback] ✓ ${symbol} via ${grpcKey} (gRPC)`);
+            return candles;
+          }
+        } catch (e) {
+          console.warn(`[ExchangeFallback] gRPC failed for ${symbol}:`, e.message);
+        }
+      }
+
       for (const exchangeKey of this.priorityOrder) {
+        if (exchangeKey === 'BINANCE_GRPC' || exchangeKey === 'BYBIT_GRPC') continue;
         try {
           // Check if exchange is already failing (circuit breaker)
           if (this.isCircuitOpen(exchangeKey)) {

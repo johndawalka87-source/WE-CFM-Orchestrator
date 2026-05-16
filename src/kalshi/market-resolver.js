@@ -98,6 +98,15 @@
   }
 
   async function kalshiFetch(url) {
+    const tickerMatch = url.match(/\/markets\/([^/?]+)/);
+    const ticker = tickerMatch ? decodeURIComponent(tickerMatch[1]) : null;
+    if (ticker && window.EndpointTransport?.fetchKalshiMarket) {
+      const hit = await window.EndpointTransport.fetchKalshiMarket(ticker, {
+        endpoint: 'kalshi-settlement',
+        cacheType: 'settlement',
+      });
+      if (hit?.data) return hit.data;
+    }
     try {
       const r = await fetchWithTimeout(url);
       if (!r.ok) return null;
@@ -294,63 +303,57 @@
 
   async function resolveKalshiMarket(entry) {
     const url = `${KALSHI_BASE}/markets/${entry.ticker}`;
-
-    // Try ProxyOrchestrator if available
-    if (typeof window.ProxyOrchestrator !== 'undefined' && window._proxyOrchestrator) {
-      try {
-        const d = await window._proxyOrchestrator.fetch(url, {
-          endpoint: 'kalshi-settlement',
-          cacheType: 'settlement',
-          retries: 3,
-          fallbackChain: ['kalshi', 'polymarket', 'cache'],
-        });
-
-        if (d && d.market) {
-          addAudit(entry.ticker, 'proxy_fetch_success', {
-            sym: entry.sym,
-            via: 'proxyOrchestrator',
-          });
-          return processKalshiSettlement(d, entry);
-        }
-      } catch (err) {
-        console.warn(`[Resolver] ProxyOrchestrator failed for ${entry.ticker}:`, err.message);
-        addAudit(entry.ticker, 'proxy_fetch_failed', {
-          sym: entry.sym,
-          error: err.message,
-        });
-      }
-    }
-
-    // Legacy fallback: exponential backoff retry
     const retryDelays = [2000, 4000, 8000];
     let d = null;
-    let lastError = null;
+    let viaTransport = null;
 
     for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
-      d = await kalshiFetch(url);
-
-      if (d) {
-        if (attempt > 0) {
-          console.log(`[Resolver] ✅ Retry succeeded on attempt ${attempt + 1} for ${entry.sym} ${entry.ticker}`);
-          addAudit(entry.ticker, 'retry_success', { sym: entry.sym, attempt: attempt + 1 });
+      if (window.EndpointTransport?.fetchKalshiMarket) {
+        const hit = await window.EndpointTransport.fetchKalshiMarket(entry.ticker, {
+          endpoint: 'kalshi-settlement',
+          cacheType: 'settlement',
+        });
+        if (hit?.data) {
+          d = hit.data;
+          viaTransport = hit.transport || 'rpc/http';
+          break;
         }
-        break;
+      } else {
+        d = await kalshiFetch(url);
+        if (d) {
+          viaTransport = 'http';
+          break;
+        }
       }
-
-      lastError = new Error(`Fetch returned null (network/rate-limit?)`);
 
       if (attempt < retryDelays.length) {
         const delay = retryDelays[attempt];
-        console.warn(`[Resolver] ⚠️ Retry attempt ${attempt + 1} for ${entry.sym} ${entry.ticker} — waiting ${delay}ms before retry`);
+        console.warn(`[Resolver] ⚠️ Retry ${attempt + 1} for ${entry.sym} ${entry.ticker} — ${delay}ms`);
         addAudit(entry.ticker, 'fetch_retry', { sym: entry.sym, attempt: attempt + 1, nextDelayMs: delay });
         await new Promise(r => setTimeout(r, delay));
       }
     }
 
     if (!d) {
-      console.error(`[Resolver] ❌ ${entry.sym} ${entry.ticker} — fetch failed after ${retryDelays.length + 1} attempts (network/rate-limit?)`);
-      addAudit(entry.ticker, 'fetch_failed_all_retries', { sym: entry.sym, url, attempts: retryDelays.length + 1 });
+      console.error(`[Resolver] ❌ ${entry.sym} ${entry.ticker} — settlement fetch failed after retries`);
+      addAudit(entry.ticker, 'fetch_failed_all_retries', {
+        sym: entry.sym,
+        url,
+        attempts: retryDelays.length + 1,
+      });
+      try {
+        window.NetworkHealth?.update?.('Kalshi', {
+          status: 'down',
+          lastFetch: Date.now(),
+          fallback: false,
+          reason: 'settlement fetch failed',
+        });
+      } catch (_) { }
       return null;
+    }
+
+    if (viaTransport) {
+      addAudit(entry.ticker, 'transport_fetch_success', { sym: entry.sym, transport: viaTransport });
     }
 
     return await processKalshiSettlement(d, entry);

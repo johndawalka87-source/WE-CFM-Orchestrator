@@ -72,7 +72,7 @@
   // Coinbase symbols
   // BNB removed — Coinbase does not list BNB; calling spot/buy/sell for it burns 3 CB credits for 404s.
   const CB_SYMS = { BTC: 'BTC', ETH: 'ETH', SOL: 'SOL', XRP: 'XRP', HYPE: 'HYPE', DOGE: 'DOGE' };
-  const BIN_SYMS = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', HYPE: 'HYPEUSDT', DOGE: 'DOGEUSDT', BNB: 'BNBUSDT' };
+  const BIN_SYMS = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', DOGE: 'DOGEUSDT', BNB: 'BNBUSDT' };
   const OKX_SYMS = { BTC: 'BTC-USDT', ETH: 'ETH-USDT', SOL: 'SOL-USDT', XRP: 'XRP-USDT', HYPE: 'HYPE-USDT', DOGE: 'DOGE-USDT', BNB: 'BNB-USDT' };
   const KRK_SYMS = { BTC: 'XBTUSD', ETH: 'ETHUSD', SOL: 'SOLUSD', XRP: 'XRPUSD', DOGE: 'XDGUSD', BNB: 'BNBUSD' }; // HYPE not listed on Kraken
 
@@ -430,9 +430,8 @@
     // Throttle on attempt to avoid hammering Alternative.me when it is down.
     _fngLastFetch = now;
     try {
-      // Reduced timeout to 2s (fail fast for non-critical indicator)
-      // If timeout occurs, fall back to cached value
-      const res = await fetchWithTimeout('https://api.alternative.me/fng/?limit=1', 2000);
+      // If timeout occurs, fall back to cached value.
+      const res = await fetchWithTimeout('https://api.alternative.me/fng/?limit=1', 5000);
       if (!res.ok) {
         console.warn(`[FNG] HTTP ${res.status} - using cached value`);
         return;  // Use cached value
@@ -447,7 +446,7 @@
       };
       console.info(`[FNG] Updated: ${window._cfm._fng.value} (${window._cfm._fng.label})`);
     } catch (e) {
-      console.warn(`[FNG] Timeout/error after 2s: ${e.message} - using cached value`);
+      console.warn(`[FNG] Timeout/error after 5s: ${e.message} - using cached value`);
       /* silent fail — non-critical indicator, cached value still available */
     }
   }
