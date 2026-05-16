@@ -42,7 +42,7 @@
   const DEFAULT_SHORT_HORIZON_MIN = 15;  // Primary target: next 15-min candle session (Kalshi contracts)
   // Model-first policy: prediction markets are verification context, not a directional driver.
   const KALSHI_VERIFY_ONLY = true;
-  const SHORT_HORIZON_WEIGHTS = { 1: 0.60, 5: 0.80, 10: 0.90, 15: 1.40 };
+  const SHORT_HORIZON_WEIGHTS = { 1: 0.25, 5: 0.45, 10: 0.75, 15: 2.40 };
   const SHORT_HORIZON_FILTERS = {
     h1: { entryThreshold: 0.16, minAgreement: 0.62 },  // ★ RAISED: Filter out noise at 1min (was 0.08)
     h5: { entryThreshold: 0.18, minAgreement: 0.64 },  // ★ RAISED: Filter out noise at 5min (was 0.12)
@@ -198,6 +198,11 @@
     toxicity: 0.06,
     spoof: 0.07,
     iceberg: 0.08,
+    orderBookImbalance: 0.18, // weighted 10/20-level live depth
+    imbalanceVelocity: 0.12,  // rolling 15m book-pressure acceleration
+    liquidityDepth: 0.08,     // live depth quality/risk context
+    liquidityVacuum: 0.12,
+    fundingRate: 0.10,
     mktSentiment: 0.18,  // was 0.11 — 64% increase for macro context
     fearGreed: 0.12,  // Fear & Greed Index macro overlay
     cmcMacro: 0.08,  // ★ CoinMarketCap Pro: BTC dominance + global volume flux (added 2026-05-06)
@@ -710,7 +715,7 @@
   // Signals below threshold are labelled LOW CONVICTION or BLOCKED.
   // ================================================================
   const CORE_SIGNAL_KEYS = ['hma', 'vwma', 'rsi', 'ema', 'sma', 'obv', 'volume', 'momentum', 'bands', 'persistence', 'structure', 'macd', 'stochrsi', 'adx', 'ichimoku', 'williamsR', 'mfi', 'vwap', 'supertrend', 'cci', 'cmf', 'fisher', 'keltner'];
-  const MICRO_SIGNAL_KEYS = ['book', 'flow', 'toxicity', 'spoof', 'iceberg'];
+  const MICRO_SIGNAL_KEYS = ['book', 'flow', 'toxicity', 'spoof', 'iceberg', 'orderBookImbalance', 'imbalanceVelocity', 'liquidityDepth', 'liquidityVacuum', 'fundingRate'];
   const SIGNAL_LABELS = {
     rsi: 'RSI',
     ema: 'EMA Cross',
@@ -728,6 +733,11 @@
     toxicity: 'Flow Toxicity',
     spoof: 'Spoofing Risk',
     iceberg: 'Iceberg Absorption',
+    orderBookImbalance: '10/20L Book Imbalance',
+    imbalanceVelocity: 'Imbalance Velocity',
+    liquidityDepth: 'Liquidity Depth',
+    liquidityVacuum: 'Liquidity Vacuum',
+    fundingRate: 'Funding Pressure',
     macd: 'MACD',
     stochrsi: 'Stoch RSI',
     adx: 'ADX',
@@ -2359,6 +2369,7 @@
         : (mid > 0 ? (spread / mid) * 100 : 0),
       source: source || book.source || 'book',
       timestamp: Number(book.timestamp || book.ts || Date.now()),
+      balance: book.balance || book.depthMetrics || null,
     };
   }
 
@@ -2393,7 +2404,7 @@
     _liveMicroState[key] = {
       ...state,
       book,
-      balance: meta.balance || state.balance || null,
+      balance: meta.balance || book.balance || state.balance || null,
       lastUpdateTs: Date.now(),
       lastImbalance: analysis.imbalance,
       lastLabel: analysis.label,
@@ -2824,7 +2835,9 @@
     const bidTotal = normalized.bids.reduce((s, b) => s + parseFloat(b.qty), 0);
     const askTotal = normalized.asks.reduce((s, a) => s + parseFloat(a.qty), 0);
     const total = bidTotal + askTotal || 1;
-    const imbalance = (bidTotal - askTotal) / total; // -1 to 1
+    const rawImbalance = (bidTotal - askTotal) / total; // -1 to 1
+    const weightedImbalance = normalized.balance?.weighted?.blendImbalance;
+    const imbalance = Number.isFinite(Number(weightedImbalance)) ? Number(weightedImbalance) : rawImbalance;
     const bestBid = parseFloat(normalized.bids[0]?.price || 0);
     const bestAsk = parseFloat(normalized.asks[0]?.price || 0);
     const spread = bestAsk > 0 ? ((bestAsk - bestBid) / bestBid) * 100 : 0;
@@ -2841,7 +2854,7 @@
     if (bidWall > 0.4) label += ' (bid wall)';
     if (askWall > 0.4) label += ' (ask wall)';
 
-    return { imbalance, bidTotal, askTotal, bidWall, askWall, spread, label, source: normalized.source, timestamp: normalized.timestamp };
+    return { imbalance, rawImbalance, bidTotal, askTotal, bidWall, askWall, spread, label, source: normalized.source, timestamp: normalized.timestamp, balance: normalized.balance };
   }
 
   function analyzeTradeFlow(trades) {
@@ -4093,8 +4106,10 @@
     // Funding rate pressure, order book imbalance (10-20 levels), liquidity vacuum
     let fundingRateSig = 0;
     let orderBookImbalanceSig = 0;
+    let imbalanceVelocitySig = 0;
+    let liquidityDepthSig = 0;
     let liquidityVacuumSig = 0;
-    let microStructureMeta = { funding: null, imbalance: null, vacuum: null };
+    let microStructureMeta = { funding: null, imbalance: null, velocity: null, liquidity: null, vacuum: null };
 
     if (window.MicrostructureSignals) {
       // ★ Funding Rate: Long/short positioning imbalance on perpetuals
@@ -4114,16 +4129,33 @@
       // Heavy buy walls = bullish setup (buying absorption capacity)
       // Heavy sell walls = bearish setup (selling pressure)
       if (book && book.bids && book.asks) {
-        const imbalanceData = window.MicrostructureSignals.analyzeOrderBookImbalance(book, 15);
+        const balanceMetrics = options.sym ? window.OB?.getBalanceMetrics?.(options.sym) : null;
+        const imbalanceData = window.MicrostructureSignals.analyzeOrderBookImbalance(book, {
+          levels: [10, 20],
+          balance: balanceMetrics,
+        });
         if (!imbalanceData.error) {
           const imbalanceSigData = window.MicrostructureSignals.imbalanceToSignal(
-            imbalanceData.imbalance,
+            imbalanceData,
             imbalanceData.distribution
           );
-          orderBookImbalanceSig = imbalanceSigData.signal * 0.50;  // Weight: 50% of a single indicator
-          microStructureMeta.imbalance = imbalanceSigData;
+          orderBookImbalanceSig = imbalanceSigData.signal * 0.58;
+          imbalanceVelocitySig = clamp((imbalanceData.velocity?.value || 0) * 0.42, -0.42, 0.42);
+          const liquidity = imbalanceData.liquidity || {};
+          const liqScore = Number.isFinite(Number(liquidity.score)) ? Number(liquidity.score) : 0.65;
+          const liqDirection = Math.sign(imbalanceSigData.signal || imbalanceData.imbalance || 0);
+          const liqRisk = liqScore < 0.38 ? -0.18 : liqScore < 0.58 ? -0.08 : liqScore > 0.78 ? 0.04 : 0;
+          liquidityDepthSig = clamp(liqDirection * liqRisk, -0.22, 0.08);
+          microStructureMeta.imbalance = {
+            ...imbalanceSigData,
+            rawImbalance: imbalanceData.imbalance,
+            levels: imbalanceData.levels,
+          };
+          microStructureMeta.velocity = imbalanceData.velocity;
+          microStructureMeta.liquidity = liquidity;
           if (Math.abs(imbalanceData.imbalance) > 0.25) {
-            console.log(`[MicroSignals] ${options.sym} book imbalance=${imbalanceData.imbalance.toFixed(3)} type=${imbalanceSigData.type} → sig=${imbalanceSigData.signal.toFixed(3)}`);
+            const vel = imbalanceData.velocity?.value || 0;
+            console.log(`[MicroSignals] ${options.sym} book imbalance=${imbalanceData.imbalance.toFixed(3)} vel=${vel.toFixed(3)} type=${imbalanceSigData.type} → sig=${imbalanceSigData.signal.toFixed(3)}`);
           }
         }
       }
@@ -4195,6 +4227,8 @@
       // ★ NEW: Advanced microstructure signals (2026-05-15)
       fundingRate: fundingRateSig,         // Perpetual market positioning pressure
       orderBookImbalance: orderBookImbalanceSig,  // Weighted bid/ask depth (10-20 levels)
+      imbalanceVelocity: imbalanceVelocitySig,  // 15m rolling change in weighted imbalance
+      liquidityDepth: liquidityDepthSig,  // Thin/deep 10/20-level liquidity regime
       liquidityVacuum: liquidityVacuumSig,  // Price levels with sparse order density
       macd: macdSig,
       stochrsi: stochSig,
@@ -4310,6 +4344,7 @@
     const microSignals = [
       { name: 'funding', sig: fundingRateSig, strength: Math.abs(fundingRateSig) * 0.45 },
       { name: 'book', sig: orderBookImbalanceSig, strength: Math.abs(orderBookImbalanceSig) * 0.50 },
+      { name: 'imbalanceVelocity', sig: imbalanceVelocitySig, strength: Math.abs(imbalanceVelocitySig) * 0.40 },
       { name: 'vacuum', sig: liquidityVacuumSig, strength: Math.abs(liquidityVacuumSig) * 0.35 },
     ];
 
@@ -4405,8 +4440,22 @@
         signal: orderBookImbalanceSig,
         meta: microStructureMeta.imbalance,
         label: microStructureMeta.imbalance
-          ? `Book: ${microStructureMeta.imbalance.type} (${(microStructureMeta.imbalance.signal * 100).toFixed(1)}%)`
+          ? `Book 10/20: ${microStructureMeta.imbalance.type} (${(microStructureMeta.imbalance.signal * 100).toFixed(1)}%)`
           : 'Book: Neutral',
+      },
+      imbalanceVelocity: {
+        signal: imbalanceVelocitySig,
+        meta: microStructureMeta.velocity,
+        label: microStructureMeta.velocity
+          ? `Imbalance velocity: ${microStructureMeta.velocity.band || 'stable'} (${(microStructureMeta.velocity.value * 100).toFixed(1)}%)`
+          : 'Imbalance velocity: stable',
+      },
+      liquidityDepth: {
+        signal: liquidityDepthSig,
+        meta: microStructureMeta.liquidity,
+        label: microStructureMeta.liquidity
+          ? `Liquidity: ${microStructureMeta.liquidity.band || 'normal'} (${Math.round((microStructureMeta.liquidity.score || 0) * 100)} score)`
+          : 'Liquidity: unknown',
       },
       liquidityVacuum: {
         signal: liquidityVacuumSig,
@@ -4463,6 +4512,8 @@
     // ★ NEW: Microstructure signals (higher priority due to real-time market data)
     if (typeof fundingRateSig !== 'undefined' && Math.abs(fundingRateSig) > 0.01) _sigVec.push({ name: 'fundingRate', value: fundingRateSig, weight: adaptiveWeights.fundingRate ?? 0.15 });
     if (typeof orderBookImbalanceSig !== 'undefined' && Math.abs(orderBookImbalanceSig) > 0.01) _sigVec.push({ name: 'orderBookImbalance', value: orderBookImbalanceSig, weight: adaptiveWeights.orderBookImbalance ?? 0.16 });
+    if (typeof imbalanceVelocitySig !== 'undefined' && Math.abs(imbalanceVelocitySig) > 0.01) _sigVec.push({ name: 'imbalanceVelocity', value: imbalanceVelocitySig, weight: adaptiveWeights.imbalanceVelocity ?? 0.12 });
+    if (typeof liquidityDepthSig !== 'undefined' && Math.abs(liquidityDepthSig) > 0.01) _sigVec.push({ name: 'liquidityDepth', value: liquidityDepthSig, weight: adaptiveWeights.liquidityDepth ?? 0.08 });
     if (typeof liquidityVacuumSig !== 'undefined' && Math.abs(liquidityVacuumSig) > 0.01) _sigVec.push({ name: 'liquidityVacuum', value: liquidityVacuumSig, weight: adaptiveWeights.liquidityVacuum ?? 0.12 });
 
     // Resolve kalshi probability for alignment check
@@ -6440,6 +6491,10 @@
           source: effectiveBook.source || null,
           ageMs: liveBookAgeMs,
           imbalance: timed.indicators?.book?.imbalance ?? null,
+          weightedImbalance: timed.indicators?.orderBookImbalance?.meta?.rawImbalance ?? null,
+          imbalanceVelocity: timed.indicators?.imbalanceVelocity?.meta?.value ?? null,
+          liquidityBand: timed.indicators?.liquidityDepth?.meta?.band ?? null,
+          liquidityNotional20: timed.indicators?.liquidityDepth?.meta?.notional20 ?? null,
           label: timed.indicators?.book?.label ?? null,
         } : null,
         // CFM floating router diagnostics

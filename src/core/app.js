@@ -3627,8 +3627,7 @@
           predsLoaded = true;
           snapshotPredictions();
           // Bug fix: re-check currentView after the async gap
-          if (currentView === 'universe') renderUniverse();
-          else if (['predictions', 'cfm'].includes(currentView)) renderPredictions();
+          if (['predictions', 'cfm', 'universe'].includes(currentView)) refreshActiveView();
         } catch { }
       });
 
@@ -3658,23 +3657,20 @@
   window.addEventListener('predictioninference', () => {
     scheduleWebStatePublish('predictioninference', 75);
     if (!predsLoaded || predictionRunInFlight) return;
-    if (currentView === 'universe') renderUniverse();
-    else if (['predictions', 'cfm'].includes(currentView)) renderPredictions();
+    if (['predictions', 'cfm', 'universe'].includes(currentView)) refreshActiveView();
   });
 
   window.addEventListener('predictiontide', () => {
     scheduleWebStatePublish('predictiontide', 75);
     if (!predsLoaded || predictionRunInFlight) return;
-    if (currentView === 'universe') renderUniverse();
-    else if (['predictions', 'cfm'].includes(currentView)) renderPredictions();
+    if (['predictions', 'cfm', 'universe'].includes(currentView)) refreshActiveView();
   });
 
   window.addEventListener('predictions:microstructure-updated', () => {
     try { window._runAdaptiveLiveRetune?.('microstructure-updated'); } catch (_) {}
     scheduleWebStatePublish('microstructure-prediction', 50);
     if (!predsLoaded || predictionRunInFlight) return;
-    if (currentView === 'universe') renderUniverse();
-    else if (['predictions', 'cfm'].includes(currentView)) renderPredictions();
+    if (['predictions', 'cfm', 'universe'].includes(currentView)) refreshActiveView();
   });
 
   // ================================================================
@@ -9819,7 +9815,14 @@
       content.innerHTML = `<div class="card"><div class="card-body" style="padding:14px;color:var(--color-text-muted)">Prediction render failed: ${escapeHtml(msg)}</div></div>`;
       return;
     }
-    const predArr = Object.values(preds).filter(p => p.sym);
+    const coinOrder = new Map(PREDICTION_COINS.map((coin, index) => [coin.sym, index]));
+    const predArr = Object.values(preds)
+      .filter(p => p.sym)
+      .sort((a, b) => {
+        const ai = coinOrder.has(a.sym) ? coinOrder.get(a.sym) : Number.MAX_SAFE_INTEGER;
+        const bi = coinOrder.has(b.sym) ? coinOrder.get(b.sym) : Number.MAX_SAFE_INTEGER;
+        return (ai - bi) || String(a.sym).localeCompare(String(b.sym));
+      });
     const bullCount = predArr.filter(p => p.signal === 'strong_bull' || p.signal === 'bullish').length;
     const bearCount = predArr.filter(p => p.signal === 'strong_bear' || p.signal === 'bearish').length;
     const backtests = predArr.map(p => p.backtest).filter(Boolean);
@@ -9876,7 +9879,7 @@
       <div id="pred-accuracy-badge" style="text-align:center;padding:4px 0 6px;font-size:12px;letter-spacing:.5px"></div>
       ${buildKalshiDebugPanel()}
       <div class="pred-disclaimer">
-        \u26a0 <strong>Not financial advice.</strong> These UP/DOWN calls are algorithmic signals derived from RSI, VWAP deviation, EMA crosses, OBV, order book imbalance, and trade flow analysis on 5-minute candles. They represent statistical probabilities, not certainties. Always manage risk.
+        \u26a0 <strong>Not financial advice.</strong> These UP/DOWN calls are 15-minute-window signals derived from RSI, VWAP deviation, EMA crosses, OBV, weighted 10/20-level book imbalance, imbalance velocity, liquidity depth, and trade flow. They represent statistical probabilities, not certainties. Always manage risk.
       </div>
 
       <!-- Session + Scalp Timing Bar -->
@@ -9978,7 +9981,7 @@
       ` : ''}
 
       <!-- Prediction Cards Grid -->
-      <div class="section-header"><span class="section-title">1-15 Minute UP / DOWN Calls</span>
+      <div class="section-header"><span class="section-title">15-Minute UP / DOWN Window</span>
         <div style="display:flex;align-items:center;gap:8px">
           <button class="btn-sm" id="toggleHighConfidenceOverlay" style="font-size:10px;padding:4px 10px">HC Overlay: ${isHighConfidenceOverlayOn() ? 'ON' : 'OFF'}</button>
           <button class="btn-sm" id="rerunPreds" style="font-size:10px;padding:4px 10px">Refresh Analysis</button>
@@ -10297,6 +10300,18 @@
       stats: p.backtest?.[`h${horizonMin}`] || null,
       projection: p.projections?.[`p${horizonMin}`] || null,
     }));
+    const depthMeta = ind.orderBookImbalance?.meta || null;
+    const depth10 = depthMeta?.levels?.level10 || null;
+    const depth20 = depthMeta?.levels?.level20 || null;
+    const velocityMeta = ind.imbalanceVelocity?.meta || null;
+    const liquidityMeta = ind.liquidityDepth?.meta || null;
+    const fmtDepthImb = value => Number.isFinite(Number(value)) ? `${Number(value) >= 0 ? '+' : ''}${(Number(value) * 100).toFixed(0)}%` : '—';
+    const depthClass = value => Number(value) > 0.12 ? 'bull' : Number(value) < -0.12 ? 'bear' : 'flat';
+    const depthRows = depthMeta ? `
+      <div class="ind-item"><span class="ind-name">Depth 10/20</span><span class="ind-val ${depthClass(depthMeta.rawImbalance)}">10L ${fmtDepthImb(depth10?.imbalance)} / 20L ${fmtDepthImb(depth20?.imbalance)}</span></div>
+      <div class="ind-item"><span class="ind-name">Imb Velocity</span><span class="ind-val ${depthClass(velocityMeta?.value)}">${velocityMeta?.band || 'stable'} · ${fmtDepthImb(velocityMeta?.value)}</span></div>
+      <div class="ind-item"><span class="ind-name">Liquidity</span><span class="ind-val ${liquidityMeta?.band === 'fragile' || liquidityMeta?.band === 'thin' ? 'bear' : liquidityMeta?.band === 'deep' ? 'bull' : 'flat'}">${liquidityMeta?.band || 'unknown'} · 20L ${fmtCompactUsd(liquidityMeta?.notional20)}</span></div>
+    ` : '';
 
     function indClass(sig) { return sig > 0.15 ? 'bull' : sig < -0.15 ? 'bear' : 'flat'; }
     function btClass(stats) {
@@ -10835,6 +10850,7 @@
             <div class="ind-item"><span class="ind-name">OBV</span><span class="ind-val ${indClass(ind.obv?.signal || 0)}">${ind.obv?.label ?? '—'}</span></div>
             <div class="ind-item"><span class="ind-name">Vol Flow</span><span class="ind-val ${indClass(ind.volume?.signal || 0)}">${ind.volume?.label ?? '—'}</span></div>
             <div class="ind-item"><span class="ind-name">Momentum</span><span class="ind-val ${indClass(ind.momentum?.signal || 0)}">${Number.isFinite(ind.momentum?.value) ? `${ind.momentum.value > 0 ? '+' : ''}${ind.momentum.value.toFixed(2)}%` : '—'}</span></div>
+            ${depthRows}
             ${ind.bands ? `<div class="ind-item"><span class="ind-name">Bands</span><span class="ind-val ${indClass(ind.bands.signal)}">${ind.bands.label}</span></div>` : ''}
             ${ind.persistence ? `<div class="ind-item"><span class="ind-name">Persistence</span><span class="ind-val ${indClass(ind.persistence.signal)}">${ind.persistence.label}</span></div>` : ''}
             ${ind.structure ? `<div class="ind-item"><span class="ind-name">Structure</span><span class="ind-val ${indClass(ind.structure.signal)}">${ind.structure.label}</span></div>` : ''}
@@ -11231,6 +11247,11 @@
 
     const imb = metrics.imbalance?.value || 0;
     const band = metrics.imbalance?.band || 'balanced';
+    const weighted = metrics.weighted || {};
+    const depth10 = weighted.level10 || null;
+    const depth20 = weighted.level20 || null;
+    const velocity = metrics.velocity || {};
+    const liquidity = metrics.liquidity || {};
     const wall = metrics.walls || {};
     const dom = wall.dominantWallSide || 'none';
     const ageSec = Math.max(0, Math.round((Date.now() - (metrics.ts || 0)) / 1000));
@@ -11254,6 +11275,8 @@
     else if (band.includes('ask') && dom === 'ask') read = 'Ask pressure and resistance walls align (bearish microstructure).';
     else if (band.includes('bid')) read = 'Bid pressure present, but wall structure is mixed.';
     else if (band.includes('ask')) read = 'Ask pressure present, but wall structure is mixed.';
+    if (Math.abs(velocity.value || 0) >= 0.25) read += ` Imbalance velocity is ${velocity.direction || 'active'} (${velocity.band || 'moving'}).`;
+    if (liquidity.band === 'fragile' || liquidity.band === 'thin') read += ` ${liquidity.band} 20-level liquidity; size carefully.`;
     if (confidence === 'low') read += ' Low depth notional, treat signal as tentative.';
     if (ageSec > 6) read += ' Data slightly stale; awaiting fresh ladder updates.';
 
@@ -11268,6 +11291,11 @@
       (wall.bidWallConcentration || 0).toFixed(2),
       (wall.askWallConcentration || 0).toFixed(2),
       dom,
+      (depth10?.imbalance || 0).toFixed(3),
+      (depth20?.imbalance || 0).toFixed(3),
+      (velocity.value || 0).toFixed(3),
+      liquidity.band || '',
+      liquidity.notional20 || 0,
       confidence,
       ageSec,
     ].join('|');
@@ -11278,6 +11306,8 @@
       <div style="padding:8px 14px;font-family:var(--font-mono);font-size:0.78em;line-height:1.5;color:var(--color-text-muted);">
         <div>BALANCE ${sym}  mid ${fmtMid(metrics.mid)}  spr ${(metrics.spreadPct || 0).toFixed(4)}%  age ${ageSec}s</div>
         <div>NOTIONAL  bid ${fmtMoney(metrics.bidNotional)}  ask ${fmtMoney(metrics.askNotional)}  skew ${imb >= 0 ? '+' : ''}${imb.toFixed(3)}</div>
+        <div>WEIGHTED  10L ${depth10?.imbalance >= 0 ? '+' : ''}${(depth10?.imbalance || 0).toFixed(3)}  20L ${depth20?.imbalance >= 0 ? '+' : ''}${(depth20?.imbalance || 0).toFixed(3)}  vel ${velocity.value >= 0 ? '+' : ''}${(velocity.value || 0).toFixed(3)} (${velocity.band || 'stable'})</div>
+        <div>LIQUIDITY  10L ${fmtMoney(liquidity.notional10 || 0)}  20L ${fmtMoney(liquidity.notional20 || 0)}  band ${liquidity.band || 'unknown'}  expansion ${(liquidity.depthExpansion || 0).toFixed(2)}x</div>
         <div>BAND  ${bandLabel}  conf ${confidence}</div>
         <div>WALL CONC  bid ${(wall.bidWallConcentration || 0).toFixed(2)}  ask ${(wall.askWallConcentration || 0).toFixed(2)}  dom ${dom}</div>
         <div>READ  ${read}</div>
@@ -12458,7 +12488,10 @@
     // appear immediately when the burst-retry fetches them instead of waiting
     // for the next PredictionEngine.runAll() cycle (up to 15s later).
     if (['predictions', 'cfm', 'universe'].includes(currentView) && predsLoaded && !predictionRunInFlight) {
-      try { renderPredictions(); } catch (_) { }
+      try {
+        if (currentView === 'predictions') renderPredictions();
+        else refreshActiveView();
+      } catch (_) { }
     }
     scheduleWebStatePublish('predictionmarkets', 100);
   });
@@ -12475,7 +12508,7 @@
         ? Math.max(15000, (refreshSecs || 15) * 1000)
         : 30000;
       const renderAge = now - (_lastPredRenderTs || 0);
-      if (_lastPredRenderTs && renderAge > 20000) {
+      if (currentView === 'predictions' && _lastPredRenderTs && renderAge > 20000) {
         renderPredictions();
       }
       const runAge = now - (_lastPredictionRunTs || 0);
@@ -12485,7 +12518,8 @@
         _lastPredictionRunTs = Date.now();
         predsLoaded = true;
         snapshotPredictions();
-        renderPredictions();
+        if (currentView === 'predictions') renderPredictions();
+        else refreshActiveView();
       }
     } catch (_) { }
   }, 10000);
