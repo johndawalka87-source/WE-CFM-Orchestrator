@@ -8163,7 +8163,7 @@
       title = isTrade ? `Scalp ${side}` : 'Stalk scalp';
       detail = isTrade
         ? (ki.exitPlan || 'Buy the early flip and sell into the probability expansion before book pressure fades.')
-        : `Book/tape scanner is watching for a clean flip${ki.timingBlocks?.length ? ': ' + ki.timingBlocks.slice(0, 2).join(', ') : '.'}`;
+        : `Book/tape scanner is watching for a clean flip${(ki.blockedBy?.length || ki.timingBlocks?.length) ? ': ' + (ki.blockedBy?.length ? ki.blockedBy.slice(0, 2) : ki.timingBlocks.slice(0, 2)).join(', ') : '.'}`;
       tone = isTrade ? 'var(--color-green)' : '#ffb74d';
     } else if (phase === 'OPENING') {
       title = isTrade ? `Prepare ${side}` : 'Observe open';
@@ -8195,7 +8195,7 @@
       title = isTrade ? `Value ${side}` : 'Close-value scan';
       detail = isTrade
         ? (ki.exitPlan || '2-3m mispricing window is active; enter only while edge and book pressure stay aligned.')
-        : `Hunting payout/mispricing skew${ki.timingBlocks?.length ? ': ' + ki.timingBlocks.slice(0, 2).join(', ') : '.'}`;
+        : `Hunting payout/mispricing skew${(ki.blockedBy?.length || ki.timingBlocks?.length) ? ': ' + (ki.blockedBy?.length ? ki.blockedBy.slice(0, 2) : ki.timingBlocks.slice(0, 2)).join(', ') : '.'}`;
       tone = isTrade ? 'var(--color-green)' : '#ffd700';
     } else if (phase === 'LAST_CALL') {
       title = 'Last call';
@@ -8538,7 +8538,7 @@
                       ${isCrowdFade ? `<div style="font-size:11px;color:#e040fb;margin-top:3px">🔄 Mispricing hunter active — blockchain momentum is diverging from crowd pricing</div>`
               : isDivergent ? `<div style="font-size:11px;color:#ff8c00;margin-top:3px">⚡ Model vs house — buy the mispriced side, the edge IS the divergence</div>` : ''}
                       ${ki.exitPlan && isTrade ? `<div style="font-size:11px;color:#7db7ff;margin-top:3px">${ki.exitPlan}</div>` : ''}
-                      ${ki.timingBlocks?.length && !isTrade ? `<div style="font-size:11px;color:var(--color-text-faint);margin-top:3px">Watching: ${ki.timingBlocks.slice(0, 3).join(' · ')}</div>` : ''}
+                      ${(ki.blockedBy?.length || ki.timingBlocks?.length) && !isTrade ? `<div style="font-size:11px;color:var(--color-text-faint);margin-top:3px">Watching: ${(ki.blockedBy?.length ? ki.blockedBy.slice(0, 3) : ki.timingBlocks.slice(0, 3)).join(' · ')}</div>` : ''}
                       ${ki.humanReason ? `<div style="font-size:11px;color:var(--color-text-muted);margin-top:4px;line-height:1.4">${ki.humanReason}</div>` : ''}
                       ${renderFifteenMinuteMovePlan(ki, true)}
                     </div>`;

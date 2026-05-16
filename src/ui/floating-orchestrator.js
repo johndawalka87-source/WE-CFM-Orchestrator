@@ -717,6 +717,11 @@
     var calibratedConfidence = pred && Number.isFinite(pred.confidence) ? pred.confidence : null;
     var modelVetoed = !!(pred && pred.diagnostics && pred.diagnostics.vetoed);
     var modelVetoReason = pred && pred.diagnostics && pred.diagnostics.vetoReason ? String(pred.diagnostics.vetoReason) : '';
+    var modelVetoSeverity = pred && pred.diagnostics && pred.diagnostics.vetoSeverity
+      ? String(pred.diagnostics.vetoSeverity).toLowerCase()
+      : '';
+    var modelHardVeto = modelVetoSeverity === 'hard' || !!(pred && pred.diagnostics && pred.diagnostics.hardVeto);
+    var modelSoftVeto = !modelHardVeto && (modelVetoed || !!(pred && pred.diagnostics && pred.diagnostics.softVeto));
     var modelProbUpRaw = scoreToProbUp(modelScore);
     var modelYesProb = null;
     if (kAlign && Number.isFinite(kAlign.modelYesPct)) {
@@ -730,7 +735,7 @@
       ? Math.abs((kAlign.modelYesPct / 100) - 0.5) >= 0.08
       : false;
     var confidenceActive = (calibratedConfidence != null ? calibratedConfidence : 0) >= 12;
-    var modelActive = !modelVetoed && (scoreActive || (cdfActive && confidenceActive));
+    var modelActive = !modelHardVeto && (scoreActive || (cdfActive && confidenceActive));
     var modelDir = modelYesProb >= 0.5 ? dirs.yesDir : dirs.noDir;
     var modelBullish = modelDir === 'UP';
     var kalshiYesPrice = k15 ? k15.probability : null;
@@ -765,7 +770,7 @@
     if (vetoSt && vetoSt.phase === 'confirmed')
       return _earlyExit(sym, k15, msLeft, secsLeft, minsLeft, lastCall, 'Shell wall confirmed — stand aside');
     var earlyExit = pred && pred.diagnostics && pred.diagnostics.earlyExit;
-    if (modelVetoed && (!kalshiActive || kalshiDirHint === null)) {
+    if (modelHardVeto && (!kalshiActive || kalshiDirHint === null)) {
       return _skip(sym, 'Model vetoed' + (modelVetoReason ? ' — ' + modelVetoReason : '') + '; no independent market edge');
     }
     if (!kalshiActive && !modelActive)
@@ -831,6 +836,18 @@
       logTunedDowngradeReason = 'non-BTC divergent 55-69% YES segment';
     }
     if (logTunedDowngradeReason) action = 'watch';
+    var softVetoDowngradeReason = null;
+    if (
+      action === 'trade'
+      && modelSoftVeto
+      && entry
+      && Number.isFinite(entry.edgeCents)
+      && entry.edgeCents < (EDGE_MIN_CENTS + 2)
+    ) {
+      softVetoDowngradeReason = 'soft veto + marginal edge';
+      action = 'watch';
+    }
+    var timingDowngradeReason = logTunedDowngradeReason || softVetoDowngradeReason;
     var timingProfile = buildAdaptiveTimingRegime({
       sym: sym,
       secsLeft: secsLeft,
@@ -843,7 +860,7 @@
       kalshiYesPrice: kalshiYesPrice,
       liquidity: k15 ? k15.liquidity : null,
       finalConfidenceWeak: finalConfidenceWeak,
-      logTunedDowngradeReason: logTunedDowngradeReason,
+      logTunedDowngradeReason: timingDowngradeReason,
     });
     if (action !== 'skip' && timingProfile.promoteToTrade) {
       action = 'trade';
@@ -867,6 +884,9 @@
     var logTunedTail = logTunedDowngradeReason
       ? ' · downgraded to watch: ' + logTunedDowngradeReason
       : '';
+    var softVetoTail = softVetoDowngradeReason
+      ? ' · downgraded to watch: ' + softVetoDowngradeReason
+      : (modelSoftVeto ? ' · model caution: ' + (modelVetoReason || 'soft veto') : '');
     var timingTail = timingProfile && timingProfile.promoteToTrade
       ? ' · timing regime: ' + timingProfile.timingLabel + ' (' + timingProfile.reasons.join(', ') + ')'
       : (timingProfile && timingProfile.blocks.length && action !== 'trade'
@@ -884,8 +904,19 @@
     Object.keys(reasonMap).forEach(function (key) {
       if (key !== 'KALSHI_ONLY' && confidenceTail) reasonMap[key] += confidenceTail;
       if (key !== 'KALSHI_ONLY' && logTunedTail) reasonMap[key] += logTunedTail;
+      if (key !== 'KALSHI_ONLY' && softVetoTail) reasonMap[key] += softVetoTail;
       if (key !== 'KALSHI_ONLY' && timingTail) reasonMap[key] += timingTail;
     });
+    var blockedBy = [];
+    if (modelHardVeto) blockedBy.push('hard veto' + (modelVetoReason ? ': ' + modelVetoReason : ''));
+    else if (modelSoftVeto) blockedBy.push('soft veto' + (modelVetoReason ? ': ' + modelVetoReason : ''));
+    if (finalConfidenceWeak) blockedBy.push('final confidence floor');
+    if (logTunedDowngradeReason) blockedBy.push(logTunedDowngradeReason);
+    if (softVetoDowngradeReason) blockedBy.push(softVetoDowngradeReason);
+    if (tooEarly) blockedBy.push('open-window guard');
+    if (timingProfile && timingProfile.blocks && timingProfile.blocks.length) {
+      blockedBy = blockedBy.concat(timingProfile.blocks.slice(0, 3));
+    }
     var strikeStr = null;
     if (k15 && k15.ticker) {
       var tm = k15.ticker.match(/T(\d+(?:\.\d+)?)$/);
@@ -895,6 +926,11 @@
       sym: sym, contractTicker: k15 ? k15.ticker : null, strikeStr: strikeStr,
       side: side, direction: direction, alignment: alignment, action: action, confidence: confidence,
       finalModelConfidence: calibratedConfidence,
+      modelVetoed: modelVetoed,
+      modelVetoSeverity: modelVetoSeverity || (modelHardVeto ? 'hard' : (modelSoftVeto ? 'soft' : 'none')),
+      modelHardVeto: modelHardVeto,
+      modelSoftVeto: modelSoftVeto,
+      modelVetoReason: modelVetoReason || null,
       modelScore: modelScore, modelProbUp: parseFloat(modelProbUp.toFixed(4)),
       modelProbYes: parseFloat(modelYesProb.toFixed(4)),
       kalshiYesPrice: kalshiYesPrice, kalshiActive: kalshiActive,
@@ -926,6 +962,8 @@
       missedOpportunityScore: action === 'watch' ? timingProfile.timingScore : 0,
       logTunedDowngrade: !!logTunedDowngradeReason,
       logTunedDowngradeReason: logTunedDowngradeReason,
+      softVetoDowngradeReason: softVetoDowngradeReason,
+      blockedBy: blockedBy.filter(Boolean),
     };
     if (entry) Object.assign(result, entry);
 
