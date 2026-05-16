@@ -84,7 +84,7 @@ cd we-crypto
 pnpm install
 cp .env.example .env
 # Edit .env with API credentials
-pnpm run dev
+pnpm run start:dev
 ```
 
 ### First Run
@@ -97,8 +97,8 @@ pnpm run dev
 ### Production Deployment
 
 ```bash
-pnpm run build:portable
-# Result: dist/WECRYPTO-v2.11.0-portable.exe
+pnpm run build:portable:release
+# Result: dist/WE-CRYPTO-Kalshi-15m-v2.15.5-portable-<build-label>-x64.exe
 # Deploy and run — no dependencies needed!
 ```
 
@@ -190,7 +190,13 @@ window.AdaptiveLearner.reset()            // Reset learning
 
 ---
 
-## 🎓 What's New in v2.11.0
+## 🎓 What's Current in v2.15.5
+
+### 🔒 Release Hygiene & Clock Safety
+- TimeAPI New York responses are converted with timezone-aware parsing
+- Local start/build commands no longer run cloud checks implicitly
+- Release/prod commands run cloud, Firebase, and secret-scan preflight explicitly
+- Electron runtime and package builder versions are aligned
 
 ### ✨ Adaptive Learning System
 - Historical settlement fetcher from Kalshi/Polymarket/Coinbase

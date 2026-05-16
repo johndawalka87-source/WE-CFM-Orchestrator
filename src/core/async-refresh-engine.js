@@ -84,35 +84,13 @@
                 {
                     name: 'timeapi.io/america-new_york',
                     url: 'https://timeapi.io/api/Time/current/zone?timeZone=America/New_York',
-                    parse: (json) => {
-                        if (!json) return null;
-                        const year = Number(json.year);
-                        const month = Number(json.month);
-                        const day = Number(json.day);
-                        const hour = Number(json.hour);
-                        const minute = Number(json.minute);
-                        const second = Number(json.seconds);
-                        const milli = Number(json.milliSeconds || 0);
-                        if (![year, month, day, hour, minute, second, milli].every(Number.isFinite)) return null;
-                        return Date.UTC(year, month - 1, day, hour, minute, second, milli);
-                    }
+                    parse: (json) => this.parseTimeApiTimestamp(json, 'America/New_York')
                 },
                 // worldtimeapi endpoints removed (now returning HTTP 410).
                 {
                     name: 'timeapi.io/utc',
                     url: 'https://timeapi.io/api/Time/current/zone?timeZone=UTC',
-                    parse: (json) => {
-                        if (!json) return null;
-                        const year = Number(json.year);
-                        const month = Number(json.month);
-                        const day = Number(json.day);
-                        const hour = Number(json.hour);
-                        const minute = Number(json.minute);
-                        const second = Number(json.seconds);
-                        const milli = Number(json.milliSeconds || 0);
-                        if (![year, month, day, hour, minute, second, milli].every(Number.isFinite)) return null;
-                        return Date.UTC(year, month - 1, day, hour, minute, second, milli);
-                    }
+                    parse: (json) => this.parseTimeApiTimestamp(json, 'UTC')
                 }
             ];
 
@@ -161,6 +139,69 @@
 
         nowMs() {
             return Date.now() + this.clockOffsetMs;
+        }
+
+        parseTimeApiTimestamp(json, fallbackTimeZone = 'UTC') {
+            if (!json) return null;
+            const parts = {
+                year: Number(json.year),
+                month: Number(json.month),
+                day: Number(json.day),
+                hour: Number(json.hour),
+                minute: Number(json.minute),
+                second: Number(json.seconds),
+                milli: Number(json.milliSeconds || 0),
+            };
+            if (!Object.values(parts).every(Number.isFinite)) return null;
+
+            const timeZone = json.timeZone || fallbackTimeZone;
+            if (timeZone === 'UTC' || timeZone === 'Etc/UTC') {
+                return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second, parts.milli);
+            }
+            return this.zonedTimePartsToUtcMs(parts, timeZone);
+        }
+
+        zonedTimePartsToUtcMs(parts, timeZone) {
+            const targetMs = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second, parts.milli);
+            let utcMs = targetMs;
+
+            for (let i = 0; i < 3; i++) {
+                const renderedMs = this.renderTimeZonePartsAsUtcMs(utcMs, timeZone);
+                if (!Number.isFinite(renderedMs)) return null;
+                const nextUtcMs = utcMs - (renderedMs - targetMs);
+                if (Math.abs(nextUtcMs - utcMs) < 1) return nextUtcMs;
+                utcMs = nextUtcMs;
+            }
+
+            return utcMs;
+        }
+
+        renderTimeZonePartsAsUtcMs(utcMs, timeZone) {
+            try {
+                const formatter = new Intl.DateTimeFormat('en-US', {
+                    timeZone,
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hourCycle: 'h23',
+                });
+                const formatted = Object.fromEntries(formatter.formatToParts(new Date(utcMs)).map(part => [part.type, part.value]));
+                const milli = ((utcMs % 1000) + 1000) % 1000;
+                return Date.UTC(
+                    Number(formatted.year),
+                    Number(formatted.month) - 1,
+                    Number(formatted.day),
+                    Number(formatted.hour),
+                    Number(formatted.minute),
+                    Number(formatted.second),
+                    milli
+                );
+            } catch (_) {
+                return null;
+            }
         }
 
         async syncClock(force = false) {

@@ -21,11 +21,17 @@ debug-logs/
 # Secrets — NEVER COMMIT
 secrets/
 KALSHI-API-KEY.txt
+WECRYpto KALSHI RDONLY APIKEY.txt
 *-api-key*
 *APIKEY*
 *API-KEY*
 ENDPOINTS_AND_KEYS.md
 *.key
+*.pem
+*.p8
+*.p12
+credentials*.json
+service-account*.json
 .env
 .env.*
 

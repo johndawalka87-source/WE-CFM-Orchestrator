@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-v2.11.0-blue?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-v2.15.5-blue?style=for-the-badge)
 ![Status](https://img.shields.io/badge/status-production--ready-green?style=for-the-badge)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)
 
@@ -770,8 +770,8 @@ pnpm install
 cp .env.example .env
 # Edit .env with API credentials
 
-# Run
-pnpm run dev
+# Run locally without cloud preflight
+pnpm run start:dev
 ```
 
 ### First Run
@@ -785,10 +785,10 @@ pnpm run dev
 ### In Production
 
 ```bash
-# Build portable executable
-pnpm run build:portable
+# Build release portable executable with preflight checks
+pnpm run build:portable:release
 
-# Result: dist/WECRYPTO-v2.11.0-portable.exe
+# Result: dist/WE-CRYPTO-Kalshi-15m-v2.15.5-portable-<build-label>-x64.exe
 # Deploy and run — no dependencies needed!
 ```
 
@@ -845,7 +845,7 @@ Uses new weights automatically!
 | **Baseline** (random) | 50.0% | Control |
 | **v2.9.0** (fixed weights) | 52.1% | Stable |
 | **v2.10.0** (with tuning) | 50.6% | Early learning |
-| **v2.11.0** (real-time) | 52-55% | 📈 Improving |
+| **v2.15.5** (real-time + release safety) | 52-55% | 📈 Improving |
 
 ### Per-Coin Breakdown (Last 7 Days)
 
@@ -903,7 +903,13 @@ Full documentation organized by topic:
 
 ---
 
-## 🎓 What's New in v2.11.0
+## 🎓 What's Current in v2.15.5
+
+### 🔒 **Release Hygiene & Clock Safety**
+- TimeAPI New York responses are converted with timezone-aware parsing for 15-minute settlement alignment
+- Local start/build commands no longer run cloud checks implicitly
+- Release/prod commands run cloud, Firebase, and secret-scan preflight explicitly
+- Electron runtime and builder packaging are pinned to the same Electron version
 
 ### ✨ **Adaptive Learning System**
 - Automatic weight tuning based on accuracy
