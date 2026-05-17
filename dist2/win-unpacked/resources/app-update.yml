@@ -1,0 +1,4 @@
+owner: JohnDaWalka
+repo: WE-CFM-Orchestrator
+provider: github
+updaterCacheDirName: we-cfm-orchestrator-updater
