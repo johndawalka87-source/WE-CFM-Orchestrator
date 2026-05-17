@@ -7,10 +7,11 @@
  * This goes in main.js after existing ipc handlers.
  */
 
-const { ipcMain } = require('electron');
+const { ipcMain, app } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
+const { resolveKalshiCredentialFile } = require('./kalshi-credentials.js');
 
 // Kalshi worker state
 let kalshiWorker = null;
@@ -36,16 +37,6 @@ function resolveRuntimeBaseDir() {
   if (execDir && fs.existsSync(execDir)) return execDir;
   if (fs.existsSync(__dirname)) return __dirname;
   return process.cwd();
-}
-
-function resolveCredentialFilePath(runtimeBaseDir) {
-  const configured = process.env.KALSHI_API_KEY_FILE || path.join('secrets', 'KALSHI-API-KEY.txt');
-  const candidate = path.isAbsolute(configured)
-    ? configured
-    : path.resolve(runtimeBaseDir, configured);
-  if (fs.existsSync(candidate)) return candidate;
-  const fallback = path.join(runtimeBaseDir, 'secrets', 'KALSHI-API-KEY.txt');
-  return fs.existsSync(fallback) ? fallback : candidate;
 }
 
 async function probeWorkerHealth(timeoutMs = 800) {
@@ -86,7 +77,7 @@ async function startKalshiWorker(options = {}) {
     const nodeExec = process.execPath || 'node';
     const runtimeBaseDir = resolveRuntimeBaseDir();
     const workerScript = resolveWorkerScriptPath();
-    const credentialFile = resolveCredentialFilePath(runtimeBaseDir);
+    const credentialFile = resolveKalshiCredentialFile({ app, runtimeBaseDir }).path;
 
     if (!fs.existsSync(workerScript)) {
       console.error(`[Main] Kalshi worker script not found: ${workerScript}`);

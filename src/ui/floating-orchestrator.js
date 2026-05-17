@@ -30,10 +30,16 @@
 
   const MODEL_THRESHOLD = 0.06;
   const FINAL_MODEL_CONF_MIN_TRADE = 10;
-  const FINAL_MODEL_CONF_MIN_NONALIGNED_TRADE = 14;
+  const FINAL_MODEL_CONF_MIN_NONALIGNED_TRADE = 12;
   const MIN_SECONDS_LEFT = 5;
+  const OPEN_WINDOW_GUARD_SECS = 15;
+  const PREDICTION_STALE_WARN_MS = 45000;
+  const MARKET_STALE_WARN_MS = 15000;
   const MAX_SECONDS_LEFT = 15 * 60 + 30;
-  const EDGE_MIN_CENTS = 8;
+  const EDGE_MIN_CENTS = 7;
+  const EXCEPTIONAL_RECOVERY_TIMING_SCORE = 72;
+  const EXCEPTIONAL_RECOVERY_EDGE_CENTS = 16;
+  const EXCEPTIONAL_RECOVERY_MISPRICING = 0.14;
   const INVERSION_THRESH = 30;
   const THIN_BOOK_THRESH = 0.05;
   const TAIL_RISK_THRESH = 0.80;
@@ -43,6 +49,52 @@
   const LOG_TUNED_HIGH_EDGE_RISK_CENTS = 20;
   const LOG_TUNED_DIVERGENT_YES_RISK_MIN = 0.55;
   const LOG_TUNED_DIVERGENT_YES_RISK_MAX = 0.70;
+  function readRuntimeKnob(key, fallback) {
+    var val = null;
+    try {
+      if (typeof window !== 'undefined' && window.__WECRYP_ORCH_CONFIG && window.__WECRYP_ORCH_CONFIG[key] != null) {
+        val = window.__WECRYP_ORCH_CONFIG[key];
+      }
+    } catch (_) {}
+    try {
+      if (val == null && typeof process !== 'undefined' && process.env && process.env[key] != null) {
+        val = process.env[key];
+      }
+    } catch (_) {}
+    return val == null ? fallback : val;
+  }
+  function readNumberKnob(key, fallback, min, max) {
+    var raw = readRuntimeKnob(key, fallback);
+    var num = Number(raw);
+    if (!Number.isFinite(num)) num = Number(fallback);
+    if (Number.isFinite(min)) num = Math.max(min, num);
+    if (Number.isFinite(max)) num = Math.min(max, num);
+    return num;
+  }
+  function readBoolKnob(key, fallback) {
+    var raw = readRuntimeKnob(key, fallback);
+    if (typeof raw === 'boolean') return raw;
+    var txt = String(raw).trim().toLowerCase();
+    if (txt === '1' || txt === 'true' || txt === 'yes' || txt === 'on') return true;
+    if (txt === '0' || txt === 'false' || txt === 'no' || txt === 'off') return false;
+    return !!fallback;
+  }
+  const WAIT_GUARD_TIMING_SCORE_BASE = readNumberKnob('WECRYP_WAIT_GUARD_TIMING_SCORE_BASE', 68, 45, 95);
+  const WAIT_GUARD_BTC_ETH_RELAX = readNumberKnob('WECRYP_WAIT_GUARD_BTC_ETH_RELAX', 4, 0, 12);
+  const WAIT_GUARD_REGIME_TREND_RELAX = readNumberKnob('WECRYP_WAIT_GUARD_REGIME_TREND_RELAX', 3, 0, 10);
+  const WAIT_GUARD_REGIME_VOLATILE_PENALTY = readNumberKnob('WECRYP_WAIT_GUARD_REGIME_VOLATILE_PENALTY', 4, 0, 12);
+  const WAIT_GUARD_MCTS_RELAX_MAX = readNumberKnob('WECRYP_WAIT_GUARD_MCTS_RELAX_MAX', 4, 0, 12);
+  const WAIT_GUARD_OPEN_BYPASS_ENABLED = readBoolKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_ENABLED', true);
+  const WAIT_GUARD_OPEN_BYPASS_MIN_CONF = readNumberKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_MIN_CONF', 14, 0, 99);
+  const WAIT_GUARD_OPEN_BYPASS_MIN_EDGE = readNumberKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_MIN_EDGE', 14, 0, 50);
+  const WAIT_GUARD_OPEN_BYPASS_MIN_MISPRICING = readNumberKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_MIN_MISPRICING', 0.14, 0.02, 0.5);
+  const MCTS_ENABLED = readBoolKnob('WECRYP_MCTS_ENABLED', true);
+  const MCTS_SIMULATIONS = Math.round(readNumberKnob('WECRYP_MCTS_SIMULATIONS', 96, 16, 400));
+  const MCTS_DEPTH = Math.round(readNumberKnob('WECRYP_MCTS_DEPTH', 6, 2, 16));
+  const MCTS_EXPLORATION = readNumberKnob('WECRYP_MCTS_EXPLORATION', 1.15, 0.1, 4.0);
+  const MCTS_CONFIDENCE_MOD_MAX = readNumberKnob('WECRYP_MCTS_CONFIDENCE_MOD_MAX', 10, 0, 20);
+  const MCTS_DIRECTION_OVERRIDE_MIN_GAP = readNumberKnob('WECRYP_MCTS_DIRECTION_OVERRIDE_MIN_GAP', 0.14, 0.01, 0.5);
+  const LIVE_CALIBRATION_EVENT_WINDOW = Math.round(readNumberKnob('WECRYP_LIVE_CALIBRATION_EVENT_WINDOW', 120, 20, 500));
 
   // Signal stability — prevents flipping in final minutes
   // Reduce lock hold time to avoid entering on stale signals; locks will also
@@ -78,7 +130,7 @@
   const SCALP_MAX_SECS = 840;
   const SCALP_EDGE_CENTS = 6;
   const FINAL_SNIPE_MIN_SECS = 45;
-  const FINAL_SNIPE_MAX_SECS = 75;
+  const FINAL_SNIPE_MAX_SECS = 90;
 
   // _locks[sym+closeTimeMs] = { direction, side, ts, closeTimeMs }
   var _locks = {};
@@ -100,6 +152,211 @@
   }
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+  function hash32(text) {
+    var h = 2166136261 >>> 0;
+    var t = String(text || '');
+    for (var i = 0; i < t.length; i += 1) {
+      h ^= t.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+  function seededRng(seed) {
+    var s = (seed >>> 0) || 0x9e3779b9;
+    return function () {
+      s = (s + 0x6d2b79f5) >>> 0;
+      var t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function confidence01(v) {
+    if (!Number.isFinite(v)) return 0;
+    if (v <= 1.01) return clamp(v, 0, 1);
+    return clamp(v / 100, 0, 1);
+  }
+  function directionSign(dir) {
+    if (dir === 'UP') return 1;
+    if (dir === 'DOWN') return -1;
+    return 0;
+  }
+  function extractRegimeTag(pred, cfm) {
+    var diagRegime = pred && pred.diagnostics && pred.diagnostics.regime;
+    var regimeState = diagRegime && (diagRegime.regime_state || diagRegime.state);
+    if (regimeState) return String(regimeState);
+    var liveRegime = pred && pred.liveRegime && (pred.liveRegime.regime || pred.liveRegime.state);
+    if (liveRegime) return String(liveRegime);
+    return crowdFadeRegime(pred, cfm);
+  }
+  function normalizeRegimeTag(regimeTag) {
+    var r = String(regimeTag || '').toLowerCase();
+    if (r.indexOf('trend') !== -1) return 'trending';
+    if (r.indexOf('mean') !== -1 || r.indexOf('range') !== -1 || r.indexOf('reversion') !== -1) return 'range';
+    if (r.indexOf('vol') !== -1) return 'volatile';
+    if (r.indexOf('chop') !== -1 || r.indexOf('noise') !== -1) return 'chop';
+    return r || 'mixed';
+  }
+  function buildMctsState(sym, pred, cfm, context) {
+    if (!MCTS_ENABLED) return null;
+    if (!pred || !Number.isFinite(context && context.modelProbUp)) return null;
+    var momentum = cfm && Number.isFinite(cfm.momentum) ? cfm.momentum : 0;
+    var trendDir = cfm && cfm.trend === 'rising' ? 1 : cfm && cfm.trend === 'falling' ? -1 : 0;
+    var atrPct = pred && pred.volatility && Number.isFinite(pred.volatility.atrPct) ? pred.volatility.atrPct : null;
+    var volatilityNorm = atrPct == null ? 0.25 : clamp(atrPct / 4.0, 0, 1.2);
+    var liquidity = Number.isFinite(context && context.liquidity) ? context.liquidity : 1200;
+    return {
+      sym: sym,
+      confidence: confidence01(context && context.calibratedConfidence),
+      modelProbUp: clamp(context.modelProbUp, 0.02, 0.98),
+      modelStrength: clamp(Math.abs(context.modelScore || 0), 0, 1),
+      momentum: clamp(momentum, -1, 1),
+      trendDir: trendDir,
+      volatility: clamp(volatilityNorm, 0, 1.5),
+      mispricing: Number.isFinite(context && context.mispricing) ? clamp(context.mispricing, 0, 0.5) : 0,
+      secsLeft: Number.isFinite(context && context.secsLeft) ? context.secsLeft : null,
+      liquidity: clamp(liquidity, 50, 200000),
+      regime: normalizeRegimeTag(context && context.regimeTag),
+      direction: context && context.currentDirection ? context.currentDirection : null,
+      side: context && context.currentSide ? context.currentSide : null,
+    };
+  }
+  function rolloutRewardForAction(state, action, rng, depth) {
+    var bias = ((state.modelProbUp - 0.5) * 1.9) + (state.momentum * 0.5) + (state.trendDir * 0.3);
+    var path = 0;
+    var steps = Math.max(2, depth);
+    for (var i = 0; i < steps; i += 1) {
+      var shockScale = 0.12 + (state.volatility * 0.22) + (state.regime === 'chop' ? 0.08 : 0);
+      if (state.regime === 'volatile') shockScale += 0.05;
+      var shock = (rng() - 0.5) * 2 * shockScale;
+      path += (bias * 0.38) + shock;
+    }
+    var dirEdge = path / Math.max(1, steps);
+    var lateRisk = state.secsLeft != null ? clamp((90 - state.secsLeft) / 90, 0, 1) : 0.4;
+    var slippage = clamp((state.volatility * 0.4) + (state.liquidity < 1400 ? 0.25 : 0), 0, 1.3);
+    if (action === 'WAIT') {
+      var waitSafety = (0.35 * lateRisk) + (0.22 * slippage) + (state.regime === 'volatile' ? 0.18 : 0);
+      var waitOpportunityCost = Math.abs(dirEdge) * (0.45 + (state.confidence * 0.55));
+      return clamp(waitSafety - waitOpportunityCost, -1.5, 1.5);
+    }
+    var sign = action === 'UP' ? 1 : -1;
+    var directionalFit = sign * dirEdge;
+    var confidenceBoost = state.confidence * (0.30 + state.modelStrength * 0.20);
+    var mispricingBoost = state.mispricing * 1.3;
+    var wrongWayPenalty = (sign === 1 ? (0.5 - state.modelProbUp) : (state.modelProbUp - 0.5));
+    var regimePenalty = (state.regime === 'volatile' ? 0.14 : (state.regime === 'chop' ? 0.07 : 0));
+    var riskPenalty = (lateRisk * 0.28) + (slippage * 0.20) + regimePenalty + Math.max(0, wrongWayPenalty);
+    return clamp((directionalFit * 1.2) + confidenceBoost + mispricingBoost - riskPenalty, -1.5, 1.5);
+  }
+  function runVanillaMcts(state, cfg) {
+    if (!state) {
+      return { ran: false, reason: 'missing-state' };
+    }
+    var sims = Math.max(8, Number(cfg && cfg.simulations) || MCTS_SIMULATIONS);
+    var depth = Math.max(2, Number(cfg && cfg.depth) || MCTS_DEPTH);
+    var c = Number.isFinite(Number(cfg && cfg.exploration)) ? Number(cfg.exploration) : MCTS_EXPLORATION;
+    var seed = hash32([
+      state.sym,
+      state.modelProbUp.toFixed(5),
+      state.confidence.toFixed(4),
+      state.momentum.toFixed(4),
+      state.volatility.toFixed(4),
+      state.mispricing.toFixed(4),
+      state.secsLeft == null ? 'na' : String(Math.round(state.secsLeft)),
+      state.regime
+    ].join('|'));
+    var rng = seededRng(seed);
+    var children = {
+      UP: { action: 'UP', visits: 0, total: 0 },
+      DOWN: { action: 'DOWN', visits: 0, total: 0 },
+      WAIT: { action: 'WAIT', visits: 0, total: 0 },
+    };
+    var totalVisits = 0;
+    var actions = ['UP', 'DOWN', 'WAIT'];
+    for (var i = 0; i < sims; i += 1) {
+      var picked = null;
+      var bestUcb = -Infinity;
+      for (var j = 0; j < actions.length; j += 1) {
+        var child = children[actions[j]];
+        var ucb = child.visits === 0
+          ? Infinity
+          : (child.total / child.visits) + c * Math.sqrt(Math.log(totalVisits + 1) / child.visits);
+        if (ucb > bestUcb) {
+          bestUcb = ucb;
+          picked = child;
+        }
+      }
+      var reward = rolloutRewardForAction(state, picked.action, rng, depth);
+      picked.visits += 1;
+      picked.total += reward;
+      totalVisits += 1;
+    }
+    function avg(action) {
+      var node = children[action];
+      return node.visits > 0 ? (node.total / node.visits) : 0;
+    }
+    var upScore = avg('UP');
+    var downScore = avg('DOWN');
+    var waitScore = avg('WAIT');
+    var ordered = [
+      { action: 'UP', score: upScore },
+      { action: 'DOWN', score: downScore },
+      { action: 'WAIT', score: waitScore },
+    ].sort(function (a, b) { return b.score - a.score; });
+    var best = ordered[0];
+    var second = ordered[1];
+    var directionalGap = upScore - downScore;
+    var voteStrength = Math.abs(best.score - second.score);
+    return {
+      ran: true,
+      seed: seed,
+      simulations: sims,
+      depth: depth,
+      exploration: c,
+      voteAction: best.action,
+      voteStrength: parseFloat(voteStrength.toFixed(4)),
+      directionalGap: parseFloat(directionalGap.toFixed(4)),
+      scores: {
+        up: parseFloat(upScore.toFixed(4)),
+        down: parseFloat(downScore.toFixed(4)),
+        wait: parseFloat(waitScore.toFixed(4)),
+      },
+    };
+  }
+  function computeWaitGuardThreshold(params) {
+    var base = WAIT_GUARD_TIMING_SCORE_BASE;
+    var sym = String(params && params.sym || '').toUpperCase();
+    var regime = normalizeRegimeTag(params && params.regimeTag);
+    var mcts = params && params.mctsResult ? params.mctsResult : null;
+    var conf = Number.isFinite(params && params.calibratedConfidence) ? params.calibratedConfidence : 0;
+    if (sym === 'BTC' || sym === 'ETH') base -= WAIT_GUARD_BTC_ETH_RELAX;
+    if (regime === 'trending') base -= WAIT_GUARD_REGIME_TREND_RELAX;
+    else if (regime === 'volatile' || regime === 'chop') base += WAIT_GUARD_REGIME_VOLATILE_PENALTY;
+    if (conf >= 18) base -= 2;
+    if (mcts && mcts.ran) {
+      if (mcts.voteAction === 'WAIT') base += 2;
+      else {
+        var relax = Math.round(clamp((mcts.voteStrength || 0) * 10, 0, WAIT_GUARD_MCTS_RELAX_MAX));
+        base -= relax;
+      }
+    }
+    return Math.round(clamp(base, 50, 92));
+  }
+  function shouldBypassOpenWindowGuard(params) {
+    if (!WAIT_GUARD_OPEN_BYPASS_ENABLED) return false;
+    var sym = String(params && params.sym || '').toUpperCase();
+    if (!(sym === 'BTC' || sym === 'ETH')) return false;
+    var regime = normalizeRegimeTag(params && params.regimeTag);
+    if (regime === 'volatile' || regime === 'chop') return false;
+    var conf = Number.isFinite(params && params.calibratedConfidence) ? params.calibratedConfidence : 0;
+    var edge = Number.isFinite(params && params.edgeCents) ? params.edgeCents : 0;
+    var mispricing = Number.isFinite(params && params.mispricing) ? params.mispricing : 0;
+    var mcts = params && params.mctsResult;
+    if (!mcts || !mcts.ran || mcts.voteAction === 'WAIT') return false;
+    if ((mcts.voteStrength || 0) < MCTS_DIRECTION_OVERRIDE_MIN_GAP) return false;
+    return conf >= WAIT_GUARD_OPEN_BYPASS_MIN_CONF
+      && edge >= WAIT_GUARD_OPEN_BYPASS_MIN_EDGE
+      && mispricing >= WAIT_GUARD_OPEN_BYPASS_MIN_MISPRICING;
+  }
 
   function formatCrowdFadeWindowSecs(secs) {
     if (!Number.isFinite(secs)) return '?';
@@ -747,40 +1004,155 @@
     var kalshiBullish = kalshiDirHint === 'UP';
     var kalshiBearish = kalshiDirHint === 'DOWN';
     var kalshiNeutral = kalshiDirHint === null;
+    var nowMs = Date.now();
     var closeTimeMs = k15 && k15.closeTime ? new Date(k15.closeTime).getTime() : null;
-    var msLeft = closeTimeMs != null ? Math.max(0, closeTimeMs - Date.now()) : null;
+    var msLeft = closeTimeMs != null ? Math.max(0, closeTimeMs - nowMs) : null;
     var secsLeft = msLeft != null ? msLeft / 1000 : null;
     var minsLeft = msLeft != null ? msLeft / 60000 : null;
+    var predictionTs = pred && (pred.ts || pred.timestamp) ? Number(pred.ts || pred.timestamp) : null;
+    var predictionAgeMs = Number.isFinite(predictionTs) ? Math.max(0, nowMs - predictionTs) : null;
+    var marketAgeMs = null;
+    try {
+      var marketStatus = window.PredictionMarkets && window.PredictionMarkets.getStatus
+        ? window.PredictionMarkets.getStatus()
+        : null;
+      marketAgeMs = Number.isFinite(Number(marketStatus && marketStatus.age))
+        ? Math.max(0, Number(marketStatus.age))
+        : null;
+    } catch (_) {}
+    var transportMode = null;
+    try {
+      var transport = window.NetworkHealth && window.NetworkHealth.getTransport
+        ? window.NetworkHealth.getTransport()
+        : null;
+      transportMode = (k15 && k15._liveTransport) || transport?.preferred?.kalshi || null;
+    } catch (_) {}
+    var schedulerCooldownRemainingMs = 0;
+    var schedulerCircuitRemainingMs = 0;
+    try {
+      var schedulerProviders = window._signalScheduler && window._signalScheduler.getHealthStatus
+        ? window._signalScheduler.getHealthStatus().providers
+        : null;
+      var kalshiScheduler = schedulerProviders && schedulerProviders.kalshi ? schedulerProviders.kalshi : null;
+      if (kalshiScheduler) {
+        schedulerCooldownRemainingMs = Math.max(0, (Number(kalshiScheduler.cooldownUntil) || 0) - nowMs);
+        schedulerCircuitRemainingMs = Math.max(0, (Number(kalshiScheduler.circuitUntil) || 0) - nowMs);
+      }
+    } catch (_) {}
     var is15mTicker = !k15 || !k15.ticker || /15M/i.test(String(k15.ticker));
     var hasValid15mWindow = Number.isFinite(secsLeft) && secsLeft > 0 && secsLeft <= MAX_SECONDS_LEFT;
-    pruneContractState(Date.now());
+    pruneContractState(nowMs);
     var tooLate = msLeft != null && msLeft < MIN_SECONDS_LEFT * 1000;
-    var tooEarly = minsLeft != null && minsLeft > 14.5;
+    var tooEarly = secsLeft != null && secsLeft > ((15 * 60) - OPEN_WINDOW_GUARD_SECS);
+    var stalePrediction = Number.isFinite(predictionAgeMs) && predictionAgeMs > PREDICTION_STALE_WARN_MS;
+    var staleMarket = Number.isFinite(marketAgeMs) && marketAgeMs > MARKET_STALE_WARN_MS;
     var lastCall = msLeft != null && msLeft <= LAST_CALL_MS;
+    var stageDiagnostics = {
+      stages: [],
+      suppressionReasons: [],
+      tunedRecovery: null,
+      timing: {
+        predictionAgeMs: predictionAgeMs,
+        marketAgeMs: marketAgeMs,
+        schedulerCooldownRemainingMs: schedulerCooldownRemainingMs,
+        schedulerCircuitRemainingMs: schedulerCircuitRemainingMs,
+        transportMode: transportMode,
+      },
+    };
+    function pushSuppression(reason) {
+      if (!reason) return;
+      if (stageDiagnostics.suppressionReasons.indexOf(reason) === -1) stageDiagnostics.suppressionReasons.push(reason);
+    }
+    function addStage(name, passed, checks, failures) {
+      var normalizedFailures = Array.isArray(failures) ? failures.filter(Boolean) : [];
+      normalizedFailures.forEach(pushSuppression);
+      stageDiagnostics.stages.push({
+        name: name,
+        passed: !!passed,
+        checks: checks || {},
+        failures: normalizedFailures,
+      });
+    }
+    function withStageDiagnostics(outcome) {
+      if (!outcome || typeof outcome !== 'object') return outcome;
+      outcome.stageDiagnostics = stageDiagnostics;
+      return outcome;
+    }
+    addStage('model_input', modelActive || !modelHardVeto, {
+      modelActive: modelActive,
+      modelHardVeto: modelHardVeto,
+      modelSoftVeto: modelSoftVeto,
+      modelScore: Number.isFinite(modelScore) ? parseFloat(modelScore.toFixed(4)) : null,
+      finalModelConfidence: calibratedConfidence,
+      scoreActive: scoreActive,
+      cdfActive: cdfActive,
+      confidenceActive: confidenceActive,
+      predictionAgeMs: predictionAgeMs,
+      stalePrediction: stalePrediction,
+      signalGate: pred && pred.gate ? {
+        passed: !!pred.gate.passed,
+        quality: pred.gate.quality || null,
+        label: pred.gate.label || null,
+      } : null,
+    }, (modelHardVeto ? ['hard veto' + (modelVetoReason ? ': ' + modelVetoReason : '')] : [])
+      .concat(pred && pred.gate && pred.gate.gated && Array.isArray(pred.gate.reasons)
+        ? pred.gate.reasons.slice(0, 2).map(function (reason) { return 'signal gate: ' + reason; })
+        : [])
+      .concat(stalePrediction ? ['prediction stale ' + Math.round(predictionAgeMs / 1000) + 's'] : []));
+    addStage('market_window', !tooLate && (!kalshiActive || hasValid15mWindow), {
+      kalshiActive: kalshiActive,
+      hasValid15mWindow: hasValid15mWindow,
+      is15mTicker: is15mTicker,
+      tooLate: tooLate,
+      tooEarly: tooEarly,
+      secsLeft: secsLeft != null ? parseFloat(secsLeft.toFixed(1)) : null,
+      marketAgeMs: marketAgeMs,
+      staleMarket: staleMarket,
+      transportMode: transportMode,
+      openWindowGuardSecs: OPEN_WINDOW_GUARD_SECS,
+      schedulerCooldownRemainingMs: schedulerCooldownRemainingMs,
+      schedulerCircuitRemainingMs: schedulerCircuitRemainingMs,
+    }, [
+      (kalshiActive && (!is15mTicker || !hasValid15mWindow))
+        ? ('window mismatch: ticker=' + (k15 && k15.ticker ? k15.ticker : 'n/a')
+          + ', secsLeft=' + (secsLeft != null ? Math.round(secsLeft) : 'n/a'))
+        : null,
+      tooLate ? ('settlement < ' + MIN_SECONDS_LEFT + 's') : null,
+      tooEarly ? ('open-window guard (' + OPEN_WINDOW_GUARD_SECS + 's)') : null,
+      staleMarket ? ('market snapshot stale ' + Math.round(marketAgeMs / 1000) + 's') : null,
+    ]);
     var vetoSt = window.ShellRouter && window.ShellRouter.getVetoState && window.ShellRouter.getVetoState(sym);
     if (vetoSt && vetoSt.phase === 'evaluating') {
-      return {
+      addStage('shell_guard', false, {
+        shellPhase: 'evaluating',
+        evalTick: vetoSt.evalTick || null,
+      }, ['shell wall evaluating']);
+      return withStageDiagnostics({
         sym: sym, action: 'hold', side: null, direction: null, alignment: 'SHELL_EVAL',
         confidence: 0, msLeft: msLeft ? Math.round(msLeft) : null, secsLeft: secsLeft ? parseFloat(secsLeft.toFixed(1)) : null,
         minsLeft: minsLeft, lastCall: lastCall, closeTimeMs: closeTimeMs, closeTime: k15 ? k15.closeTime : null,
         contractTicker: k15 ? k15.ticker : null,
         reason: 'Shell wall evaluating (' + (vetoSt.evalTick || '?') + '/3) — data collection'
-      };
+      });
     }
     if (vetoSt && vetoSt.phase === 'confirmed')
-      return _earlyExit(sym, k15, msLeft, secsLeft, minsLeft, lastCall, 'Shell wall confirmed — stand aside');
+      return withStageDiagnostics(_earlyExit(sym, k15, msLeft, secsLeft, minsLeft, lastCall, 'Shell wall confirmed — stand aside'));
     var earlyExit = pred && pred.diagnostics && pred.diagnostics.earlyExit;
     if (modelHardVeto && (!kalshiActive || kalshiDirHint === null)) {
-      return _skip(sym, 'Model vetoed' + (modelVetoReason ? ' — ' + modelVetoReason : '') + '; no independent market edge');
+      addStage('decision_route', false, {
+        earlyExit: false,
+        kalshiIndependentEdge: !!(kalshiActive && kalshiDirHint !== null),
+      }, ['model veto with no independent market edge']);
+      return withStageDiagnostics(_skip(sym, 'Model vetoed' + (modelVetoReason ? ' — ' + modelVetoReason : '') + '; no independent market edge'));
     }
     if (!kalshiActive && !modelActive)
-      return _skip(sym, 'No signal — score ' + modelScore.toFixed(3) + ', no Kalshi data');
+      return withStageDiagnostics(_skip(sym, 'No signal — score ' + modelScore.toFixed(3) + ', no Kalshi data'));
     if (kalshiActive && (!is15mTicker || !hasValid15mWindow))
-      return _skip(sym, 'Invalid contract window for 15m execution');
+      return withStageDiagnostics(_skip(sym, 'Invalid contract window for 15m execution'));
     if (tooLate)
-      return _skip(sym, 'Settlement < ' + MIN_SECONDS_LEFT + 's — too late to fill');
+      return withStageDiagnostics(_skip(sym, 'Settlement < ' + MIN_SECONDS_LEFT + 's — too late to fill'));
     if (earlyExit)
-      return _earlyExit(sym, k15, msLeft, secsLeft, minsLeft, lastCall);
+      return withStageDiagnostics(_earlyExit(sym, k15, msLeft, secsLeft, minsLeft, lastCall));
     var direction, alignment;
     if (kalshiActive && modelActive) {
       var sameDir = (modelBullish && kalshiBullish) || (!modelBullish && kalshiBearish);
@@ -797,23 +1169,96 @@
       direction = kalshiYesPrice >= 0.5 ? dirs.yesDir : dirs.noDir;
       alignment = 'KALSHI_ONLY';
     }
+    var regimeTag = extractRegimeTag(pred, cfm);
+    var currentMispricing = Number.isFinite(modelYesProb) && Number.isFinite(kalshiYesPrice)
+      ? Math.abs(modelYesProb - kalshiYesPrice)
+      : 0;
+    var mctsState = buildMctsState(sym, pred, cfm, {
+      modelProbUp: modelProbUp,
+      modelScore: modelScore,
+      calibratedConfidence: calibratedConfidence,
+      mispricing: currentMispricing,
+      secsLeft: secsLeft,
+      liquidity: k15 ? k15.liquidity : null,
+      regimeTag: regimeTag,
+      currentDirection: direction,
+    });
+    var mctsResult = runVanillaMcts(mctsState, {
+      simulations: MCTS_SIMULATIONS,
+      depth: MCTS_DEPTH,
+      exploration: MCTS_EXPLORATION,
+    });
+    var mctsVoteDirection = mctsResult && mctsResult.ran
+      ? (mctsResult.voteAction === 'UP' ? 'UP' : (mctsResult.voteAction === 'DOWN' ? 'DOWN' : null))
+      : null;
+    var mctsDirectionOverrode = false;
+    if (
+      mctsVoteDirection
+      && direction
+      && mctsVoteDirection !== direction
+      && mctsResult.voteStrength >= MCTS_DIRECTION_OVERRIDE_MIN_GAP
+      && !modelHardVeto
+      && alignment !== 'KALSHI_ONLY'
+      && alignment !== 'EARLY_EXIT'
+    ) {
+      direction = mctsVoteDirection;
+      alignment = 'MCTS_OVERRIDE';
+      mctsDirectionOverrode = true;
+    }
     var entryYes = kalshiYesPrice !== null ? analyseEntry('YES', modelYesProb, kalshiYesPrice) : null;
     var entryNo = kalshiYesPrice !== null ? analyseEntry('NO', modelYesProb, kalshiYesPrice) : null;
     var side = direction === dirs.yesDir ? 'YES' : 'NO';
     var entry = side === 'YES' ? entryYes : side === 'NO' ? entryNo : null;
     var mStr = clamp(Math.abs(modelScore), 0, 1);
     var eBoost = entry ? clamp(Math.abs(entry.edgeCents) / 60, 0, 0.25) : 0;
-    var confidence = Math.round(clamp((mStr + eBoost) * 75, 0, 99));
+    var mctsDirectionalBias = 0;
+    if (mctsResult && mctsResult.ran) {
+      if (direction === 'UP') mctsDirectionalBias = mctsResult.scores.up - Math.max(mctsResult.scores.down, mctsResult.scores.wait);
+      else if (direction === 'DOWN') mctsDirectionalBias = mctsResult.scores.down - Math.max(mctsResult.scores.up, mctsResult.scores.wait);
+      else mctsDirectionalBias = mctsResult.scores.wait - Math.max(mctsResult.scores.up, mctsResult.scores.down);
+    }
+    var mctsConfidenceModifier = Math.round(clamp(mctsDirectionalBias * MCTS_CONFIDENCE_MOD_MAX, -MCTS_CONFIDENCE_MOD_MAX, MCTS_CONFIDENCE_MOD_MAX));
+    var baseConfidence = Math.round(clamp((mStr + eBoost) * 75, 0, 99));
+    var confidence = Math.round(clamp(baseConfidence + mctsConfidenceModifier, 0, 99));
     var action;
     if (alignment === 'KALSHI_ONLY') action = 'watch';
     else if (!entry || entry.edgeCents < EDGE_MIN_CENTS) action = (entry && entry.edgeCents < 0) ? 'skip' : 'watch';
     else action = modelActive ? 'trade' : 'watch';
+    var waitGuardThreshold = computeWaitGuardThreshold({
+      sym: sym,
+      regimeTag: regimeTag,
+      calibratedConfidence: calibratedConfidence,
+      mctsResult: mctsResult,
+    });
     var finalConfidenceFloor = alignment === 'ALIGNED'
       ? FINAL_MODEL_CONF_MIN_TRADE
       : FINAL_MODEL_CONF_MIN_NONALIGNED_TRADE;
+    if (
+      (String(sym || '').toUpperCase() === 'BTC' || String(sym || '').toUpperCase() === 'ETH')
+      && (normalizeRegimeTag(regimeTag) === 'trending' || normalizeRegimeTag(regimeTag) === 'mixed')
+      && mctsResult && mctsResult.ran && mctsResult.voteAction !== 'WAIT'
+      && mctsResult.voteStrength >= MCTS_DIRECTION_OVERRIDE_MIN_GAP
+    ) {
+      finalConfidenceFloor = Math.max(8, finalConfidenceFloor - 2);
+    }
     var finalConfidenceWeak = calibratedConfidence != null && calibratedConfidence < finalConfidenceFloor;
     if (action === 'trade' && finalConfidenceWeak) action = 'watch';
-    if (tooEarly && action === 'trade') action = 'watch';
+    var openWindowBypassed = false;
+    var openWindowBlocked = false;
+    if (tooEarly && action === 'trade') {
+      openWindowBypassed = shouldBypassOpenWindowGuard({
+        sym: sym,
+        regimeTag: regimeTag,
+        calibratedConfidence: calibratedConfidence,
+        edgeCents: entry && entry.edgeCents,
+        mispricing: currentMispricing,
+        mctsResult: mctsResult,
+      });
+      if (!openWindowBypassed) {
+        action = 'watch';
+        openWindowBlocked = true;
+      }
+    }
     var symNorm = String(sym || '').toUpperCase();
     var logTunedDowngradeReason = null;
     if (
@@ -862,13 +1307,93 @@
       finalConfidenceWeak: finalConfidenceWeak,
       logTunedDowngradeReason: timingDowngradeReason,
     });
+    addStage('orchestrator_base', action === 'trade', {
+      alignment: alignment,
+      action: action,
+      edgeCents: entry && Number.isFinite(entry.edgeCents) ? entry.edgeCents : null,
+      finalConfidenceFloor: finalConfidenceFloor,
+      finalConfidenceWeak: finalConfidenceWeak,
+      baseConfidence: baseConfidence,
+      confidence: confidence,
+      regimeTag: regimeTag,
+      mctsVote: mctsResult && mctsResult.ran ? mctsResult.voteAction : null,
+      mctsVoteStrength: mctsResult && mctsResult.ran ? mctsResult.voteStrength : null,
+      mctsConfidenceModifier: mctsConfidenceModifier,
+      logTunedDowngradeReason: logTunedDowngradeReason || null,
+      softVetoDowngradeReason: softVetoDowngradeReason || null,
+    }, [
+      finalConfidenceWeak ? 'final confidence floor' : null,
+      logTunedDowngradeReason,
+      softVetoDowngradeReason,
+      openWindowBlocked ? ('open-window guard (' + OPEN_WINDOW_GUARD_SECS + 's)') : null,
+      (!entry || (entry && entry.edgeCents < EDGE_MIN_CENTS)) ? ('edge below +' + EDGE_MIN_CENTS + 'c') : null,
+    ]);
     if (action !== 'skip' && timingProfile.promoteToTrade) {
       action = 'trade';
     } else if (action === 'trade' && timingProfile.phase === 'SETTLING') {
       action = 'watch';
     }
+    var exceptionalRecoveryCleared = [];
+    var mispricing = Number.isFinite(modelYesProb) && Number.isFinite(kalshiYesPrice)
+      ? Math.abs(modelYesProb - kalshiYesPrice)
+      : 0;
+    var canRecoverWithTiming = action !== 'trade'
+      && timingProfile.promoteToTrade
+      && Number.isFinite(timingProfile.timingScore)
+      && timingProfile.timingScore >= waitGuardThreshold
+      && entry
+      && Number.isFinite(entry.edgeCents)
+      && entry.edgeCents >= EXCEPTIONAL_RECOVERY_EDGE_CENTS
+      && mispricing >= EXCEPTIONAL_RECOVERY_MISPRICING
+      && !modelHardVeto
+      && !tooLate;
+    if (canRecoverWithTiming) {
+      if (logTunedDowngradeReason) {
+        exceptionalRecoveryCleared.push(logTunedDowngradeReason);
+        logTunedDowngradeReason = null;
+      }
+      if (softVetoDowngradeReason) {
+        exceptionalRecoveryCleared.push(softVetoDowngradeReason);
+        softVetoDowngradeReason = null;
+      }
+      if (finalConfidenceWeak && calibratedConfidence != null && calibratedConfidence >= (finalConfidenceFloor - 2)) {
+        exceptionalRecoveryCleared.push('final confidence floor');
+        finalConfidenceWeak = false;
+      }
+      if (exceptionalRecoveryCleared.length) {
+        action = 'trade';
+      }
+    }
+    var filteredTimingBlocks = timingProfile && Array.isArray(timingProfile.blocks)
+      ? timingProfile.blocks.slice()
+      : [];
+    if (exceptionalRecoveryCleared.length) {
+      filteredTimingBlocks = filteredTimingBlocks.filter(function (reason) {
+        if (!reason) return false;
+        if (reason === 'final model confidence weak') return false;
+        return exceptionalRecoveryCleared.indexOf(reason) === -1;
+      });
+      stageDiagnostics.tunedRecovery = {
+        activated: true,
+        timingScore: timingProfile.timingScore,
+        edgeCents: entry && Number.isFinite(entry.edgeCents) ? entry.edgeCents : null,
+        mispricing: parseFloat(mispricing.toFixed(4)),
+        cleared: exceptionalRecoveryCleared.slice(),
+      };
+    }
+    addStage('timing_regime', action === 'trade' || timingProfile.promoteToTrade, {
+      phase: timingProfile.phase,
+      timingLabel: timingProfile.timingLabel,
+      timingScore: timingProfile.timingScore,
+      waitGuardThreshold: waitGuardThreshold,
+      promoteToTrade: timingProfile.promoteToTrade,
+      closeValueQualified: timingProfile.closeValueQualified,
+      scalpQualified: timingProfile.scalpQualified,
+      finalSnipeQualified: timingProfile.finalSnipeQualified,
+      tunedRecovery: stageDiagnostics.tunedRecovery,
+    }, filteredTimingBlocks.slice(0, 4));
     if (action === 'skip')
-      return _skip(sym, 'Negative EV — edge ' + (entry ? entry.edgeCents : 0) + 'c (need >=' + EDGE_MIN_CENTS + 'c)');
+      return withStageDiagnostics(_skip(sym, 'Negative EV — edge ' + (entry ? entry.edgeCents : 0) + 'c (need >=' + EDGE_MIN_CENTS + 'c)'));
 
     // Tier 1: Sweet spot window (3–6 min left, payout >= 1.65x)
     var payout = entry ? entry.payoutMult : null;
@@ -889,14 +1414,16 @@
       : (modelSoftVeto ? ' · model caution: ' + (modelVetoReason || 'soft veto') : '');
     var timingTail = timingProfile && timingProfile.promoteToTrade
       ? ' · timing regime: ' + timingProfile.timingLabel + ' (' + timingProfile.reasons.join(', ') + ')'
-      : (timingProfile && timingProfile.blocks.length && action !== 'trade'
-        ? ' · timing watch: ' + timingProfile.blocks.slice(0, 2).join(', ')
+      : (timingProfile && filteredTimingBlocks.length && action !== 'trade'
+        ? ' · timing watch: ' + filteredTimingBlocks.slice(0, 2).join(', ')
         : '');
     var reasonMap = {
       ALIGNED: sym + ' ' + direction + ': ' + kPct + ' + ' + mPct + ' -> ' + edgeStr,
       DIVERGENT: sym + ': ' + mPct + ' vs ' + kPct + ' -> INVERSION — buy ' + side + ' cheap, house is wrong — ' + edgeStr,
       MODEL_LEADS: sym + ' ' + direction + ': ' + mPct + ' (Kalshi ~50/50, model ahead) -> ' + edgeStr,
       MODEL_ONLY: sym + ' ' + direction + ': ' + mPct + ' (no Kalshi data)',
+      MCTS_OVERRIDE: sym + ' ' + direction + ': MCTS override (' + (mctsResult && mctsResult.ran ? mctsResult.voteAction : '?')
+        + ', score ' + (mctsResult && mctsResult.ran ? mctsResult.voteStrength.toFixed(3) : 'n/a') + ') -> ' + edgeStr,
       KALSHI_ONLY: sym + ' ' + direction + ': ' + kPct + ' (' + (modelVetoed
         ? 'model vetoed' + (modelVetoReason ? ' — ' + modelVetoReason : '')
         : 'model score ' + modelScore.toFixed(3) + ' below threshold') + ')',
@@ -913,10 +1440,62 @@
     if (finalConfidenceWeak) blockedBy.push('final confidence floor');
     if (logTunedDowngradeReason) blockedBy.push(logTunedDowngradeReason);
     if (softVetoDowngradeReason) blockedBy.push(softVetoDowngradeReason);
-    if (tooEarly) blockedBy.push('open-window guard');
-    if (timingProfile && timingProfile.blocks && timingProfile.blocks.length) {
-      blockedBy = blockedBy.concat(timingProfile.blocks.slice(0, 3));
+    if (openWindowBlocked) blockedBy.push('open-window guard (' + OPEN_WINDOW_GUARD_SECS + 's)');
+    if (stalePrediction) blockedBy.push('prediction stale ' + Math.round(predictionAgeMs / 1000) + 's');
+    if (staleMarket) blockedBy.push('market stale ' + Math.round(marketAgeMs / 1000) + 's');
+    if (schedulerCooldownRemainingMs > 0) blockedBy.push('scheduler cooldown ' + Math.ceil(schedulerCooldownRemainingMs / 1000) + 's');
+    if (schedulerCircuitRemainingMs > 0) blockedBy.push('scheduler circuit ' + Math.ceil(schedulerCircuitRemainingMs / 1000) + 's');
+    if (timingProfile && filteredTimingBlocks.length) {
+      blockedBy = blockedBy.concat(filteredTimingBlocks.slice(0, 3));
     }
+    var waitGuardBlocked = action !== 'trade'
+      && !modelHardVeto
+      && !tooLate
+      && (
+        openWindowBlocked
+        || finalConfidenceWeak
+        || (timingProfile && Number.isFinite(timingProfile.timingScore) && timingProfile.timingScore < waitGuardThreshold)
+      );
+    var waitGuardDiagnostics = {
+      blocked: waitGuardBlocked,
+      threshold: waitGuardThreshold,
+      confidence: calibratedConfidence,
+      regime: regimeTag,
+      openWindowBlocked: openWindowBlocked,
+      openWindowBypassed: openWindowBypassed,
+      mctsVote: mctsResult && mctsResult.ran ? mctsResult.voteAction : null,
+      mctsVoteStrength: mctsResult && mctsResult.ran ? mctsResult.voteStrength : null,
+      mctsConfidenceModifier: mctsConfidenceModifier,
+    };
+    if (waitGuardBlocked) {
+      blockedBy.push(
+        'wait-guard threshold '
+        + waitGuardThreshold
+        + ' (conf ' + (Number.isFinite(calibratedConfidence) ? calibratedConfidence : 'n/a')
+        + ', regime ' + String(regimeTag || 'mixed')
+        + ', mcts ' + (waitGuardDiagnostics.mctsVote || 'n/a')
+        + '/' + (Number.isFinite(waitGuardDiagnostics.mctsVoteStrength) ? waitGuardDiagnostics.mctsVoteStrength.toFixed(3) : 'n/a')
+        + ')'
+      );
+    }
+    addStage('wait_guard', !waitGuardBlocked, {
+      blocked: waitGuardBlocked,
+      threshold: waitGuardThreshold,
+      timingScore: Number.isFinite(timingProfile && timingProfile.timingScore) ? timingProfile.timingScore : null,
+      confidence: calibratedConfidence,
+      regimeTag: regimeTag,
+      openWindowBlocked: openWindowBlocked,
+      openWindowBypassed: openWindowBypassed,
+      mctsVote: waitGuardDiagnostics.mctsVote,
+      mctsVoteStrength: waitGuardDiagnostics.mctsVoteStrength,
+      mctsConfidenceModifier: mctsConfidenceModifier,
+    }, waitGuardBlocked ? [blockedBy[blockedBy.length - 1]] : []);
+    addStage('final_action', action === 'trade', {
+      action: action,
+      alignment: alignment,
+      side: side,
+      blockedBy: blockedBy.slice(0, 4),
+    }, action === 'trade' ? [] : blockedBy.slice(0, 4));
     var strikeStr = null;
     if (k15 && k15.ticker) {
       var tm = k15.ticker.match(/T(\d+(?:\.\d+)?)$/);
@@ -925,6 +1504,7 @@
     var result = {
       sym: sym, contractTicker: k15 ? k15.ticker : null, strikeStr: strikeStr,
       side: side, direction: direction, alignment: alignment, action: action, confidence: confidence,
+      baseConfidence: baseConfidence,
       finalModelConfidence: calibratedConfidence,
       modelVetoed: modelVetoed,
       modelVetoSeverity: modelVetoSeverity || (modelHardVeto ? 'hard' : (modelSoftVeto ? 'soft' : 'none')),
@@ -934,6 +1514,12 @@
       modelScore: modelScore, modelProbUp: parseFloat(modelProbUp.toFixed(4)),
       modelProbYes: parseFloat(modelYesProb.toFixed(4)),
       kalshiYesPrice: kalshiYesPrice, kalshiActive: kalshiActive,
+      predictionTs: predictionTs,
+      predictionAgeMs: predictionAgeMs,
+      marketAgeMs: marketAgeMs,
+      transportMode: transportMode,
+      schedulerCooldownRemainingMs: schedulerCooldownRemainingMs,
+      schedulerCircuitRemainingMs: schedulerCircuitRemainingMs,
       closeTimeMs: closeTimeMs,
       msLeft: msLeft != null ? Math.round(msLeft) : null,
       secsLeft: secsLeft != null ? parseFloat(secsLeft.toFixed(1)) : null,
@@ -948,7 +1534,7 @@
       timingLabel: timingProfile.timingLabel,
       timingScore: timingProfile.timingScore,
       timingReasons: timingProfile.reasons,
-      timingBlocks: timingProfile.blocks,
+      timingBlocks: filteredTimingBlocks,
       closeValue: !!timingProfile.closeValueQualified,
       closeValueCandidate: !!timingProfile.closeValueCandidate,
       scalpFlip: !!timingProfile.scalpQualified,
@@ -960,10 +1546,28 @@
       microToxicity: timingProfile.toxicity,
       timingAdaptive: timingProfile.adaptiveTiming,
       missedOpportunityScore: action === 'watch' ? timingProfile.timingScore : 0,
+      regimeTag: regimeTag,
+      mcts: mctsResult && mctsResult.ran ? {
+        ran: true,
+        voteAction: mctsResult.voteAction,
+        voteStrength: mctsResult.voteStrength,
+        directionalGap: mctsResult.directionalGap,
+        scores: mctsResult.scores,
+        confidenceModifier: mctsConfidenceModifier,
+        simulations: mctsResult.simulations,
+        depth: mctsResult.depth,
+        exploration: mctsResult.exploration,
+        directionOverrode: mctsDirectionOverrode,
+      } : {
+        ran: false,
+        reason: mctsResult && mctsResult.reason ? mctsResult.reason : 'unavailable',
+      },
+      waitGuardDiagnostics: waitGuardDiagnostics,
       logTunedDowngrade: !!logTunedDowngradeReason,
       logTunedDowngradeReason: logTunedDowngradeReason,
       softVetoDowngradeReason: softVetoDowngradeReason,
       blockedBy: blockedBy.filter(Boolean),
+      stageDiagnostics: stageDiagnostics,
     };
     if (entry) Object.assign(result, entry);
 
@@ -1079,10 +1683,124 @@
       try { intents[sym] = translate(sym, predAll && predAll[sym], cfmAll && cfmAll[sym]); }
       catch (e) { intents[sym] = _skip(sym, 'Error: ' + e.message); }
     });
+    recordLiveCalibrationTelemetry(intents);
     return intents;
   }
 
   var _cache = {};
+  var _liveCalibrationState = {
+    events: [],
+    lastFingerprintBySym: {},
+  };
+  function isCalibrationCoin(sym) {
+    var s = String(sym || '').toUpperCase();
+    return s === 'BTC' || s === 'ETH';
+  }
+  function _is15mIntent(intent) {
+    var ticker = intent && intent.contractTicker ? String(intent.contractTicker) : '';
+    return !ticker || /15M/i.test(ticker);
+  }
+  function _trimCalibrationEvents() {
+    var cap = Math.max(40, LIVE_CALIBRATION_EVENT_WINDOW * 3);
+    if (_liveCalibrationState.events.length > cap) {
+      _liveCalibrationState.events = _liveCalibrationState.events.slice(-cap);
+    }
+  }
+  function _calibrationFingerprint(intent) {
+    return [
+      intent && intent.contractTicker ? intent.contractTicker : 'na',
+      intent && intent.action ? intent.action : 'na',
+      intent && intent.direction ? intent.direction : 'na',
+      intent && intent.alignment ? intent.alignment : 'na',
+      intent && intent.waitGuardDiagnostics && intent.waitGuardDiagnostics.blocked ? 'wg1' : 'wg0',
+      intent && intent.modelHardVeto ? 'hv1' : 'hv0',
+      intent && intent.modelSoftVeto ? 'sv1' : 'sv0',
+      intent && intent.stageDiagnostics && intent.stageDiagnostics.timing ? Math.round(Number(intent.stageDiagnostics.timing.predictionAgeMs || 0) / 10000) : 'pa0',
+      intent && intent.stageDiagnostics && intent.stageDiagnostics.timing ? Math.round(Number(intent.stageDiagnostics.timing.marketAgeMs || 0) / 5000) : 'ma0',
+      intent && intent.mcts && intent.mcts.directionOverrode ? 'mo1' : 'mo0',
+    ].join('|');
+  }
+  function _isStaleDataBlocked(intent) {
+    if (!intent || intent.action === 'trade') return false;
+    var stalePrediction = Number.isFinite(Number(intent.predictionAgeMs)) && Number(intent.predictionAgeMs) > PREDICTION_STALE_WARN_MS;
+    var staleMarket = Number.isFinite(Number(intent.marketAgeMs)) && Number(intent.marketAgeMs) > MARKET_STALE_WARN_MS;
+    return stalePrediction || staleMarket;
+  }
+  function _isVetoBlocked(intent) {
+    if (!intent || intent.action === 'trade') return false;
+    return !!(intent.modelHardVeto || intent.modelSoftVeto);
+  }
+  function _isWaitGuardBlocked(intent) {
+    return !!(intent && intent.waitGuardDiagnostics && intent.waitGuardDiagnostics.blocked);
+  }
+  function _isMctsOverrideUsed(intent) {
+    return !!(intent && intent.mcts && intent.mcts.ran && intent.mcts.directionOverrode);
+  }
+  function _isExecutedDirectionalIntent(intent) {
+    var dir = intent && intent.direction;
+    return !!(intent && intent.action === 'trade' && (dir === 'UP' || dir === 'DOWN'));
+  }
+  function recordLiveCalibrationTelemetry(intents) {
+    if (!intents || typeof intents !== 'object') return;
+    var now = Date.now();
+    Object.keys(intents).forEach(function (sym) {
+      if (!isCalibrationCoin(sym)) return;
+      var intent = intents[sym];
+      if (!intent || !_is15mIntent(intent)) return;
+      var fp = _calibrationFingerprint(intent);
+      if (_liveCalibrationState.lastFingerprintBySym[sym] === fp) return;
+      _liveCalibrationState.lastFingerprintBySym[sym] = fp;
+      _liveCalibrationState.events.push({
+        ts: now,
+        sym: sym,
+        waitGuardBlocked: _isWaitGuardBlocked(intent),
+        staleDataBlocked: _isStaleDataBlocked(intent),
+        vetoBlocked: _isVetoBlocked(intent),
+        mctsOverrideUsed: _isMctsOverrideUsed(intent),
+        executedDirectionalIntent: _isExecutedDirectionalIntent(intent),
+        action: intent.action || null,
+      });
+    });
+    _trimCalibrationEvents();
+  }
+  function getLiveCalibrationTelemetry() {
+    var recent = _liveCalibrationState.events.slice(-LIVE_CALIBRATION_EVENT_WINDOW);
+    var counts = {
+      waitGuardBlocked: 0,
+      staleDataBlocked: 0,
+      vetoBlocked: 0,
+      mctsOverrideUsed: 0,
+      executedDirectionalIntents: 0,
+    };
+    var bySymbol = {};
+    recent.forEach(function (event) {
+      if (!event || !event.sym) return;
+      if (!bySymbol[event.sym]) {
+        bySymbol[event.sym] = {
+          samples: 0,
+          waitGuardBlocked: 0,
+          staleDataBlocked: 0,
+          vetoBlocked: 0,
+          mctsOverrideUsed: 0,
+          executedDirectionalIntents: 0,
+        };
+      }
+      var bucket = bySymbol[event.sym];
+      bucket.samples += 1;
+      if (event.waitGuardBlocked) { counts.waitGuardBlocked += 1; bucket.waitGuardBlocked += 1; }
+      if (event.staleDataBlocked) { counts.staleDataBlocked += 1; bucket.staleDataBlocked += 1; }
+      if (event.vetoBlocked) { counts.vetoBlocked += 1; bucket.vetoBlocked += 1; }
+      if (event.mctsOverrideUsed) { counts.mctsOverrideUsed += 1; bucket.mctsOverrideUsed += 1; }
+      if (event.executedDirectionalIntent) { counts.executedDirectionalIntents += 1; bucket.executedDirectionalIntents += 1; }
+    });
+    return {
+      windowSize: LIVE_CALIBRATION_EVENT_WINDOW,
+      samples: recent.length,
+      counts: counts,
+      bySymbol: bySymbol,
+      updatedAt: recent.length ? recent[recent.length - 1].ts : null,
+    };
+  }
   window.KalshiOrchestrator = {
     translate: translate,
     resolveAll: resolveAll,
@@ -1090,6 +1808,7 @@
     analyseEntry: analyseEntry,
     getIntent: function (sym) { return _cache[sym] || null; },
     getAllIntents: function () { return _cache; },
+    getCalibrationTelemetry: getLiveCalibrationTelemetry,
     update: function (predAll, cfmAll) {
       _cache = resolveAll(predAll, cfmAll);
       return _cache;

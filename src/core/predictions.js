@@ -21,6 +21,26 @@
 (function () {
   'use strict';
 
+  const VERBOSE_PREDICTION_LOGS = (() => {
+    try {
+      return window.WECRYPTO_VERBOSE_PREDICTIONS === true || localStorage.getItem('wecrypto_verbose_predictions') === '1';
+    } catch (_) {
+      return false;
+    }
+  })();
+  const _predictionLogThrottle = new Map();
+
+  function predictionDebugLog(key, level, messageFactory, intervalMs = 10000) {
+    if (!VERBOSE_PREDICTION_LOGS) return;
+    const now = Date.now();
+    const last = _predictionLogThrottle.get(key) || 0;
+    if ((now - last) < intervalMs) return;
+    _predictionLogThrottle.set(key, now);
+    const msg = typeof messageFactory === 'function' ? messageFactory() : messageFactory;
+    const writer = console[level] || console.log;
+    writer.call(console, msg);
+  }
+
   const CDC_BASE = 'https://api.crypto.com/exchange/v1/public';
   const GECKO_BASE = 'https://api.coingecko.com/api/v3';
   const BIN_BASE = 'https://data-api.binance.vision/api/v3';  // market-data fallback after WS
@@ -275,6 +295,8 @@
     return out;
   }
 
+  const CLOSE_WINDOW_GUARD_SECS = 35;
+
   /**
    * Applies regime-based multipliers to a copy of baseWeights.
    * Only keys present in both objects are modified; others are unchanged.
@@ -514,28 +536,28 @@
     BTC: {
       minAbsScore: 0.35,  // ★ Safety patch 2026-05-14: Raised confidence floor from 44% → 70% to block low-qual h15 signals
       minAgreement: 0.50,
-      minConfidence: 70,   // ★★★ CRITICAL FIX: was 44%, now 70% to prevent lossy small-bet executions
+      minConfidence: 66,   // tuned 2026-05-17: retain strict floor while restoring high-quality missed opportunities
       medAbsScore: 0.52,
       medAgreement: 0.60,
     },
     ETH: {
       minAbsScore: 0.30,  // ★ Safety patch 2026-05-14: Raised confidence floor from 44% → 70%
       minAgreement: 0.56,
-      minConfidence: 70,   // ★★★ CRITICAL FIX: was 44%, now 70%
+      minConfidence: 66,   // tuned 2026-05-17: conservative relaxation for 15m signal recovery
       medAbsScore: 0.45,
       medAgreement: 0.62,
     },
     XRP: {
       minAbsScore: 0.30,  // ★ Safety patch 2026-05-14: Raised confidence floor from 50% → 70%
       minAgreement: 0.50,
-      minConfidence: 70,   // ★★★ CRITICAL FIX: was 50%, now 70%
+      minConfidence: 66,   // tuned 2026-05-17: conservative relaxation for 15m signal recovery
       medAbsScore: 0.45,
       medAgreement: 0.60,
     },
     SOL: {
       minAbsScore: 0.44,  // ★ Safety patch 2026-05-14: Raised confidence floor from 52% → 70%
       minAgreement: 0.54,
-      minConfidence: 70,   // ★★★ CRITICAL FIX: was 52%, now 70%
+      minConfidence: 66,   // tuned 2026-05-17: conservative relaxation for 15m signal recovery
       medAbsScore: 0.62,
       medAgreement: 0.66,
     },
@@ -549,7 +571,7 @@
     DOGE: {
       minAbsScore: 0.24,  // ★ Safety patch 2026-05-14: Raised confidence floor from 55% → 70%
       minAgreement: 0.56,
-      minConfidence: 70,   // ★★★ CRITICAL FIX: was 55%, now 70%
+      minConfidence: 66,   // tuned 2026-05-17: conservative relaxation for 15m signal recovery
       medAbsScore: 0.32,
       medAgreement: 0.62,
     },
@@ -572,7 +594,7 @@
    *
    * gated: true when quality === 'blocked' (signal should show HOLD in UI)
    *
-   * ★ SAFETY PATCH 2026-05-14: Added close-window guard (skip final 45s of 15m candle)
+   * ★ SAFETY PATCH 2026-05-14: Added close-window guard (skip final close seconds of 15m candle)
    * ★ REGIME-ADAPTIVE THRESHOLDS: Confidence adjusted based on market regime
    */
   function evaluateSignalGate(pred, coin, regime) {
@@ -580,13 +602,19 @@
       return { passed: true, gated: false, quality: 'medium', label: 'NEUTRAL', reasons: [] };
     }
 
-    // ★ SAFETY PATCH: Close-window guard — skip trading in final 45 seconds before h15 expiry
+    // ★ SAFETY PATCH: Close-window guard — skip trading in final close seconds before h15 expiry
     const now = Date.now();
     const secsSinceEpoch = (now % 900_000); // ms within any 15-min slot
     const secsIntoWindow = (secsSinceEpoch / 1000);
     const secsUntilClose = (900 - secsIntoWindow); // seconds until next 15m close
-    if (pred.horizon === 15 && secsUntilClose < 45) {
-      return { passed: false, gated: true, quality: 'blocked', label: '⏱️ CLOSE-WINDOW GUARD', reasons: ['Too close to 15m candle close (skip final 45s)'] };
+    if (pred.horizon === 15 && secsUntilClose < CLOSE_WINDOW_GUARD_SECS) {
+      return {
+        passed: false,
+        gated: true,
+        quality: 'blocked',
+        label: '⏱️ CLOSE-WINDOW GUARD',
+        reasons: [`Too close to 15m candle close (skip final ${CLOSE_WINDOW_GUARD_SECS}s)`]
+      };
     }
 
     const conf = pred.confidence ?? 0;
@@ -948,9 +976,12 @@
     lastExchangeRequestAt = Date.now();
   }
 
-  // Track consecutive 429s for circuit breaker (5+ consecutive → 60s pause)
+  // Track Gecko throttling/auth failures so a bad key or quota outage does not
+  // keep the hot prediction loop retrying and logging every cycle.
   let geckoConsecutive429s = 0;
   let geckoCircuitBreakerUntil = 0;
+  let geckoAuthFailureUntil = 0;
+  let geckoLastAuthWarnTs = 0;
 
   async function fetchGeckoJSON(path, options = {}) {
     const { minGapMs = 1800, retries = 3 } = options;  // Exponential backoff: 1s, 2s, 4s, 8s
@@ -958,8 +989,12 @@
 
     const run = async (attempt = 0) => {
       // Circuit breaker: if 5+ consecutive 429s, pause for 60s
-      if (geckoConsecutive429s >= 5 && Date.now() < geckoCircuitBreakerUntil) {
-        throw new Error(`Gecko circuit breaker open (${Math.ceil((geckoCircuitBreakerUntil - Date.now()) / 1000)}s remaining)`);
+      const nowCircuit = Date.now();
+      if (nowCircuit < geckoAuthFailureUntil) {
+        throw new Error(`Gecko auth circuit open (${Math.ceil((geckoAuthFailureUntil - nowCircuit) / 60000)}m remaining)`);
+      }
+      if (geckoConsecutive429s >= 5 && nowCircuit < geckoCircuitBreakerUntil) {
+        throw new Error(`Gecko rate-limit circuit open (${Math.ceil((geckoCircuitBreakerUntil - nowCircuit) / 1000)}s remaining)`);
       }
 
       const now = Date.now();
@@ -987,7 +1022,12 @@
       // Handle 401 auth errors
       if (res.status === 401) {
         geckoConsecutive429s = 0;
-        throw new Error(`Gecko 401 Unauthorized (API key expired)`);
+        geckoAuthFailureUntil = Date.now() + 15 * 60_000;
+        if ((Date.now() - geckoLastAuthWarnTs) > 60_000) {
+          geckoLastAuthWarnTs = Date.now();
+          console.warn('[Gecko] 401 Unauthorized; pausing CoinGecko fallback for 15m (API key expired)');
+        }
+        throw new Error('Gecko auth circuit open (API key expired)');
       }
 
       if (!res.ok) throw new Error(`Gecko ${res.status}`);
@@ -1381,6 +1421,7 @@
       const volumes = Array.isArray(json.total_volumes) ? json.total_volumes : [];
       return bucketGeckoSeries(prices, volumes, bucketMs);
     } catch (e) {
+      if (/Gecko auth circuit|Gecko rate-limit circuit|401 Unauthorized/i.test(String(e.message || e))) return [];
       console.warn(`[Gecko] market_chart failed for ${geckoId}:`, e.message);
       if (e.message.includes('429')) {
         console.warn(`[Gecko] Rate limited (429) for ${geckoId}, skipping candles fallback`);
@@ -1394,6 +1435,7 @@
       const json = await fetchGeckoJSON(`/simple/price?ids=${geckoId}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true`);
       return json[geckoId];
     } catch (e) {
+      if (/Gecko auth circuit|Gecko rate-limit circuit|401 Unauthorized/i.test(String(e.message || e))) return null;
       console.warn(`[Gecko] simple/price failed for ${geckoId}:`, e.message);
       if (e.message.includes('429')) {
         console.warn(`[Gecko] Rate limited (429) for ${geckoId}, skipping ticker fallback`);
@@ -1409,6 +1451,7 @@
       const volumes = Array.isArray(json.total_volumes) ? json.total_volumes : [];
       return bucketGeckoSeries(prices, volumes, 24 * 60 * 60 * 1000);
     } catch (e) {
+      if (/Gecko auth circuit|Gecko rate-limit circuit|401 Unauthorized/i.test(String(e.message || e))) return [];
       console.warn(`[Gecko] market_chart?days=max failed for ${geckoId}:`, e.message);
       if (e.message.includes('429')) {
         console.warn(`[Gecko] Rate limited (429) for ${geckoId}, skipping history fallback`);
@@ -4121,7 +4164,7 @@
         fundingRateSig = fundAnalysis.signal * 0.45;  // Weight: 45% of a single indicator
         microStructureMeta.funding = fundAnalysis;
         if (Math.abs(fundRate.rate) > 0.001) {
-          console.log(`[MicroSignals] ${options.sym} funding rate=${(fundRate.rate * 100).toFixed(3)}% → sig=${fundAnalysis.signal.toFixed(3)}`);
+          predictionDebugLog(`micro-funding:${options.sym}`, 'log', () => `[MicroSignals] ${options.sym} funding rate=${(fundRate.rate * 100).toFixed(3)}% -> sig=${fundAnalysis.signal.toFixed(3)}`, 15000);
         }
       }
 
@@ -4155,7 +4198,7 @@
           microStructureMeta.liquidity = liquidity;
           if (Math.abs(imbalanceData.imbalance) > 0.25) {
             const vel = imbalanceData.velocity?.value || 0;
-            console.log(`[MicroSignals] ${options.sym} book imbalance=${imbalanceData.imbalance.toFixed(3)} vel=${vel.toFixed(3)} type=${imbalanceSigData.type} → sig=${imbalanceSigData.signal.toFixed(3)}`);
+            predictionDebugLog(`micro-book:${options.sym}`, 'log', () => `[MicroSignals] ${options.sym} book imbalance=${imbalanceData.imbalance.toFixed(3)} vel=${vel.toFixed(3)} type=${imbalanceSigData.type} -> sig=${imbalanceSigData.signal.toFixed(3)}`, 7000);
           }
         }
       }
@@ -4173,7 +4216,7 @@
           const vacuumSigData = window.MicrostructureSignals.vacuumToSignal(vacuumData);
           liquidityVacuumSig = vacuumSigData.signal * 0.35;  // Weight: 35% of a single indicator
           microStructureMeta.vacuum = vacuumSigData;
-          console.log(`[MicroSignals] ${options.sym} vacuum risk=${vacuumData.risk.toFixed(3)} type=${vacuumSigData.type} zones=${vacuumData.zonesCount} → sig=${vacuumSigData.signal.toFixed(3)}`);
+          predictionDebugLog(`micro-vacuum:${options.sym}`, 'log', () => `[MicroSignals] ${options.sym} vacuum risk=${vacuumData.risk.toFixed(3)} type=${vacuumSigData.type} zones=${vacuumData.zonesCount} -> sig=${vacuumSigData.signal.toFixed(3)}`, 7000);
         }
       }
     }
@@ -4370,7 +4413,7 @@
 
     // Log consensus (only if meaningful)
     if ((bullCount >= 2 || bearCount >= 2) && Math.abs(liveRealtimeMomentum) > 0.05) {
-      console.log(`[CONSENSUS] ${options.sym}: direction=${consensusDirection > 0 ? 'BULL' : 'BEAR'} conf=${(consensusConfidence*100).toFixed(0)}% (${bullCount+bearCount} signals), mom=${momSig.toFixed(2)}`);
+      predictionDebugLog(`consensus:${options.sym}`, 'log', () => `[CONSENSUS] ${options.sym}: direction=${consensusDirection > 0 ? 'BULL' : 'BEAR'} conf=${(consensusConfidence*100).toFixed(0)}% (${bullCount+bearCount} signals), mom=${momSig.toFixed(2)}`, 10000);
     }
 
     const score = clamp(rawComposite * 1.6 * adxGate * divergenceSuppression * consensusAdjustment * (ENABLE_MDT_SCORE_MULT ? mdtScoreMult : 1) * _sessMult * (tapeVelocity.scoreBoostMult || 1), -1, 1);
@@ -4592,10 +4635,11 @@
             const cdfImpliedDir = modelYesPct >= 50 ? yesDir : noDir;
             const dirConflict = dir !== 'FLAT' && cdfImpliedDir !== dir;
             if (dirConflict) {
-              console.warn(
-                `[KalshiAlign] ⚠️ DIR CONFLICT ${options.sym}: ` +
-                `momentum=${dir} but CDF implies ${cdfImpliedDir} ` +
-                `(modelYesPct=${modelYesPct}% strike=${kalshiStDir} ref=${kalshiRef} price=${lastPrice.toFixed(2)})`
+              predictionDebugLog(
+                `kalshi-align:${options.sym}`,
+                'warn',
+                () => `[KalshiAlign] DIR CONFLICT ${options.sym}: momentum=${dir} but CDF implies ${cdfImpliedDir} (modelYesPct=${modelYesPct}% strike=${kalshiStDir} ref=${kalshiRef} price=${lastPrice.toFixed(2)})`,
+                15000
               );
             }
 
@@ -6369,7 +6413,12 @@
     };
     _recordLiveCueEntry(entry);
 
-    console.log(`[ExecCue][MICRO-VERIFY] ${sym} action=${entry.action} bias=${entry.bias.toFixed(3)} cues=${short}${risk ? ` risks=${risk}` : ''}`);
+    predictionDebugLog(
+      `exec-cue:${sym}`,
+      'log',
+      () => `[ExecCue][MICRO-VERIFY] ${sym} action=${entry.action} bias=${entry.bias.toFixed(3)} cues=${short}${risk ? ` risks=${risk}` : ''}`,
+      5000
+    );
     _liveCueVerify.remaining--;
     if (_liveCueVerify.remaining === 0) {
       console.log('[ExecCue][MICRO-VERIFY] Session verification logging complete; auto-disabled');
@@ -6400,12 +6449,14 @@
   }
 
   function computePrediction(coin, backtest = null) {
+    const computedTs = Date.now();
     const cache = candleCache[coin.sym];
     if (!cache || !cache.candles15m || cache.candles15m.length < 20) {
       return {
         sym: coin.sym, name: coin.name, color: coin.color, icon: coin.icon,
         price: cache?.ticker?.usd || 0,
         signal: 'neutral', confidence: 15, score: 0,
+        ts: computedTs, timestamp: computedTs,
         source: 'loading', candleCount: cache?.candles15m?.length || 0, updatedAt: '–',
         error: 'Insufficient data',
         indicators: {}, diagnostics: {}, volatility: { label: 'Unknown', atrPct: 0 },
@@ -6512,6 +6563,8 @@
       squeeze: detectSqueeze(coin.sym),
       // --- CVD ---
       cvd: calcCVD(cache.trades),
+      ts: computedTs,
+      timestamp: computedTs,
       source: cache.candles1m?.length
         ? `${cache.source}${effectiveBook?.source === 'orderbook-ws' ? ' + live book' : ''} + pooled 1m`
         : `${cache.source}${effectiveBook?.source === 'orderbook-ws' ? ' + live book' : ''}`,
@@ -6529,7 +6582,7 @@
         const ohlc = cache.candles;
         regime = window.RegimeClassifier.classifyRegime(closes, ohlc);
         if (regime) {
-          console.log(`[predictions] ${coin.sym} regime: ${regime.regime_state} (H=${regime.h_exponent.toFixed(2)}, VR=${regime.variance_ratio.toFixed(2)}, Ent=${regime.entropy_score.toFixed(2)}, conf=${regime.confidence})`);
+          predictionDebugLog(`regime:${coin.sym}`, 'log', () => `[predictions] ${coin.sym} regime: ${regime.regime_state} (H=${regime.h_exponent.toFixed(2)}, VR=${regime.variance_ratio.toFixed(2)}, Ent=${regime.entropy_score.toFixed(2)}, conf=${regime.confidence})`, 30000);
         }
       } catch (err) {
         console.warn(`[predictions] Regime classification error for ${coin.sym}:`, err.message);
@@ -6538,6 +6591,16 @@
 
     // PATCH1.10: attach signal quality gate (regime-adaptive)
     result.gate = evaluateSignalGate(result, coin.sym, regime);
+    result.diagnostics = {
+      ...(result.diagnostics || {}),
+      signalGate: {
+        passed: !!result.gate?.passed,
+        gated: !!result.gate?.gated,
+        quality: result.gate?.quality || null,
+        label: result.gate?.label || null,
+        reasons: Array.isArray(result.gate?.reasons) ? result.gate.reasons.slice(0, 6) : [],
+      },
+    };
 
     // PATCH6: Attach entry delay based on volatility
     if (window._adaptiveTuner) {
@@ -6778,12 +6841,23 @@
                   signal: basePrediction.signal,
                 });
 
-                if (tunedBias) {
+                const hasScoreTune = tunedBias && (
+                  Object.prototype.hasOwnProperty.call(tunedBias, 'tunedScore') ||
+                  Object.prototype.hasOwnProperty.call(tunedBias, 'tunedConfidence') ||
+                  Object.prototype.hasOwnProperty.call(tunedBias, 'biasBoost')
+                );
+                if (hasScoreTune) {
+                  const biasBoost = Number.isFinite(Number(tunedBias.biasBoost)) ? Number(tunedBias.biasBoost) : 0;
                   basePrediction.score = tunedBias.tunedScore ?? basePrediction.score;
                   basePrediction.confidence = tunedBias.tunedConfidence ?? basePrediction.confidence;
                   basePrediction.h15TunerApplied = true;
-                  basePrediction.h15BiasBoost = tunedBias.biasBoost ?? 0;
-                  console.log(`[runAll] h15-tuner: boosting ${coin.sym} → score=${(basePrediction.score).toFixed(3)} conf=${basePrediction.confidence}% (bias=${(tunedBias.biasBoost).toFixed(3)})`);
+                  basePrediction.h15BiasBoost = biasBoost;
+                  predictionDebugLog(
+                    `h15-score-tune:${coin.sym}`,
+                    'log',
+                    () => `[runAll] h15-tuner: boosting ${coin.sym} -> score=${Number(basePrediction.score || 0).toFixed(3)} conf=${basePrediction.confidence}% (bias=${biasBoost.toFixed(3)})`,
+                    30000
+                  );
                 }
               } catch (tunerErr) {
                 console.warn(`[runAll] h15-tuner error for ${coin.sym}:`, tunerErr.message);
@@ -6796,10 +6870,12 @@
             window._predictions[coin.sym] = basePrediction;
           } catch (cpErr) {
             console.error('[runAll] computePrediction crash:', coin.sym, cpErr);
+            const fallbackTs = Date.now();
             window._predictions[coin.sym] = {
               sym: coin.sym, name: coin.name, color: coin.color, icon: coin.icon,
               price: candleCache?.[coin.sym]?.ticker?.usd || 0,
               signal: 'neutral', confidence: 10, score: 0,
+              ts: fallbackTs, timestamp: fallbackTs,
               source: 'error', candleCount: candleCache?.[coin.sym]?.candles?.length || 0, updatedAt: new Date().toLocaleTimeString(),
               error: cpErr.message || 'Compute error',
               indicators: {}, diagnostics: {}, volatility: { label: 'Unknown', atrPct: 0 },

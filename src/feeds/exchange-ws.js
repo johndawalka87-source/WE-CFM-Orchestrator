@@ -234,8 +234,10 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
   function bindCloseReconnect(name, reconnectFn) {
     const c = conn(name);
     if (!c.ws) return;
+    const socket = c.ws;
     c.extra.lastFailureAt = 0;
-    c.ws.onclose = (ev) => {
+    socket.onclose = (ev) => {
+      if (c.ws !== socket) return;
       c.ws = null;
       if (c.extra.pingTimer) {
         clearInterval(c.extra.pingTimer);
@@ -250,10 +252,11 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
       }
       scheduleReconnect(name, reconnectFn);
     };
-    c.ws.onerror = () => {
+    socket.onerror = () => {
+      if (c.ws !== socket) return;
       c.extra.lastFailureAt = Date.now();
       recordFailure(name);
-      try { c.ws && c.ws.close(); } catch (_) { }
+      try { socket.close(); } catch (_) { }
     };
   }
 
@@ -505,7 +508,9 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
     const name = 'KUCOIN';
     const c = conn(name);
     if (!c.active) return;
+    if (c.extra.connecting) return;
     if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
+    c.extra.connecting = true;
     try {
       const res = await fetch('https://api.kucoin.com/api/v1/bullet-public', { method: 'POST' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -514,19 +519,27 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
       const token = body?.data?.token;
       if (!endpoint || !token) throw new Error('No KuCoin token/endpoint');
       const connectId = `wecrypto-${Math.random().toString(36).slice(2)}`;
-      c.ws = new WebSocket(`${endpoint}?token=${token}&connectId=${connectId}`);
-      c.ws.onopen = () => {
+      const socket = new WebSocket(`${endpoint}?token=${token}&connectId=${connectId}`);
+      c.ws = socket;
+      c.extra.connecting = false;
+      socket.onopen = () => {
+        if (c.ws !== socket || socket.readyState !== WebSocket.OPEN) return;
         c.reconnectMs = RECONNECT_BASE_MS;
         recordSuccess('KUCOIN');
         const pairs = Object.values(MAP.KUCOIN).join(',');
-        c.ws.send(JSON.stringify({ id: Date.now(), type: 'subscribe', topic: `/market/ticker:${pairs}`, privateChannel: false, response: true }));
-        c.ws.send(JSON.stringify({ id: Date.now() + 1, type: 'subscribe', topic: `/market/match:${pairs}`, privateChannel: false, response: true }));
+        socket.send(JSON.stringify({ id: Date.now(), type: 'subscribe', topic: `/market/ticker:${pairs}`, privateChannel: false, response: true }));
+        socket.send(JSON.stringify({ id: Date.now() + 1, type: 'subscribe', topic: `/market/match:${pairs}`, privateChannel: false, response: true }));
         if (c.extra.pingTimer) clearInterval(c.extra.pingTimer);
         c.extra.pingTimer = setInterval(() => {
-          try { c.ws && c.ws.readyState === WebSocket.OPEN && c.ws.send(JSON.stringify({ id: Date.now(), type: 'ping' })); } catch (_) { }
+          try {
+            if (c.ws === socket && socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify({ id: Date.now(), type: 'ping' }));
+            }
+          } catch (_) { }
         }, 18000);
       };
-      c.ws.onmessage = (ev) => {
+      socket.onmessage = (ev) => {
+        if (c.ws !== socket) return;
         recordSuccess('KUCOIN');
         let msg;
         try { msg = JSON.parse(ev.data); } catch (_) { return; }
@@ -556,6 +569,7 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
       };
       bindCloseReconnect(name, connectKuCoin);
     } catch (_) {
+      c.extra.connecting = false;
       scheduleReconnect(name, connectKuCoin);
     }
   }

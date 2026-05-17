@@ -27,6 +27,7 @@
   const WSS_MAX_DEMOTE_HOLD_MS = 60_000;
   const WSS_RECOVERY_WINDOW_MS = 120_000;
   const WSS_RECOVERY_MAX_ATTEMPTS = 8;
+  const HEALTHY_OK_MAX_AGE_MS = 90_000;
   const PROVIDER_ROLE = {
     kalshi: 'critical',
     polymarket: 'critical',
@@ -54,6 +55,7 @@
   let lastKalshiRouteRecoveryTs = 0;
   let lastKalshiDecisionKey = '';
   let lastKalshiDecisionTs = 0;
+  let lastKalshiDemoteReason = '';
   let kalshiDemotedSinceTs = 0;
   let kalshiRecoveryWindowStartTs = 0;
   let kalshiRecoveryAttemptsInWindow = 0;
@@ -86,6 +88,38 @@
       msg.includes('networkchanged') ||
       msg.includes('network changed')
     );
+  }
+
+  function _classifyTransportBucket(err, provider, transport) {
+    const text = String(err?.message || err || '').toLowerCase();
+    if (/browser websocket cannot send|requires node ws|credential|crypto unavailable|signature generation|kalshi-api-key\.txt not found|auth-header-failed/.test(text)) {
+      return {
+        bucket: 'app/logic',
+        bucketReason: String(err?.message || err || `${provider}:${transport} local auth capability/configuration issue`),
+      };
+    }
+    if (/http\s*(401|403|404|429|5\d\d)|unauthorized|forbidden|not found|rate limit|upstream/.test(text)) {
+      return {
+        bucket: 'provider/api',
+        bucketReason: String(err?.message || err || 'upstream API reject'),
+      };
+    }
+    if (/stale[-\s]*watchdog|demote|hysteresis|scheduler|circuit|oscillat|internal/.test(text)) {
+      return {
+        bucket: 'app/logic',
+        bucketReason: String(err?.message || err || `${provider}:${transport} internal handling issue`),
+      };
+    }
+    if (/event:error/.test(text) && /readystate=3/.test(text)) {
+      return {
+        bucket: 'network/transport',
+        bucketReason: 'websocket connect failure (readyState=3 before open)',
+      };
+    }
+    return {
+      bucket: 'network/transport',
+      bucketReason: String(err?.message || err || `${provider}:${transport} transport failure`),
+    };
   }
 
   function providerRole(provider) {
@@ -453,12 +487,26 @@
       ws: {
         connected: !!wsState.connected,
         stale: !!wsState.stale,
+        suspended: !!wsState.suspended,
+        suspendUntil: wsState.suspendUntil || null,
+        suspendInMs: wsState.suspendInMs || 0,
+        suspendReason: wsState.suspendReason || '',
+        suspendLevel: wsState.suspendLevel || 0,
         reconnectAttempts: wsState.reconnectAttempts || 0,
         reconnectInMs: wsState.reconnectInMs || 0,
         lastMessageTs: wsState.lastMessageTs || null,
         lastCloseReason: wsState.lastCloseReason || '',
         lastError: wsState.lastError || '',
         lastFailureClass: wsState.lastFailureClass || '',
+        lastDemoteReason: lastKalshiDemoteReason || '',
+        lastConnectAttempt: wsState.lastConnectAttempt || null,
+        lastConnectAttemptResult: wsState.lastConnectAttempt?.status || '',
+        lastAuthStatus: wsState.lastAuthStatus || '',
+        lastAuthError: wsState.lastAuthError || '',
+        lastHandshakeStatus: wsState.lastHandshakeStatus || '',
+        lastHandshakeError: wsState.lastHandshakeError || '',
+        lastIssueBucket: wsState.lastIssueBucket || '',
+        lastIssueReason: wsState.lastIssueReason || '',
       },
       route: {
         reason: lastRouteChangeReason,
@@ -490,10 +538,13 @@
     }
     scheduleTransportHealthSync();
     try {
+      const bucketMeta = err ? _classifyTransportBucket(err, provider, transport) : { bucket: 'unknown', bucketReason: '' };
       window.NetworkLog?.record?.(ok ? 'TRANSPORT_OK' : 'TRANSPORT_FAIL', {
         url: `${provider}://${transport}`,
         error: err ? String(err.message || err) : '',
         provider,
+        bucket: bucketMeta.bucket,
+        bucketReason: bucketMeta.bucketReason,
       });
     } catch (_) { }
   }
@@ -767,11 +818,17 @@
     const reason = String(opts.reason || 'ensure');
     const st = ws.getState?.();
     if (opts.force && ws.reconnectNow) {
+      if (ws.forceRetry && st?.suspended) {
+        ws.forceRetry(reason);
+        return;
+      }
       logKalshiWsDecision('force-reconnect', {
         reason,
         reconnectAttempts: st?.reconnectAttempts || 0,
         connected: !!st?.connected,
         stale: !!st?.stale,
+        suspended: !!st?.suspended,
+        suspendInMs: st?.suspendInMs || 0,
         connecting: !!st?.connecting,
       });
       ws.reconnectNow(reason);
@@ -786,6 +843,15 @@
       return;
     }
     if (st?.connected && !st?.stale) return;
+    if (st?.suspended) {
+      logKalshiWsDecision('connect-skipped-suspended', {
+        reason,
+        suspendInMs: st.suspendInMs || 0,
+        suspendReason: st.suspendReason || '',
+      });
+      scheduleTransportHealthSync();
+      return;
+    }
     logKalshiWsDecision('connect-attempt', {
       reason,
       connected: !!st?.connected,
@@ -1041,21 +1107,29 @@
       try {
         const ws = getWsState();
         const stability = evaluateKalshiWssStability(ws);
+        const streamFallback = selectKalshiStreamFallback();
         if (!stability.connected) {
           kalshiDemotedSinceTs = kalshiDemotedSinceTs || Date.now();
           updateSourceHealth('kalshi', 'wss', 'kalshi-market-stream', false, {
             stale: true,
             error: 'wss disconnected',
           });
-          updateDomainSelection('kalshi-market-stream', 'kalshi:rpc', 'wss-disconnected-demote');
+          const demoteReason = `wss-disconnected-demote:${streamFallback.reason}`;
+          lastKalshiDemoteReason = demoteReason;
+          updateDomainSelection('kalshi-market-stream', `kalshi:${streamFallback.transport}`, demoteReason);
           logKalshiWsDecision('demote-disconnected', {
+            selected: `kalshi:${streamFallback.transport}`,
+            demoteReason,
             stale: !!ws.stale,
+            suspended: !!ws.suspended,
+            suspendInMs: ws.suspendInMs || 0,
+            suspendReason: ws.suspendReason || '',
             reconnectAttempts: ws.reconnectAttempts || 0,
             reconnectInMs: ws.reconnectInMs || 0,
             lastCloseReason: ws.lastCloseReason || '',
             lastError: ws.lastError || '',
           });
-          if ((Date.now() - lastKalshiWsRecoveryTs) > 20_000 && shouldAttemptKalshiWsRecovery('disconnect')) {
+          if (!ws.suspended && (Date.now() - lastKalshiWsRecoveryTs) > 20_000 && shouldAttemptKalshiWsRecovery('disconnect')) {
             lastKalshiWsRecoveryTs = Date.now();
             ensureKalshiWs({ force: true, reason: 'disconnect-pulse-recovery' });
           }
@@ -1069,6 +1143,7 @@
               : (stability.shouldPromote ? 'wss-stable-repromote' : 'wss-healthy');
             updateDomainSelection('kalshi-market-stream', 'kalshi:wss', reason);
             kalshiDemotedSinceTs = 0;
+            lastKalshiDemoteReason = '';
             logKalshiWsDecision('promote-wss', {
               reason,
               stableForMs: stability.stableForMs || 0,
@@ -1083,15 +1158,25 @@
             stale: true,
             error: `wss stale (${stability.staleWindows || 0} windows)`,
           });
-          const reason = stability.shouldDemote ? 'wss-stale-demote-hysteresis' : 'wss-stale-held';
-          updateDomainSelection('kalshi-market-stream', 'kalshi:rpc', reason);
+          const baseReason = stability.shouldDemote ? 'wss-stale-demote-hysteresis' : 'wss-stale-held';
+          const reason = `${baseReason}:${streamFallback.reason}`;
+          lastKalshiDemoteReason = reason;
+          updateDomainSelection('kalshi-market-stream', `kalshi:${streamFallback.transport}`, reason);
           logKalshiWsDecision('demote-stale', {
             reason,
+            selected: `kalshi:${streamFallback.transport}`,
             staleWindows: stability.staleWindows || 0,
             staleForMs: stability.staleForMs || 0,
             staleAgeMs: stability.staleAgeMs || 0,
           });
           if (stability.shouldDemote && (Date.now() - lastKalshiWsRecoveryTs) > 20_000 && shouldAttemptKalshiWsRecovery('stale')) {
+            if (ws.suspended) {
+              logKalshiWsDecision('recovery-skipped-suspended', {
+                reason: 'stale',
+                suspendInMs: ws.suspendInMs || 0,
+              });
+              return;
+            }
             lastKalshiWsRecoveryTs = Date.now();
             ensureKalshiWs({ force: true, reason: 'stale-pulse-recovery' });
           }
@@ -1106,6 +1191,59 @@
       } catch (_) { }
       scheduleTransportHealthSync();
     }, 5_000);
+  }
+
+  function transportLikelyHealthy(provider, transport) {
+    const row = stats[`${provider}:${transport}`];
+    if (!row) return false;
+    if ((row.ok || 0) <= 0) return false;
+    const lastOk = Number(row.lastOk || 0);
+    const lastFail = Number(row.lastFail || 0);
+    if (!lastOk || (Date.now() - lastOk) > HEALTHY_OK_MAX_AGE_MS) return false;
+    return lastOk >= lastFail;
+  }
+
+  function transportHasRecentDomainSuccess(provider, transport, domainHints = [], maxAgeMs = HEALTHY_OK_MAX_AGE_MS) {
+    const now = Date.now();
+    const hints = (Array.isArray(domainHints) ? domainHints : []).map((h) => String(h || '').toLowerCase()).filter(Boolean);
+    for (const row of sourceState.values()) {
+      if (!row || row.provider !== provider || row.transport !== transport) continue;
+      const domain = String(row.domain || '').toLowerCase();
+      if (hints.length && !hints.some((hint) => domain.includes(hint))) continue;
+      const lastOk = Number(row.lastOk || 0);
+      const lastFail = Number(row.lastFail || 0);
+      if (!lastOk) continue;
+      if ((now - lastOk) > maxAgeMs) continue;
+      if (lastOk < lastFail) continue;
+      return true;
+    }
+    return false;
+  }
+
+  function selectKalshiStreamFallback() {
+    const httpHealthy = transportLikelyHealthy('kalshi', 'http');
+    const rpcHealthy = transportLikelyHealthy('kalshi', 'rpc');
+    const httpRecentSuccess = transportHasRecentDomainSuccess('kalshi', 'http', ['kalshi-markets', 'kalshi-settlement', 'kalshi-market']);
+    const rpcRecentSuccess = transportHasRecentDomainSuccess('kalshi', 'rpc', ['kalshi-markets', 'kalshi-settlement', 'kalshi-market']);
+
+    // If WSS is unavailable, avoid defaulting to RPC when RPC has no recent success
+    // and HTTP has proven recent success on Kalshi domains.
+    if (!rpcHealthy && !rpcRecentSuccess && httpRecentSuccess) {
+      return { transport: 'http', reason: 'http-recent-success-rpc-unhealthy' };
+    }
+    if (httpHealthy && !rpcHealthy) {
+      return { transport: 'http', reason: 'http-healthy-rpc-unhealthy' };
+    }
+    if (rpcHealthy) {
+      return { transport: 'rpc', reason: rpcRecentSuccess ? 'rpc-healthy-recent-success' : 'rpc-healthy' };
+    }
+    if (httpHealthy) {
+      return { transport: 'http', reason: httpRecentSuccess ? 'http-healthy-recent-success' : 'http-healthy' };
+    }
+    if (httpRecentSuccess && !rpcRecentSuccess) {
+      return { transport: 'http', reason: 'http-recent-success-no-rpc-success' };
+    }
+    return { transport: 'rpc', reason: rpcRecentSuccess ? 'rpc-recent-success-default' : 'rpc-default-no-recent-http-success' };
   }
 
   ensureIngestionBus();

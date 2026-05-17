@@ -1,7 +1,9 @@
 const { app, BrowserWindow, Menu, shell, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const fsp = fs.promises;
 const { spawn } = require('child_process');
+const { loadKalshiCredentials, buildKalshiWsAuthHeaders } = require('./kalshi-credentials.js');
 
 // Prevent startup crashes when stdout/stderr pipes are unavailable (EPIPE)
 function _isBrokenPipe(err) {
@@ -627,106 +629,107 @@ ipcMain.handle('pyth:getProxyLatest', async (_, feedIds) => {
 
 // ── IPC: Kalshi credentials loader ─────────────────────────────────────────
 ipcMain.handle('kalshi:loadCredentials', async () => {
-  try {
-    const credPath = path.join(__dirname, '../secrets/KALSHI-API-KEY.txt');
-    if (!fs.existsSync(credPath)) {
-      return {
-        success: false,
-        error: 'KALSHI-API-KEY.txt not found'
-      };
-    }
-
-    const content = fs.readFileSync(credPath, 'utf8');
-    const lines = content.split('\n').map(l => l.trim()).filter(Boolean);
-
-    if (lines.length < 5) {
-      return {
-        success: false,
-        error: 'Invalid credential file format'
-      };
-    }
-
-    const apiKeyId = lines[0];
-    const privateKeyPem = lines.slice(4).join('\n');
-
-    return {
-      success: true,
-      apiKeyId,
-      privateKeyPem
-    };
-  } catch (error) {
-    return {
-      success: false,
-      error: error.message
-    };
+  const result = loadKalshiCredentials({ app });
+  if (result.success) {
+    console.log(`[Kalshi] Credentials loaded from ${result.path}`);
+  } else {
+    console.warn(`[Kalshi] Credential load failed: ${result.error}`);
   }
+  return result;
+});
+
+ipcMain.handle('kalshi:wsAuthHeaders', async () => {
+  const result = buildKalshiWsAuthHeaders({ app });
+  if (result.success) {
+    console.log(`[Kalshi] WSS auth headers signed from ${result.path}`);
+  } else {
+    console.warn(`[Kalshi] WSS auth header signing failed: ${result.error}`);
+  }
+  return result;
 });
 
 // ── IPC: File system helpers for DataLogger ────────────────────────────────
 ipcMain.handle('data:ensureDir', async (_, dirPath) => {
-  try { fs.mkdirSync(dirPath, { recursive: true }); return true; }
+  try { await fsp.mkdir(dirPath, { recursive: true }); return true; }
   catch (e) { return false; }
 });
 
 ipcMain.handle('data:appendLine', async (_, filePath, line) => {
   try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.appendFileSync(filePath, line + '\n', 'utf8');
+    await fsp.mkdir(path.dirname(filePath), { recursive: true });
+    await fsp.appendFile(filePath, line + '\n', 'utf8');
     return true;
   } catch (e) { return false; }
 });
 
 ipcMain.handle('data:writeFile', async (_, filePath, content) => {
   try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, content, 'utf8');
+    await fsp.mkdir(path.dirname(filePath), { recursive: true });
+    await fsp.writeFile(filePath, content, 'utf8');
     return true;
   } catch (e) { return false; }
 });
 
 ipcMain.handle('data:readFile', async (_, filePath) => {
   try {
-    if (!fs.existsSync(filePath)) return { ok: false, notFound: true };
-    return { ok: true, content: fs.readFileSync(filePath, 'utf8') };
+    try {
+      await fsp.access(filePath, fs.constants.R_OK);
+    } catch (_) {
+      return { ok: false, notFound: true };
+    }
+    return { ok: true, content: await fsp.readFile(filePath, 'utf8') };
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
 ipcMain.handle('data:listDir', async (_, dirPath) => {
   try {
-    if (!fs.existsSync(dirPath)) return { ok: false, notFound: true };
-    return { ok: true, entries: fs.readdirSync(dirPath) };
+    try {
+      await fsp.access(dirPath, fs.constants.R_OK);
+    } catch (_) {
+      return { ok: false, notFound: true };
+    }
+    return { ok: true, entries: await fsp.readdir(dirPath) };
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
 // ── IPC: Log network errors to COPILOT_DEBUG ──────────────────────────────────
+const NETWORK_LOG_DEDUPE_MS = 5000;
+const networkLogDedupe = new Map();
+let networkLogQueue = Promise.resolve();
+
+function getNetworkLogRoots() {
+  const roots = [];
+  const envRoots = String(process.env.WECRYPTO_NETWORK_LOG_ROOTS || '')
+    .split(/[;,]/)
+    .map(s => s.trim())
+    .filter(Boolean);
+  roots.push(...envRoots);
+  roots.push(process.env.WECRYP_HOME, process.env.WECRYPTO_HOME, path.resolve(__dirname, '..'));
+  try { roots.push(app.getPath('userData')); } catch (_) { }
+  return [...new Set(roots.filter(Boolean).map(root => path.normalize(root)))];
+}
+
 ipcMain.handle('network:logError', async (_, errorType, details) => {
   try {
     const timestamp = new Date().toISOString();
-    const logLine = `[${timestamp}] ${errorType} | ${details}`;
+    const safeDetails = String(details || '').slice(0, 1800);
+    const dedupeKey = `${errorType}|${safeDetails.slice(0, 180)}`;
+    const now = Date.now();
+    const lastSeen = networkLogDedupe.get(dedupeKey) || 0;
+    if ((now - lastSeen) < NETWORK_LOG_DEDUPE_MS) return true;
+    networkLogDedupe.set(dedupeKey, now);
+    const logLine = `[${timestamp}] ${errorType} | ${safeDetails}`;
 
-    const logRoots = new Set([
-      'F:\\WECRYP',
-      'D:\\WECRYP',
-    ]);
-
-    try {
-      const drives = await ipcMain._invokeHandler('storage:getDrives', { sender: null });
-      for (const drive of Array.isArray(drives) ? drives : []) {
-        if (drive?.type !== 'network' || !drive?.root) continue;
-        logRoots.add(path.join(drive.root, 'WECRYP'));
+    networkLogQueue = networkLogQueue.then(async () => {
+      for (const root of getNetworkLogRoots()) {
+        try {
+          const debugDir = path.join(root, 'COPILOT_DEBUG');
+          await fsp.mkdir(debugDir, { recursive: true });
+          await fsp.appendFile(path.join(debugDir, 'network-errors.log'), logLine + '\n', 'utf8');
+        } catch (_) { }
       }
-    } catch (_) { }
+    }).catch(() => { });
 
-    for (const root of logRoots) {
-      try {
-        const debugDir = path.join(root, 'COPILOT_DEBUG');
-        fs.mkdirSync(debugDir, { recursive: true });
-        const logFile = path.join(debugDir, 'network-errors.log');
-        fs.appendFileSync(logFile, logLine + '\n', 'utf8');
-      } catch (_) { }
-    }
-
-    console.log(`[IPC] Network error logged: ${errorType}`);
     return true;
   } catch (e) {
     console.error('[IPC] Failed to log network error:', e.message);
@@ -1372,7 +1375,13 @@ ipcMain.handle('storage:writeContractCache', async (_event, payload = [], option
 });
 
 // ── IPC: Enumerate all available storage roots (local, network, cloud) ──────
-ipcMain.handle('storage:getDrives', async () => {
+let storageDrivesCache = { ts: 0, value: null };
+ipcMain.handle('storage:getDrives', async (_event, options = {}) => {
+  const now = Date.now();
+  if (!options?.force && storageDrivesCache.value && (now - storageDrivesCache.ts) < 60000) {
+    return storageDrivesCache.value;
+  }
+
   const found = [];
 
   // ── Local / mapped drive letters C-Z ─────────────────────────────────────
@@ -1420,6 +1429,7 @@ ipcMain.handle('storage:getDrives', async () => {
     catch (_) { }
   }
 
+  storageDrivesCache = { ts: Date.now(), value: found };
   return found;
 });
 
@@ -1856,7 +1866,19 @@ function createWindow() {
 
   win.once('ready-to-show', () => {
     win.show();
-    win.webContents.openDevTools();
+    if (process.env.WECRYPTO_OPEN_DEVTOOLS === '1') {
+      win.webContents.openDevTools({ mode: 'detach' });
+    }
+  });
+
+  win.on('unresponsive', () => {
+    console.warn('[Window] renderer became unresponsive');
+  });
+  win.on('responsive', () => {
+    console.log('[Window] renderer responsive again');
+  });
+  win.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[Window] render process gone:', details);
   });
 
   win.on('closed', () => {

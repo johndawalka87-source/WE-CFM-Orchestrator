@@ -3371,6 +3371,9 @@
     _asyncRefreshEngineBooted = true;
 
     window._asyncRefreshEngine.on('predictions:updated', () => {
+      _lastPredictionRunTs = Date.now();
+      predsLoaded = true;
+      try { snapshotPredictions(); } catch (_) { }
       if (['predictions', 'cfm', 'universe'].includes(currentView)) refreshActiveView();
       scheduleWebStatePublish('async-predictions', 100);
     });
@@ -4177,6 +4180,10 @@
     const validatorStats = window.Validator15m?.getStats?.() || null;
     if (validatorStats && typeof validatorStats === 'object') {
       stats.validator = validatorStats;
+    }
+    const calibrationTelemetry = window.KalshiOrchestrator?.getCalibrationTelemetry?.() || null;
+    if (calibrationTelemetry && calibrationTelemetry.samples) {
+      stats.orchestratorCalibration = calibrationTelemetry;
     }
 
     stats.export = {
@@ -8240,6 +8247,39 @@
     `;
   }
 
+  function renderLiveCalibrationTelemetryStrip(telemetry) {
+    if (!telemetry || typeof telemetry !== 'object') return '';
+    const counts = telemetry.counts || {};
+    const samples = Number(telemetry.samples || 0);
+    if (samples <= 0) return '';
+    const waitGuardBlocked = Number(counts.waitGuardBlocked || 0);
+    const staleDataBlocked = Number(counts.staleDataBlocked || 0);
+    const vetoBlocked = Number(counts.vetoBlocked || 0);
+    const mctsOverrideUsed = Number(counts.mctsOverrideUsed || 0);
+    const executedDirectionalIntents = Number(counts.executedDirectionalIntents || 0);
+    const showCell = (label, value, color = 'var(--color-text)') => `
+      <div style="background:var(--color-surface-3);padding:3px 7px;border-radius:4px;display:flex;gap:4px;align-items:center">
+        <span style="font-size:9px;color:var(--color-text-faint)">${label}</span>
+        <span style="font-size:11px;font-weight:800;color:${color}">${value}</span>
+      </div>
+    `;
+    return `
+      <div style="margin:6px 0 10px 0;padding:8px 9px;border-radius:5px;background:rgba(90,160,255,0.08);border:1px solid rgba(120,170,255,0.20)">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:10px;font-weight:700;color:var(--color-text-faint);letter-spacing:.4px">15M BTC/ETH LIVE CALIBRATION · LAST ${Number(telemetry.windowSize || samples)} EVENTS</span>
+          <span style="font-size:10px;color:var(--color-text-faint)">samples ${samples}</span>
+        </div>
+        <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+          ${showCell('wait-guard blocks', waitGuardBlocked, waitGuardBlocked > 0 ? 'var(--color-orange)' : 'var(--color-text)')}
+          ${showCell('stale-data blocks', staleDataBlocked, staleDataBlocked > 0 ? 'var(--color-orange)' : 'var(--color-text)')}
+          ${showCell('veto blocks', vetoBlocked, vetoBlocked > 0 ? '#ff8a8a' : 'var(--color-text)')}
+          ${showCell('MCTS overrides', mctsOverrideUsed, mctsOverrideUsed > 0 ? '#caa7ff' : 'var(--color-text)')}
+          ${showCell('executed intents', executedDirectionalIntents, executedDirectionalIntents > 0 ? 'var(--color-green)' : 'var(--color-text)')}
+        </div>
+      </div>
+    `;
+  }
+
   // ---- Build Opportunities Panel with profitability analysis ----
   function buildOpportunitiesPanel(cfmAll, predAll) {
     const allSignals = [];
@@ -8286,6 +8326,9 @@
             setupType: setupType ?? null,
             contractTicker: ki.contractTicker ?? null,
             humanReason: ki.humanReason ?? null,
+            regimeTag: ki.regimeTag ?? null,
+            waitGuardDiagnostics: ki.waitGuardDiagnostics ?? null,
+            mcts: ki.mcts ?? null,
           });
           if (window._orchLog.length > 300) window._orchLog.shift();
           saveOrchLog();
@@ -8378,10 +8421,12 @@
 
     // ---- Build Narrative Callouts (plain-English flagging) ----
     const callouts = buildNarrativeCallouts(verdicts, allSignals, cfmAll, predAll);
+    const liveCalibrationTelemetry = window.KalshiOrchestrator?.getCalibrationTelemetry?.() || null;
 
     return `
       <!-- Narrative Callouts -->
       ${callouts}
+      ${renderLiveCalibrationTelemetryStrip(liveCalibrationTelemetry)}
 
       <!-- Trade Verdict: Should you trade RIGHT NOW? -->
       <div class="opp-panel" style="border-left:3px solid ${highConv.length > 0 ? 'var(--color-green)' : marginal.length > 0 ? 'var(--color-orange)' : 'var(--color-text-faint)'}">
@@ -8501,6 +8546,7 @@
                             <span style="font-size:12px;font-weight:700;color:var(--color-text);font-family:var(--font-mono)">KALSHI${strikeC ? ' · ' + strikeC : ''}</span>
                             ${ki.isInversion ? '<span style="background:rgba(255,120,0,0.22);color:#ff8c00;padding:2px 7px;border-radius:3px;font-size:11px;font-weight:800">🔥 INVERSION</span>' : ''}
                             ${ki.timingLabel ? `<span style="background:rgba(90,160,255,0.18);color:#7db7ff;padding:2px 7px;border-radius:3px;font-size:11px;font-weight:800">${ki.timingLabel}</span>` : ''}
+                            ${ki.mcts?.ran ? `<span style="background:rgba(170,110,255,0.18);color:#caa7ff;padding:2px 7px;border-radius:3px;font-size:11px;font-weight:800">MCTS ${ki.mcts.voteAction || '?'} ${Number.isFinite(Number(ki.mcts.voteStrength)) ? Number(ki.mcts.voteStrength).toFixed(2) : ''}</span>` : ''}
                             ${isLastCall ? `<span id="kalshi-lc-${ki.sym}" data-close-ms="${ki.closeTimeMs}" style="background:rgba(255,40,40,0.22);color:var(--color-red);padding:2px 7px;border-radius:3px;font-size:11px;font-weight:800;font-family:var(--font-mono)">⚡ ${timeStr}</span>` : ''}
                             <span style="margin-left:auto;color:${alignColor};font-size:11px;font-weight:700">${alignTagC}</span>
                           </div>`}
@@ -8537,8 +8583,9 @@
                      ${ki.tailRisk ? `<div style="font-size:11px;color:#ff6b6b;margin-top:3px">⚠ Tail risk ($${ki.entryPrice != null ? ki.entryPrice.toFixed(2) : '?'} entry)${ki.lossErasesWins ? ' — one loss erases ' + ki.lossErasesWins + ' wins' : ''}</div>` : ''}
                       ${isCrowdFade ? `<div style="font-size:11px;color:#e040fb;margin-top:3px">🔄 Mispricing hunter active — blockchain momentum is diverging from crowd pricing</div>`
               : isDivergent ? `<div style="font-size:11px;color:#ff8c00;margin-top:3px">⚡ Model vs house — buy the mispriced side, the edge IS the divergence</div>` : ''}
+                     ${!isTrade && ki.waitGuardDiagnostics?.blocked ? `<div style="font-size:11px;color:var(--color-text-faint);margin-top:3px">Wait-guard: threshold ${ki.waitGuardDiagnostics.threshold ?? '?'} · conf ${ki.waitGuardDiagnostics.confidence ?? '?'} · regime ${ki.waitGuardDiagnostics.regime ?? 'n/a'} · MCTS ${ki.waitGuardDiagnostics.mctsVote ?? 'n/a'} ${Number.isFinite(Number(ki.waitGuardDiagnostics.mctsVoteStrength)) ? Number(ki.waitGuardDiagnostics.mctsVoteStrength).toFixed(3) : ''}</div>` : ''}
                       ${ki.exitPlan && isTrade ? `<div style="font-size:11px;color:#7db7ff;margin-top:3px">${ki.exitPlan}</div>` : ''}
-                      ${(ki.blockedBy?.length || ki.timingBlocks?.length) && !isTrade ? `<div style="font-size:11px;color:var(--color-text-faint);margin-top:3px">Watching: ${(ki.blockedBy?.length ? ki.blockedBy.slice(0, 3) : ki.timingBlocks.slice(0, 3)).join(' · ')}</div>` : ''}
+                     ${(ki.blockedBy?.length || ki.timingBlocks?.length || ki.stageDiagnostics?.suppressionReasons?.length) && !isTrade ? `<div style="font-size:11px;color:var(--color-text-faint);margin-top:3px">Watching: ${((ki.blockedBy?.length ? ki.blockedBy : []).concat(ki.timingBlocks || []).concat(ki.stageDiagnostics?.suppressionReasons || []).filter(Boolean).slice(0, 4)).join(' · ')}</div>` : ''}
                       ${ki.humanReason ? `<div style="font-size:11px;color:var(--color-text-muted);margin-top:4px;line-height:1.4">${ki.humanReason}</div>` : ''}
                       ${renderFifteenMinuteMovePlan(ki, true)}
                     </div>`;
@@ -9404,42 +9451,74 @@
       const td = `style="${tdBase}"`;
       const tbl = 'width:100%;border-collapse:collapse;margin-bottom:8px';
 
-      // ── CRITICAL FIX: Ensure orchestrator cache is populated before rendering ──
-      // This ensures getIntent() returns data instead of null
-      try {
-        const predAll = window.PredictionEngine?.getAll?.() ?? {};
-        const cfmAll = window.CFMEngine?.getAll?.() ?? {};
-        if (window.KalshiOrchestrator?.update) {
-          window.KalshiOrchestrator.update(predAll);
-          console.log('[DebugLog] Orchestrator cache populated before rendering intents');
-        }
-      } catch (e) {
-        console.warn('[DebugLog] Could not update orchestrator cache:', e.message);
-      }
+      // Orchestrator state is updated in the prediction render path. Keep this
+      // panel read-only so frequent renders cannot recursively churn live state.
 
       // ── 1. ORCHESTRATOR LIVE ──────────────────────────────────────────────
+      const suppressionCounts = {};
+      const stageFailCounts = {};
+      const actionCounts = { trade: 0, watch: 0, hold: 0, skip: 0, earlyExit: 0, other: 0 };
       const liveOrchRows = PREDICTION_COINS.map(coin => {
         try {
           const ki = window.KalshiOrchestrator?.getIntent?.(coin.sym);
           if (!ki) return `<tr><td style="${tdBase};color:#fff;font-weight:700">${coin.sym}</td>
-            <td colspan="7" style="${tdBase};color:#555;font-size:10px">no data — waiting for first prediction cycle</td></tr>`;
+            <td colspan="9" style="${tdBase};color:#555;font-size:10px">no data — waiting for first prediction cycle</td></tr>`;
+          const actionKey = actionCounts[ki.action] != null ? ki.action : 'other';
+          actionCounts[actionKey] += 1;
           const minsStr = ki.minsLeft != null ? ki.minsLeft.toFixed(1) + 'm'
             : ki.secsLeft != null ? ki.secsLeft.toFixed(0) + 's' : '–';
           const flags = (ki.sweetSpot ? '⭐' : '') + (ki.crowdFade ? '🔄' : '') + (ki.signalLocked ? '🔒' : '');
+          const failedStages = Array.isArray(ki.stageDiagnostics?.stages)
+            ? ki.stageDiagnostics.stages.filter(stage => stage && stage.passed === false)
+            : [];
+          failedStages.forEach(stage => {
+            stageFailCounts[stage.name] = (stageFailCounts[stage.name] || 0) + 1;
+          });
+          const blockerReasons = []
+            .concat(Array.isArray(ki.blockedBy) ? ki.blockedBy : [])
+            .concat(Array.isArray(ki.stageDiagnostics?.suppressionReasons) ? ki.stageDiagnostics.suppressionReasons : []);
+          blockerReasons.filter(Boolean).forEach(reason => {
+            suppressionCounts[reason] = (suppressionCounts[reason] || 0) + 1;
+          });
+          const stageSummary = failedStages.length
+            ? failedStages.map(stage => stage.name).slice(0, 2).join(', ')
+            : 'pass';
+          const blockerSummary = blockerReasons.length
+            ? blockerReasons.slice(0, 2).join(' · ')
+            : '—';
           return `<tr>
             <td style="${tdBase};color:#fff;font-weight:700">${coin.sym}</td>
             <td style="${tdBase};${colAct(ki.action)}">${(ki.action || '–').toUpperCase()}</td>
             <td style="${tdBase};${ki.side === 'YES' ? 'color:#4caf50' : ki.side === 'NO' ? 'color:#f44336' : 'color:#888'};font-weight:700">${ki.side ?? '–'}</td>
             <td style="${tdBase};color:${alignColor(ki.alignment)};font-size:10px">${ki.alignment ?? '–'}</td>
-            <td style="${tdBase};color:${(ki.edgeCents ?? 0) >= 8 ? '#4caf50' : '#f44336'}">${fmtEdge(ki.edgeCents)}</td>
+            <td style="${tdBase};color:${(ki.edgeCents ?? 0) >= 7 ? '#4caf50' : '#f44336'}">${fmtEdge(ki.edgeCents)}</td>
             <td style="${tdBase};${colDir(ki.direction)}">${fmtScore(ki.modelScore)}</td>
             <td style="${tdBase};color:#888">${minsStr}</td>
             <td style="${tdBase};font-size:12px">${flags || '–'}</td>
+            <td style="${tdBase};font-size:10px;color:${failedStages.length ? '#ff9800' : '#4caf50'}">${stageSummary}</td>
+            <td style="${tdBase};font-size:10px;color:#aaa;max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${blockerSummary}</td>
           </tr>`;
         } catch (e) {
-          return `<tr><td style="${tdBase};color:#fff">${coin.sym}</td><td colspan="7" style="${tdBase};color:#f44336;font-size:10px">render error: ${e.message}</td></tr>`;
+          return `<tr><td style="${tdBase};color:#fff">${coin.sym}</td><td colspan="9" style="${tdBase};color:#f44336;font-size:10px">render error: ${e.message}</td></tr>`;
         }
       }).join('');
+      const topSuppressions = Object.entries(suppressionCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6)
+        .map(([reason, count]) => `<span style="padding:2px 6px;border:1px solid #2a2a2a;border-radius:9999px;font-size:10px;color:#aaa">${count}× ${escapeHtml(reason)}</span>`)
+        .join('') || '<span style="font-size:10px;color:#666">No suppression reasons collected yet</span>';
+      const topStageFailures = Object.entries(stageFailCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([name, count]) => `${name}:${count}`)
+        .join(' · ') || 'none';
+      const suppressionSummary = `
+        <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0 8px">
+          <span style="font-size:10px;color:#888">Actions → trade:${actionCounts.trade} watch:${actionCounts.watch} hold:${actionCounts.hold} skip:${actionCounts.skip} exit:${actionCounts.earlyExit}</span>
+          <span style="font-size:10px;color:#888">Stage fails → ${escapeHtml(topStageFailures)}</span>
+          ${topSuppressions}
+        </div>
+      `;
 
       // ── 2. ACCURACY SCORECARD ─────────────────────────────────────────────
       const scorecardRows = PREDICTION_COINS.map((coin, idx) => {
@@ -9664,11 +9743,12 @@
         <div style="padding:10px 14px;border-radius:0 0 8px 8px">
 
           <div style="font-size:10px;color:#e040fb;font-weight:700;margin-bottom:4px;letter-spacing:.5px">▸ ORCHESTRATOR — LIVE INTENTS</div>
+          ${suppressionSummary}
           <div style="overflow-x:auto"><table style="${tbl}">
             <thead><tr>
               <th ${th}>SYM</th><th ${th}>ACTION</th><th ${th}>SIDE</th>
               <th ${th}>ALIGNMENT</th><th ${th}>EDGE</th><th ${th}>SCORE</th>
-              <th ${th}>TIME LEFT</th><th ${th}>FLAGS</th>
+              <th ${th}>TIME LEFT</th><th ${th}>FLAGS</th><th ${th}>STAGE FAILS</th><th ${th}>BLOCKERS</th>
             </tr></thead>
             <tbody>${liveOrchRows}</tbody>
           </table></div>
@@ -10818,6 +10898,7 @@
               ${ki.signalLocked ? `<div style="font-size:11px;color:var(--color-text-muted);margin-top:4px">🔒 Signal locked (${ki.humanReason?.match(/\d+s/)?.[0] || '?'} ago) — holding position</div>` : ''}
               ${ki.illiquid ? `<div style="font-size:11px;color:var(--color-orange);margin-top:4px">⚠ Low liquidity ($${ki.liquidity?.toFixed(0)}) — size carefully</div>` : ''}
               ${!isTrade && isDivergent ? `<div style="font-size:11px;color:var(--color-orange);margin-top:4px">⚠ Kalshi vs model disagree — watch only, do not trade</div>` : ''}
+              ${!isTrade && (ki.stageDiagnostics?.suppressionReasons?.length || ki.blockedBy?.length) ? `<div style="font-size:11px;color:var(--color-text-faint);margin-top:4px">Gate trace: ${((ki.stageDiagnostics?.suppressionReasons || []).concat(ki.blockedBy || []).filter(Boolean).slice(0, 4)).join(' · ')}</div>` : ''}
             </div>`;
       })()}
         </div>

@@ -31,6 +31,7 @@
         </div>
         <div id="network-health-body">
             <div id="network-health-alert" style="display:none;margin-bottom:8px;"></div>
+            <div id="network-health-buckets" style="font-size:12px;color:#9aa6b2;margin-bottom:6px;"></div>
             <div id="network-health-list"></div>
             <div style="font-size:12px;color:#8ab4f8;margin-top:10px;font-weight:600;">Transports (WSS → gRPC → RPC → HTTP)</div>
             <div id="network-transport-stats" style="margin-top:4px;padding-top:6px;border-top:1px solid #333;font-size:12px;"></div>
@@ -89,6 +90,16 @@
         return new Date(ts).toLocaleTimeString();
     }
 
+    function formatMs(ms) {
+        const safe = Math.max(0, Number(ms || 0));
+        if (safe < 1000) return '<1s';
+        const sec = Math.ceil(safe / 1000);
+        if (sec < 60) return `${sec}s`;
+        const min = Math.floor(sec / 60);
+        const rem = sec % 60;
+        return rem ? `${min}m ${rem}s` : `${min}m`;
+    }
+
     function renderTransport() {
         const el = document.getElementById('network-transport-stats');
         if (!el) return;
@@ -121,7 +132,9 @@
 
         const wsState = window.KalshiWS?.getState?.() || {};
         let wsHint = '<span style="color:#888;">Kalshi WSS off</span>';
-        if (wsState.connected && !wsState.stale) {
+        if (wsState.suspended) {
+            wsHint = `<span style="color:#ffd166;">WSS suspended (persistent network block) · retry ${formatMs(wsState.suspendInMs || 0)}</span>`;
+        } else if (wsState.connected && !wsState.stale) {
             wsHint = '<span style="color:#3ecf8e;">Kalshi WSS live</span>';
         } else if (wsState.connected && wsState.stale) {
             wsHint = '<span style="color:#ffd166;">Kalshi WSS stale</span>';
@@ -155,20 +168,57 @@
                 return `<div style="color:#9aa6b2;margin-top:2px;">${domain}: <span style="color:#e0e6f0;">${selected}</span>${reason ? ` <span style="color:#888;">(${reason})</span>` : ''}</div>`;
             }).join('');
 
+        const wsDiag = t.ws || {};
+        const connectAttempt = wsDiag.lastConnectAttempt || wsState.lastConnectAttempt || null;
+        const connectLine = connectAttempt
+            ? `WSS connect: ${connectAttempt.status || 'unknown'}${connectAttempt.reason ? ` (${connectAttempt.reason})` : ''}${connectAttempt.error ? ` · ${connectAttempt.error}` : ''}`
+            : 'WSS connect: no attempts yet';
+        const hsStatus = wsDiag.lastHandshakeStatus || wsState.lastHandshakeStatus || 'unknown';
+        const hsError = wsDiag.lastHandshakeError || wsState.lastHandshakeError || '';
+        const authStatus = wsDiag.lastAuthStatus || wsState.lastAuthStatus || 'not-attempted';
+        const authError = wsDiag.lastAuthError || wsState.lastAuthError || '';
+        const demoteReason = wsDiag.lastDemoteReason || '';
+        const issueBucket = wsDiag.lastIssueBucket || wsState.lastIssueBucket || 'unknown';
+        const issueReason = wsDiag.lastIssueReason || wsState.lastIssueReason || '';
+        const suspendLine = wsState.suspended
+            ? `<div style="color:#ffd166;margin-top:2px;">Suspend: active (${formatMs(wsState.suspendInMs || 0)} left)${wsState.suspendReason ? ` <span style="color:#888;">(${wsState.suspendReason})</span>` : ''}</div>`
+            : '<div style="color:#9aa6b2;margin-top:2px;">Suspend: inactive</div>';
+        const wsDiagRows = [
+            `<div style="color:#9aa6b2;margin-top:4px;">${connectLine}</div>`,
+            `<div style="color:#9aa6b2;margin-top:2px;">Handshake: <span style="color:#e0e6f0;">${hsStatus}</span>${hsError ? ` <span style="color:#888;">(${hsError})</span>` : ''}</div>`,
+            `<div style="color:#9aa6b2;margin-top:2px;">Auth: <span style="color:#e0e6f0;">${authStatus}</span>${authError ? ` <span style="color:#888;">(${authError})</span>` : ''}</div>`,
+            `<div style="color:#9aa6b2;margin-top:2px;">Demote reason: <span style="color:#e0e6f0;">${demoteReason || '—'}</span></div>`,
+            `<div style="color:#9aa6b2;margin-top:2px;">Issue bucket: <span style="color:#e0e6f0;">${issueBucket}</span>${issueReason ? ` <span style="color:#888;">(${issueReason})</span>` : ''}</div>`,
+            suspendLine,
+        ].join('');
+
         el.innerHTML = rows
             + `<div style="margin-top:6px;">${wsHint} · ${hybridHint} · ${busHint} · ${coordHint} · sync ${formatAgo(t.lastSync)}</div>`
-            + (domainRows ? `<div style="margin-top:4px;border-top:1px dotted #3a3f4a;padding-top:4px;">${domainRows}</div>` : '');
+            + `<div style="margin-top:4px;border-top:1px dotted #3a3f4a;padding-top:4px;">${domainRows}${wsDiagRows}</div>`;
     }
 
     function render() {
         const state = window.NetworkHealth?.getAll?.() || {};
+        const bucketCounts = window.NetworkHealth?.getBucketCounters?.() || {};
+        const bucketEl = document.getElementById('network-health-buckets');
+        if (bucketEl) {
+            bucketEl.innerHTML =
+                `<span style="color:#8ab4f8;">Buckets</span> · ` +
+                `<span>App/Logic: ${bucketCounts['app/logic'] || 0}</span> · ` +
+                `<span>Network/Transport: ${bucketCounts['network/transport'] || 0}</span> · ` +
+                `<span>Provider/API: ${bucketCounts['provider/api'] || 0}</span>`;
+        }
         const list = Object.entries(state).map(([provider, v]) => {
+            const bucketLabel = v.bucket && v.bucket !== 'unknown' ? ` [${v.bucket}]` : '';
+            const reason = v.status === 'degraded' || v.status === 'down'
+                ? `${v.reason || ''}${v.bucketReason ? ` · ${v.bucketReason}` : ''}`
+                : '';
             return `<div style="display:flex;align-items:center;margin-bottom:4px;">
         <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${statusColor(v.status)};margin-right:8px;"></span>
         <span style="font-weight:500;width:110px;display:inline-block;">${provider}</span>
         <span style="color:#aaa;font-size:12px;width:80px;display:inline-block;">${formatAgo(v.lastFetch)}</span>
         <span style="font-size:12px;color:${v.fallback ? '#ffd166' : '#aaa'};margin-left:6px;">${v.fallback ? 'Fallback' : ''}</span>
-        <span style="font-size:12px;color:#ff5e5e;margin-left:6px;">${v.status === 'degraded' || v.status === 'down' ? v.reason : ''}</span>
+        <span style="font-size:12px;color:#ff5e5e;margin-left:6px;">${bucketLabel}${reason ? ` ${reason}` : ''}</span>
       </div>`;
         }).join('');
         document.getElementById('network-health-list').innerHTML = list;

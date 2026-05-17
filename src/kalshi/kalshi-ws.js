@@ -1,7 +1,7 @@
 /**
  * Kalshi WebSocket Handler — Real-time prediction market feeds
  *
- * Public channels (no auth):
+ * Public market-data channels:
  *   - ticker: Market price snapshots
  *   - trade: Recent trades
  *   - market_lifecycle_v2: Market open/close events
@@ -20,8 +20,8 @@
 (function () {
   'use strict';
 
-  const PUBLIC_WS_URL = 'wss://api.elections.kalshi.com/trade-api/ws/v2';
-  const DEMO_WS_URL = 'wss://demo-api.kalshi.co/trade-api/ws/v2';
+  const PUBLIC_WS_URL = 'wss://external-api-ws.kalshi.com/trade-api/ws/v2';
+  const DEMO_WS_URL = 'wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2';
 
   // Use demo by default; set to false for production trading
   const USE_DEMO = false;
@@ -32,67 +32,120 @@
   const HEARTBEAT_INTERVAL_MS = 20_000;
   const RECONNECT_BASE_MS = 1_000;
   const RECONNECT_MAX_MS = 30_000;
+  const PERSISTENT_FAIL_WINDOW_MS = 120_000;
+  const PERSISTENT_FAIL_THRESHOLD = 6;
+  const SUSPEND_BASE_MS = 3 * 60_000;
+  const SUSPEND_MAX_MS = 30 * 60_000;
   const CONNECT_ATTEMPT_TIMEOUT_MS = 20_000;
   const STALE_MESSAGE_MS = 75_000;
   const STALE_CHECK_MS = 12_000;
   const STALE_CONFIRM_WINDOWS = 2;
   const STALE_RECONNECT_MIN_MS = 24_000;
+  const STATUS_EMIT_MIN_MS = 1_000;
+  const MESSAGE_STATUS_EMIT_MIN_MS = 5_000;
+  const LOG_THROTTLE_MS = 5_000;
   let _heartbeatTimer = null;
   let _staleTimer = null;
-
-  // Credentials from KALSHI-API-KEY.txt (first line = UUID, lines 5+ = RSA private key)
-  const KALSHI_API_KEY = 'a8f1995c-7b78-430b-a1fe-7c415c67cc91'; // Replace with actual value
-  const KALSHI_PRIVATE_KEY = `-----BEGIN RSA PRIVATE KEY-----
-MIIEowIBAAKCAQEAurJQhLw8T4p6UkUvFvR+bSZnbmdyX4rhFepNQlg7x3c6D/+X
-8A21L5UCBxuNxocYa9UswqFqljk/EEnyOdbyc0n2603Q51NH7QLmco3DwmIo7AKV
-SrjyIh+GK9s8oWSUkgeJ3hJABO+5trBvz9jz8IVM3Y+Pdj/X/JyrIi2DMFSvcKBF
-/Z/XVxaI/ndaKb5servjByGTKTIMa970I88edpeAZmDtHrYMC15RR71SJplSrz3i
-jxgn5SKaPFMcVdNzkAWlZVovaC0YQ4GWK6g7l2occicf4ObzPmTtBMz7YVh0L/2J
-FjhzO6iOPlGBu7sMYPUfEilQyPABtxpjR1SPGQIDAQABAoIBABT6La1oaB9o2Bsv
-3l1mLeFuR/9h/LorBOT9PV6XwunD5gB/r87/f00AIWjyieDVc6NEIeIhmHQWLRWT
-tXWVxwq4tBeW2ALx+tow8ftLngQUmvP/y04Iz14RrDX3zY1123K4CZ/r7YkQdY3H
-L90LC8fJ9ovLkmtPO6HM6baupfezTub3TgcGCoMJjO1sW/p4u7KsdQrJMk/KxH5r
-+jnKXDn7fdXS7Eq/zmgBQ0qBlHi/i6OHLXuWevX/I3buyzm9FQARRGWmt9qBZbJe
-T+IHqrwhlFImVPvDixbbWSgrtZIpPaO8WtTDQJmneRYs9S5BuKFnYszGLiUGVWUC
-kKfkQkECgYEA7+CYFCLQQHtUD3IJqL+BQh6lkW1/z6ngr13qHDHP9qfJZRbgNSrd
-Gu/o9SvpEsbfsDwalAy2drI4lFj2VACTrhuGavuUKc7+1llH428pcfPtJGR6f9gH
-8MSYpTrDzri6tggiqoRbyPopnuikq0HkG4E9AXuHZKDaMxW+x/Us0PkCgYEAxz6s
-yhQrq+xZWw1M+Vc7iMjPGqMWnSBAHm17j6I5xL32bn3yy6iCLAOltR1oHLOwwY2X
-eSOjzfwqKCnxjazAFsPUcmVshPyOXd/CxrArXC3/emEJBFP60WiZp1BUHoFSLfXc
-/N0A3mgMLSH+3t08YU7Txc0t5/pIf0azelkRVyECgYEAqumEkfxIE1mMCEFBfpmM
-WHcLkvXI9kZcz7aDgrk/Kshb54oID/nNdk7v1hgGRhmq8Z+xdEEmlKXhSFmmkS2k
-C46TFJDR/YP98O3GGddvWUDqe16YJZTf+32oITogn57hcaeUQ5hw6V7M3ut1wIv/
-IlXQCMliK6GsNm/M8h3PY8kCgYBucaeGPLgYjOLbPfw1Gs29fNKQiWa3onDobPfZ
-Hqu3CzXW+ankinvdugfY5XwYrOKF597XH5JlVCpqKRXk2qV/+P2CjAYjkXu5PZfS
-W0Uty7GaPL+qzoJyIfFKdZSrdDQBlg/xevBIWJSnT/jfwPL/XZq2Qo330RzusFo8
-r7KVAQKBgFFqO/iSNPqpLDm7Bf/EZM0O4xJv5nc1R9LmNajBRy26E0xbKk7lGK1q
-tRdZLNiraCyO3cPmiI+UrbRWP/v7X0wepj/t16ogE2y8A01svW6PiqW3VEDMdujw
-N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
------END RSA PRIVATE KEY-----`;
+  let _lastStatusEmitTs = 0;
+  let _lastStatusReason = '';
+  const _throttledLogTs = new Map();
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Authentication (RSA signature for HTTP header during WS upgrade)
   // ─────────────────────────────────────────────────────────────────────────────
 
-  // Use crypto from preload (Electron context) or fallback gracefully
+  // Fallback signer for non-Electron environments. Electron signs in main over IPC.
   const crypto = (typeof window !== 'undefined' && window.desktopApp) ? window.desktopApp.crypto : null;
+  let credentialPromise = null;
+  let credentialCache = null;
 
   /**
    * Generate RSA signature for Kalshi auth header
    * Message format: timestamp + "GET" + "/trade-api/ws/v2"
    */
-  function generateSignature(timestamp) {
+  function generateSignature(timestamp, privateKeyPem) {
     const message = `${timestamp}GET${WS_PATH}`;
     try {
+      if (!crypto || typeof crypto.createSign !== 'function') {
+        throw new Error('node crypto unavailable for Kalshi WSS signing');
+      }
+      if (!crypto.constants?.RSA_PKCS1_PSS_PADDING || !crypto.constants?.RSA_PSS_SALTLEN_DIGEST) {
+        throw new Error('node crypto RSA-PSS constants unavailable');
+      }
       const signature = crypto
-        .createSign('sha256')
+        .createSign('RSA-SHA256')
         .update(message)
-        .sign(KALSHI_PRIVATE_KEY, 'hex');
-      return signature;
+        .sign({
+          key: privateKeyPem,
+          padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+          saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST,
+        });
+      return signature.toString('base64');
     } catch (err) {
       console.error('[KalshiWS] Signature generation failed:', err.message);
       return null;
     }
+  }
+
+  async function loadKalshiCredentials() {
+    if (credentialCache?.apiKeyId && credentialCache?.privateKeyPem) return credentialCache;
+    if (credentialPromise) return credentialPromise;
+    credentialPromise = (async () => {
+      if (typeof window !== 'undefined' && typeof window.desktopApp?.loadKalshiCredentials === 'function') {
+        const res = await window.desktopApp.loadKalshiCredentials();
+        if (!res?.success) throw new Error(res?.error || 'Kalshi credentials unavailable');
+        credentialCache = {
+          apiKeyId: String(res.apiKeyId || '').trim(),
+          privateKeyPem: String(res.privateKeyPem || '').trim(),
+        };
+      } else if (typeof process !== 'undefined' && process?.env?.KALSHI_API_KEY_ID && process?.env?.KALSHI_PRIVATE_KEY_PEM) {
+        credentialCache = {
+          apiKeyId: String(process.env.KALSHI_API_KEY_ID || '').trim(),
+          privateKeyPem: String(process.env.KALSHI_PRIVATE_KEY_PEM || '').replace(/\\n/g, '\n').trim(),
+        };
+      } else {
+        throw new Error('Kalshi credentials bridge unavailable');
+      }
+
+      if (!credentialCache.apiKeyId || !credentialCache.privateKeyPem.includes('-----BEGIN')) {
+        credentialCache = null;
+        throw new Error('Invalid Kalshi credential payload');
+      }
+      return credentialCache;
+    })().finally(() => {
+      credentialPromise = null;
+    });
+    return credentialPromise;
+  }
+
+  async function buildHandshakeHeaders() {
+    lastAuthStatus = 'loading-credentials';
+    lastAuthError = '';
+    _emitStatusUpdate('auth-loading-credentials');
+    const bridge = (typeof window !== 'undefined') ? window.desktopApp : null;
+    if (typeof bridge?.getKalshiWsAuthHeaders === 'function') {
+      const res = await bridge.getKalshiWsAuthHeaders();
+      if (!res?.success || !res.headers) {
+        throw new Error(res?.error || 'Kalshi WSS auth headers unavailable');
+      }
+      lastAuthStatus = 'handshake-ready';
+      lastAuthError = '';
+      return res.headers;
+    }
+
+    const credentials = await loadKalshiCredentials();
+    const timestamp = String(Date.now());
+    const signature = generateSignature(timestamp, credentials.privateKeyPem);
+    if (!signature) {
+      throw new Error('Kalshi WSS signature generation failed');
+    }
+    lastAuthStatus = 'handshake-ready';
+    lastAuthError = '';
+    return {
+      'KALSHI-ACCESS-KEY': credentials.apiKeyId,
+      'KALSHI-ACCESS-SIGNATURE': signature,
+      'KALSHI-ACCESS-TIMESTAMP': timestamp,
+    };
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -139,9 +192,20 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
   let staleSinceTs = 0;
   let lastAuthStatus = 'not-attempted';
   let lastAuthError = '';
+  let lastHandshakeStatus = 'idle';
+  let lastHandshakeError = '';
   let lastFailureClass = '';
+  let lastWsCtorSource = 'unknown';
+  let lastIssueBucket = 'unknown';
+  let lastIssueReason = '';
+  let suspendLevel = 0;
+  let suspendedUntil = 0;
+  let suspendReason = '';
+  let suspendTimer = null;
+  const connectFailTs = [];
   const pendingSubscriptions = new Map();
   const desiredMarketTickers = new Set();
+  let lastSubscriptionSignature = '';
 
   // Markets to subscribe to — resolved dynamically by market-resolver.js.
   // Falls back to these if resolver hasn't run yet.
@@ -158,8 +222,18 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
     return ms + extra;
   }
 
+  function _logThrottled(key, level, ...args) {
+    const now = Date.now();
+    const last = _throttledLogTs.get(key) || 0;
+    if ((now - last) < LOG_THROTTLE_MS) return;
+    _throttledLogTs.set(key, now);
+    const writer = console[level] || console.log;
+    writer.apply(console, args);
+  }
+
   function _logTransport(type, detail = {}) {
     try {
+      if (/ok|success/i.test(String(type || ''))) return;
       window.NetworkLog?.record?.(type, {
         provider: 'Kalshi',
         url: 'kalshi://wss',
@@ -181,11 +255,24 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
 
   function _emitStatusUpdate(reason = '') {
     try {
+      const now = Date.now();
+      const minInterval = reason === 'message' ? MESSAGE_STATUS_EMIT_MIN_MS : STATUS_EMIT_MIN_MS;
+      if (reason === _lastStatusReason && (now - _lastStatusEmitTs) < minInterval) return;
+      if (reason === 'message' && (now - _lastStatusEmitTs) < minInterval) return;
+      _lastStatusEmitTs = now;
+      _lastStatusReason = reason;
       window.dispatchEvent(new CustomEvent('kalshi:ws-state', {
         detail: {
           connected,
           reconnectAttempts,
           stale: _isStale(),
+          suspended: _isSuspended(),
+          suspendInMs: _isSuspended() ? Math.max(0, suspendedUntil - Date.now()) : 0,
+          suspendUntil: _isSuspended() ? suspendedUntil : 0,
+          suspendReason,
+          suspendLevel,
+          issueBucket: lastIssueBucket,
+          issueReason: lastIssueReason,
           reason: reason || lastCloseReason || '',
           ts: Date.now(),
         },
@@ -196,12 +283,118 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
   function _formatError(err) {
     if (!err) return '';
     if (typeof err === 'string') return err;
+    if (err instanceof Error) {
+      return err.message || String(err);
+    }
+    if (typeof Event !== 'undefined' && err instanceof Event) {
+      const target = err.target || err.currentTarget || null;
+      const readyState = target && typeof target.readyState === 'number' ? target.readyState : null;
+      const url = target && target.url ? String(target.url) : '';
+      const reason = err.reason ? String(err.reason) : '';
+      const code = Number.isFinite(err.code) ? err.code : null;
+      const nested = err.error ? _formatError(err.error) : '';
+      const eventMsg = [
+        `event:${err.type || 'unknown'}`,
+        code !== null ? `code=${code}` : '',
+        reason ? `reason=${reason}` : '',
+        readyState !== null ? `readyState=${readyState}` : '',
+        url ? `url=${url}` : '',
+        nested ? `cause=${nested}` : '',
+      ].filter(Boolean).join(' ');
+      if (eventMsg) return eventMsg;
+    }
     if (err.message) return String(err.message);
+    if (typeof err === 'object') {
+      const out = [];
+      if (err.type) out.push(`type=${String(err.type)}`);
+      if (Number.isFinite(err.code)) out.push(`code=${err.code}`);
+      if (err.reason) out.push(`reason=${String(err.reason)}`);
+      if (err.statusCode) out.push(`status=${err.statusCode}`);
+      if (err.statusMessage) out.push(`statusText=${String(err.statusMessage)}`);
+      if (out.length) return out.join(' ');
+      try {
+        return JSON.stringify(err);
+      } catch (_) { }
+    }
     return String(err);
+  }
+
+  function _isConstructable(fn) {
+    if (typeof fn !== 'function') return false;
+    try {
+      Reflect.construct(String, [], fn);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function _shouldFallbackToBrowserWebSocket(errLike) {
+    const msg = _formatError(errLike).toLowerCase();
+    return msg.includes('cannot be invoked without') || msg.includes('is not a constructor');
+  }
+
+  function _isNodeWsCtor(fn) {
+    if (typeof fn !== 'function') return false;
+    const proto = fn.prototype || null;
+    return !!(proto && typeof proto.on === 'function' && typeof proto.once === 'function');
+  }
+
+  function _resolveWebSocketCtor() {
+    const bridge = (typeof window !== 'undefined') ? window.desktopApp : null;
+    const bridgeWs = bridge?.ws || null;
+    const candidates = [];
+
+    if (typeof bridge?.createWebSocket === 'function') {
+      return {
+        factory: bridge.createWebSocket,
+        ctor: null,
+        source: 'desktopApp.createWebSocket',
+        usingNodeWs: true,
+      };
+    }
+
+    if (bridgeWs && typeof bridgeWs.WebSocket === 'function') {
+      candidates.push({
+        factory: null,
+        ctor: bridgeWs.WebSocket,
+        source: 'desktopApp.ws.WebSocket',
+        usingNodeWs: _isNodeWsCtor(bridgeWs.WebSocket),
+      });
+    }
+    if (typeof bridgeWs === 'function') {
+      candidates.push({
+        factory: null,
+        ctor: bridgeWs,
+        source: 'desktopApp.ws',
+        usingNodeWs: _isNodeWsCtor(bridgeWs),
+      });
+    }
+    if (typeof WebSocket === 'function') {
+      candidates.push({
+        factory: null,
+        ctor: WebSocket,
+        source: 'globalThis.WebSocket',
+        usingNodeWs: _isNodeWsCtor(WebSocket),
+      });
+    }
+
+    const rejected = [];
+    for (const candidate of candidates) {
+      if (_isConstructable(candidate.ctor)) return candidate;
+      rejected.push(candidate.source);
+    }
+
+    if (rejected.length) {
+      console.warn('[KalshiWS] WebSocket constructor guard rejected candidate(s):', rejected.join(', '));
+    }
+
+    return { factory: null, ctor: null, source: 'unresolved', usingNodeWs: false };
   }
 
   function _classifyFailure(errLike) {
     const msg = _formatError(errLike).toLowerCase();
+    if (msg.includes('credential') || msg.includes('kalshi-api-key') || msg.includes('crypto unavailable') || msg.includes('signature generation') || msg.includes('requires node ws') || msg.includes('browser websocket cannot send')) return 'auth-config-fail';
     if (msg.includes('name_not_resolved') || msg.includes('enotfound') || msg.includes('eai_again') || msg.includes('dns')) return 'dns-fail';
     if (msg.includes('cert') || msg.includes('ssl') || msg.includes('tls') || msg.includes('self signed')) return 'tls-fail';
     if (msg.includes('unexpected-response') || msg.includes('handshake') || msg.includes('upgrade')) return 'handshake-fail';
@@ -209,6 +402,102 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
     if (msg.includes('network changed') || msg.includes('err_network_changed')) return 'route-change';
     if (msg.includes('econnreset') || msg.includes('socket hang up')) return 'socket-reset';
     return 'network-fail';
+  }
+
+  function _classifyIssueBucket(errLike, failureClass = '') {
+    const msg = _formatError(errLike).toLowerCase();
+    const fc = String(failureClass || '').toLowerCase();
+    if (/browser websocket cannot send|requires node ws|credential|crypto unavailable|signature generation|kalshi-api-key\.txt not found|auth-header-failed/.test(msg)) {
+      return {
+        bucket: 'app/logic',
+        reason: 'local WebSocket auth capability/configuration issue',
+      };
+    }
+    if (/http\s*(401|403|404|429|5\d\d)|unauthorized|forbidden|not found|rate limit|upstream/.test(msg)) {
+      return {
+        bucket: 'provider/api',
+        reason: 'upstream API reject',
+      };
+    }
+    if (/stale[-\s]*watchdog|demote|hysteresis|scheduler|circuit|oscillat|internal/.test(msg)) {
+      return {
+        bucket: 'app/logic',
+        reason: 'internal WSS handling loop/state issue',
+      };
+    }
+    if (/event:error/.test(msg) && /readystate=3/.test(msg)) {
+      return {
+        bucket: 'network/transport',
+        reason: 'websocket connect failure (readyState=3 before open)',
+      };
+    }
+    if (
+      ['dns-fail', 'tls-fail', 'handshake-fail', 'timeout', 'route-change', 'socket-reset', 'network-fail'].includes(fc) ||
+      /dns|tls|ssl|cert|handshake|upgrade|timeout|abort|route|network|websocket|wss/.test(msg)
+    ) {
+      return {
+        bucket: 'network/transport',
+        reason: 'network transport/connectivity failure',
+      };
+    }
+    return {
+      bucket: 'unknown',
+      reason: _formatError(errLike) || '',
+    };
+  }
+
+  function _isSuspended() {
+    return suspendedUntil > Date.now();
+  }
+
+  function _clearSuspendTimer() {
+    if (suspendTimer) {
+      clearTimeout(suspendTimer);
+      suspendTimer = null;
+    }
+  }
+
+  function _scheduleSuspendProbe() {
+    _clearSuspendTimer();
+    if (!_isSuspended()) return;
+    const waitMs = Math.max(500, suspendedUntil - Date.now());
+    suspendTimer = setTimeout(() => {
+      suspendTimer = null;
+      if (_isSuspended() || connected || connecting || intentionalDisconnect) return;
+      reconnect('suspend-probe');
+    }, waitMs);
+  }
+
+  function _resetSuspendState() {
+    suspendLevel = 0;
+    suspendedUntil = 0;
+    suspendReason = '';
+    connectFailTs.length = 0;
+    _clearSuspendTimer();
+  }
+
+  function _activateSuspend(failureClass, reasonText) {
+    suspendLevel += 1;
+    const cooldown = _jitter(Math.min(SUSPEND_MAX_MS, SUSPEND_BASE_MS * Math.pow(2, Math.max(0, suspendLevel - 1))));
+    suspendedUntil = Date.now() + cooldown;
+    suspendReason = `${failureClass || 'network-fail'}: ${reasonText || 'persistent connect failure'}`.trim();
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      reconnectDueAt = 0;
+    }
+    console.warn(`[KalshiWS] WSS suspended for ${Math.round(cooldown / 1000)}s (${suspendReason})`);
+    _emitStatusUpdate('suspended');
+    _scheduleSuspendProbe();
+  }
+
+  function _recordConnectFailure(failureClass, reasonText) {
+    const now = Date.now();
+    while (connectFailTs.length && (now - connectFailTs[0]) > PERSISTENT_FAIL_WINDOW_MS) connectFailTs.shift();
+    connectFailTs.push(now);
+    if (connectFailTs.length >= PERSISTENT_FAIL_THRESHOLD) {
+      _activateSuspend(failureClass, reasonText);
+    }
   }
 
   function _setConnectAttemptStatus(status, extra = {}) {
@@ -231,25 +520,25 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
       }
     };
 
-    add('open', () => handlers.onOpen?.());
+    add('open', (...args) => handlers.onOpen?.(socket, ...args));
     add('message', (...args) => {
       const first = args[0];
       const payload = first && typeof first === 'object' && Object.prototype.hasOwnProperty.call(first, 'data')
         ? first.data
         : first;
-      handlers.onMessage?.(payload);
+      handlers.onMessage?.(payload, socket);
     });
     add('error', (...args) => {
       const first = args[0];
       const payload = first && typeof first === 'object' && first.error ? first.error : first;
-      handlers.onError?.(payload);
+      handlers.onError?.(payload, socket);
     });
     add('close', (...args) => {
       const first = args[0];
       if (first && typeof first === 'object' && Object.prototype.hasOwnProperty.call(first, 'code')) {
-        handlers.onClose?.(first.code, first.reason);
+        handlers.onClose?.(first.code, first.reason, socket);
       } else {
-        handlers.onClose?.(first, args[1]);
+        handlers.onClose?.(first, args[1], socket);
       }
     });
   }
@@ -290,6 +579,15 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
     } catch (_) {
       return [];
     }
+  }
+
+  function _normalizeMarketTickers(marketTickers) {
+    return Array.from(new Set((Array.isArray(marketTickers) ? marketTickers : []).filter(Boolean))).sort();
+  }
+
+  function _marketSubscriptionSignature(marketTickers) {
+    const list = _normalizeMarketTickers(marketTickers);
+    return list.length ? list.join('|') : 'global';
   }
 
   function _startStaleWatchdog() {
@@ -336,37 +634,94 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
 
   function _resubscribeAfterConnect() {
     const activeMarkets = _currentDesiredMarkets();
+    lastSubscriptionSignature = '';
     subscribeToTicker(activeMarkets);
     if (activeMarkets.length) {
       subscribeToOrderbook(activeMarkets);
       subscribeToTrades(activeMarkets);
+      lastSubscriptionSignature = _marketSubscriptionSignature(activeMarkets);
     }
   }
 
   async function connect(meta = {}) {
     if (connected && ws) return ws;
     if (connectPromise) return connectPromise;
-    connectPromise = new Promise((resolve, reject) => {
+    const force = !!meta.force;
+    if (!force && _isSuspended()) {
+      const waitMs = Math.max(0, suspendedUntil - Date.now());
+      const err = new Error(`WSS suspended (${Math.ceil(waitMs / 1000)}s remaining)`);
+      lastError = err.message;
+      _emitStatusUpdate('connect-skipped-suspended');
+      return Promise.reject(err);
+    }
+    connectPromise = (async () => {
+      connecting = true;
+      connectStartedAt = Date.now();
+      const attemptId = ++connectAttemptSeq;
+      lastConnectAttempt = {
+        id: attemptId,
+        status: 'signing',
+        reason: String(meta.reason || 'manual-connect'),
+        startedAt: connectStartedAt,
+        endedAt: null,
+        error: '',
+      };
+      lastHandshakeStatus = 'signing';
+      lastHandshakeError = '';
+
+      let handshakeHeaders = null;
       try {
-        connecting = true;
-        connectStartedAt = Date.now();
-        const attemptId = ++connectAttemptSeq;
-        lastConnectAttempt = {
-          id: attemptId,
-          status: 'connecting',
-          reason: String(meta.reason || 'manual-connect'),
-          startedAt: connectStartedAt,
-          endedAt: null,
-          error: '',
-        };
+        handshakeHeaders = await buildHandshakeHeaders();
+      } catch (err) {
+        connecting = false;
+        connectStartedAt = 0;
+        const fc = _classifyFailure(err);
+        const issue = _classifyIssueBucket(err, fc);
+        const errorText = _formatError(err);
+        lastError = errorText;
+        lastFailureClass = fc;
+        lastIssueBucket = issue.bucket;
+        lastIssueReason = issue.reason || errorText;
+        lastHandshakeStatus = 'auth-header-failed';
+        lastHandshakeError = errorText;
+        lastAuthStatus = 'failed';
+        lastAuthError = errorText;
+        _setConnectAttemptStatus('failed', { error: errorText, failureClass: fc });
+        _recordConnectFailure(fc, errorText);
+        _emitStatusUpdate(`connect-auth-failed:${errorText}`);
+        throw err;
+      }
+
+      _setConnectAttemptStatus('connecting', { error: '' });
+      lastHandshakeStatus = 'connecting';
+
+      return new Promise((resolve, reject) => {
+        try {
         const why = meta.reason ? ` (${meta.reason})` : '';
         console.log(`[KalshiWS] Connecting to ${WS_URL}${why} [attempt ${attemptId}]`);
-        const WebSocketClass = (typeof window !== 'undefined' && window.desktopApp?.ws) ? window.desktopApp.ws : WebSocket;
-        const usingNodeWs = !!(typeof window !== 'undefined' && window.desktopApp?.ws && WebSocketClass === window.desktopApp.ws);
-        ws = usingNodeWs
-          ? new WebSocketClass(WS_URL, { handshakeTimeout: CONNECT_ATTEMPT_TIMEOUT_MS, perMessageDeflate: false })
-          : new WebSocketClass(WS_URL);
-        _attachSocketHandlers(ws, { onOpen, onMessage, onError, onClose });
+        const wsCtorInfo = _resolveWebSocketCtor();
+        let WebSocketClass = wsCtorInfo.ctor;
+        let usingNodeWs = !!wsCtorInfo.usingNodeWs;
+        lastWsCtorSource = wsCtorInfo.source;
+        if (wsCtorInfo.factory) {
+          ws = wsCtorInfo.factory(WS_URL, {
+            handshakeTimeout: CONNECT_ATTEMPT_TIMEOUT_MS,
+            perMessageDeflate: false,
+            headers: handshakeHeaders,
+          });
+        } else if (!WebSocketClass) {
+          throw new Error('No constructable WebSocket constructor available');
+        } else if (!usingNodeWs) {
+          throw new Error('Kalshi WSS requires Node ws with handshake headers; browser WebSocket cannot send KALSHI-ACCESS headers');
+        } else {
+          ws = new WebSocketClass(WS_URL, {
+            handshakeTimeout: CONNECT_ATTEMPT_TIMEOUT_MS,
+            perMessageDeflate: false,
+            headers: handshakeHeaders,
+          });
+        }
+        const attemptSocket = ws;
+        _attachSocketHandlers(attemptSocket, { onOpen, onMessage, onError, onClose });
 
         let settled = false;
         const settle = (ok, err) => {
@@ -378,13 +733,30 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
           stopCloseOnce();
           connecting = false;
           if (ok) {
+            lastHandshakeStatus = 'open';
+            lastHandshakeError = '';
             _setConnectAttemptStatus('connected', { error: '' });
             resolve();
           } else {
             const errorText = _formatError(err) || 'connect attempt failed';
             const failureClass = _classifyFailure(err);
+            const issue = _classifyIssueBucket(err, failureClass);
             lastFailureClass = failureClass;
+            lastIssueBucket = issue.bucket;
+            lastIssueReason = issue.reason || errorText;
+            lastHandshakeStatus = 'failed';
+            lastHandshakeError = errorText;
             _setConnectAttemptStatus('failed', { error: errorText, failureClass });
+            _recordConnectFailure(failureClass, errorText);
+            if (attemptSocket && typeof attemptSocket.close === 'function') {
+              try { attemptSocket.close(); } catch (_) { }
+            }
+            if (ws === attemptSocket) {
+              ws = null;
+            }
+            if (!intentionalDisconnect && !connected && !reconnectTimer && !_isSuspended()) {
+              setTimeout(() => reconnect(`connect-failed:${failureClass}`), 0);
+            }
             reject(err instanceof Error ? err : new Error(errorText));
           }
           _emitStatusUpdate(ok ? 'connect-open' : `connect-failed:${_formatError(err)}`);
@@ -392,12 +764,12 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
 
         const timeout = setTimeout(() => {
           settle(false, new Error(`Connection timeout (${Math.round(CONNECT_ATTEMPT_TIMEOUT_MS / 1000)}s)`));
-          try { ws?.close?.(); } catch (_) { }
+          try { attemptSocket?.close?.(); } catch (_) { }
         }, CONNECT_ATTEMPT_TIMEOUT_MS);
 
-        const stopOpenOnce = _onceSocketEvent(ws, 'open', () => settle(true));
-        const stopErrorOnce = _onceSocketEvent(ws, 'error', (err) => settle(false, err));
-        const stopCloseOnce = _onceSocketEvent(ws, 'close', (...args) => {
+        const stopOpenOnce = _onceSocketEvent(attemptSocket, 'open', () => settle(true));
+        const stopErrorOnce = _onceSocketEvent(attemptSocket, 'error', (err) => settle(false, err));
+        const stopCloseOnce = _onceSocketEvent(attemptSocket, 'close', (...args) => {
           if (connected) return;
           const first = args[0];
           const closeCode = first && typeof first === 'object' && Object.prototype.hasOwnProperty.call(first, 'code')
@@ -408,26 +780,46 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
             : args[1];
           settle(false, new Error(`closed-before-open code=${closeCode || 'n/a'} reason=${String(closeReason || '').trim() || 'none'}`));
         });
-        if (typeof ws.on === 'function') {
-          ws.once('unexpected-response', (_req, res) => {
+        if (typeof attemptSocket.on === 'function') {
+          attemptSocket.once('unexpected-response', (_req, res) => {
             const code = res?.statusCode || 'n/a';
             const text = res?.statusMessage || 'unexpected response';
+            lastHandshakeStatus = 'unexpected-response';
+            lastHandshakeError = `${code} ${text}`;
             settle(false, new Error(`unexpected-response ${code} ${text}`));
           });
         }
       } catch (err) {
         connecting = false;
-        _setConnectAttemptStatus('failed', { error: _formatError(err) });
+        connectStartedAt = 0;
+        const fc = _classifyFailure(err);
+        const issue = _classifyIssueBucket(err, fc);
+        const errorText = _formatError(err);
+        lastError = errorText;
+        lastFailureClass = fc;
+        lastIssueBucket = issue.bucket;
+        lastIssueReason = issue.reason || errorText;
+        lastHandshakeStatus = 'constructor-error';
+        lastHandshakeError = errorText;
+        _setConnectAttemptStatus('failed', { error: errorText, failureClass: fc });
+        _recordConnectFailure(fc, errorText);
+        _emitStatusUpdate(`connect-constructor-failed:${errorText}`);
         reject(err);
       }
-    }).finally(() => {
+      });
+    })().finally(() => {
       connectPromise = null;
     });
     return connectPromise;
   }
 
-  function onOpen() {
-    console.log('[KalshiWS] Connected');
+  function onOpen(socket) {
+    const readyState = socket && typeof socket.readyState === 'number' ? socket.readyState : null;
+    console.log('[KalshiWS] Connected', {
+      attempt: lastConnectAttempt?.id || null,
+      ctor: lastWsCtorSource,
+      readyState: readyState !== null ? readyState : 'n/a',
+    });
     connected = true;
     intentionalDisconnect = false;
     reconnectAttempts = 0;
@@ -440,6 +832,9 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
     lastCloseReason = '';
     lastError = '';
     lastFailureClass = '';
+    lastIssueBucket = 'unknown';
+    lastIssueReason = '';
+    _resetSuspendState();
     _resetStaleCounters();
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
@@ -454,7 +849,12 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
 
     _startHeartbeat();
     _startStaleWatchdog();
-    authenticatePrivate();
+    authenticated = true;
+    lastAuthStatus = 'handshake-authenticated';
+    lastAuthError = '';
+    lastHandshakeStatus = 'open';
+    lastHandshakeError = '';
+    _emitStatusUpdate('open-handshake-authenticated');
     _resubscribeAfterConnect();
     _logTransport('TRANSPORT_OK', { error: 'kalshi-wss-connected' });
     _emitStatusUpdate('connected');
@@ -473,23 +873,34 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
   }
 
   function onError(err) {
-    lastError = String(err?.message || err || 'unknown');
+    lastError = _formatError(err) || 'unknown';
     lastFailureClass = _classifyFailure(err);
+    const issue = _classifyIssueBucket(err, lastFailureClass);
+    lastIssueBucket = issue.bucket;
+    lastIssueReason = issue.reason || lastError;
     console.error('[KalshiWS] Error:', lastFailureClass, lastError);
     _emitStatusUpdate(`socket-error:${lastFailureClass}:${lastError}`);
   }
 
-  function onClose(code, reason) {
+  function onClose(code, reason, socket) {
+    if (socket && ws && socket !== ws && !connected) return;
     lastCloseCode = Number.isFinite(code) ? code : null;
     lastCloseReason = String(reason || '').trim() || lastError || 'socket closed';
     if (!lastFailureClass) {
       lastFailureClass = _classifyFailure(lastCloseReason || `code-${lastCloseCode || 'unknown'}`);
+    }
+    if (!lastIssueReason) {
+      const issue = _classifyIssueBucket(lastCloseReason || `code=${lastCloseCode || 'unknown'}`, lastFailureClass);
+      lastIssueBucket = issue.bucket;
+      lastIssueReason = issue.reason || lastCloseReason;
     }
     console.log('[KalshiWS] Disconnected', lastCloseCode || '', lastCloseReason);
     connected = false;
     authenticated = false;
     readyToSend = false;
     connecting = false;
+    lastSubscriptionSignature = '';
+    pendingSubscriptions.clear();
     connectStartedAt = 0;
     _resetStaleCounters();
     _stopHeartbeat();
@@ -500,11 +911,16 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
       failureClass: lastFailureClass || '',
     });
     _emitStatusUpdate(lastCloseReason);
-    if (!intentionalDisconnect) reconnect('close');
+    if (!intentionalDisconnect && !_isSuspended()) reconnect('close');
   }
 
   function reconnect(reason = 'unknown') {
     if (intentionalDisconnect) return;
+    if (_isSuspended()) {
+      _scheduleSuspendProbe();
+      _emitStatusUpdate(`reconnect-suspended:${reason}`);
+      return;
+    }
     if (reconnectTimer) return;
     if (connected && ws) {
       try {
@@ -536,28 +952,7 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
   // ─────────────────────────────────────────────────────────────────────────────
 
   function authenticatePrivate() {
-    const timestamp = Date.now();
-    // BUG FIX: was generateSignature(KALSHI_SECRET, ...) — KALSHI_SECRET undefined
-    const signature = generateSignature(timestamp);
-    if (!signature) {
-      lastAuthStatus = 'failed';
-      lastAuthError = 'signature generation failed';
-      console.warn('[KalshiWS] Auth skipped: signature generation failed');
-      return false;
-    }
-
-    const authMsg = {
-      type: 'login',
-      api_key: KALSHI_API_KEY,
-      signature: signature,
-      timestamp: timestamp,
-    };
-
-    sendMessage(authMsg);
-    lastAuthStatus = 'sent';
-    lastAuthError = '';
-    console.log('[KalshiWS] Authentication request sent');
-    return true;
+    return authenticated && lastAuthStatus === 'handshake-authenticated';
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -569,9 +964,12 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
 
     switch (type) {
       case 'subscribed':
-        // Server confirmed subscription — mark as authenticated if login succeeded
+        // Server confirmed subscription on the authenticated WS session.
         if (!authenticated) {
           authenticated = true;
+          lastAuthStatus = 'handshake-authenticated';
+          lastAuthError = '';
+          lastHandshakeStatus = 'authenticated';
           console.log('[KalshiWS] Authenticated ✓');
         }
         {
@@ -586,6 +984,7 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
             sid: subPayload.sid ?? null,
             marketTickers: subPayload.market_tickers || pending?.marketTickers || [],
           });
+          _emitStatusUpdate('auth-subscribed');
           _emitStatusUpdate('subscription-ack');
         }
         break;
@@ -601,6 +1000,10 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
       case 'trade':
         handleTrade(payload);
         break;
+      case 'market_lifecycle_v2':
+      case 'market_lifecycle':
+        handleMarketLifecycle(payload);
+        break;
       case 'pong':
         // Heartbeat acknowledged — nothing to do
         break;
@@ -613,7 +1016,7 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
         handleError(payload);
         break;
       default:
-        console.log('[KalshiWS] Unknown message type:', type, msg);
+        _logThrottled(`unknown:${type || 'unknown'}`, 'debug', '[KalshiWS] Unknown message type:', type, msg);
     }
   }
 
@@ -660,7 +1063,7 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
       ts: Date.now(),
     };
 
-    console.log(`[KalshiWS] Orderbook snapshot for ${market_ticker}`);
+    _logThrottled(`orderbook-snapshot:${market_ticker}`, 'debug', `[KalshiWS] Orderbook snapshot for ${market_ticker}`);
   }
 
   function handleOrderbookDelta(payload) {
@@ -738,6 +1141,17 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
     }
   }
 
+  function handleMarketLifecycle(payload) {
+    store.lifecycle = { payload, ts: Date.now() };
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('kalshi:market_lifecycle', {
+          detail: { ...(payload || {}), ts: Date.now() },
+        })
+      );
+    }
+  }
+
   function handleError(payload) {
     const { code, msg: errorMsg } = payload;
     const errorDescription = ERROR_CODES[code] || 'Unknown error';
@@ -783,7 +1197,7 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
         console.warn('[KalshiWS] Duplicate subscription — skipping');
         break;
       case 8: // Unknown channel name
-        console.error('[KalshiWS] Invalid channel — valid: ticker, trade, orderbook_delta, orderbook_snapshot');
+        _logThrottled('invalid-channel', 'error', '[KalshiWS] Invalid channel — valid: ticker, trade, orderbook_delta, fill, market_positions, communications, order_group_updates, market_lifecycle_v2');
         break;
       case 9: // Authentication required
         console.error('[KalshiWS] Private channel requires authentication');
@@ -864,7 +1278,7 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
       id: messageId++,
       cmd: 'subscribe',
       params: {
-        channels: ['orderbook_delta', 'orderbook_snapshot'],
+        channels: ['orderbook_delta'],
         market_tickers: marketTickers,
       },
     };
@@ -922,7 +1336,8 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
   // ─────────────────────────────────────────────────────────────────────────────
 
   function sendMessage(msg) {
-    if (!readyToSend) {
+    const socketOpen = ws && ws.readyState === 1;
+    if (!readyToSend || !socketOpen) {
       messageQueue.push(msg);
       return;
     }
@@ -937,6 +1352,7 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
 
   async function disconnect() {
     intentionalDisconnect = true;
+    _clearSuspendTimer();
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -963,7 +1379,9 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
     _heartbeatTimer = setInterval(() => {
       if (!connected || !readyToSend) return;
       try {
-        ws.send(JSON.stringify({ id: messageId++, cmd: 'ping' }));
+        if (ws && ws.readyState === 1 && typeof ws.ping === 'function') {
+          ws.ping();
+        }
       } catch (err) {
         console.warn('[KalshiWS] Heartbeat send failed:', err.message);
       }
@@ -981,10 +1399,16 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
   function getState() {
     const reconnectInMs = reconnectTimer ? Math.max(0, reconnectDueAt - Date.now()) : 0;
     const connectingForMs = connecting && connectStartedAt ? Math.max(0, Date.now() - connectStartedAt) : 0;
+    const suspendInMs = _isSuspended() ? Math.max(0, suspendedUntil - Date.now()) : 0;
     return {
       connected,
       connecting,
       connectingForMs,
+      suspended: _isSuspended(),
+      suspendInMs,
+      suspendUntil: _isSuspended() ? suspendedUntil : 0,
+      suspendReason,
+      suspendLevel,
       authenticated,
       stale: _isStale(),
       reconnectAttempts,
@@ -995,6 +1419,11 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
       lastCloseReason,
       lastError,
       lastFailureClass,
+      lastIssueBucket,
+      lastIssueReason,
+      lastWsCtorSource,
+      lastHandshakeStatus,
+      lastHandshakeError,
       lastRouteEventReason,
       lastConnectAttempt,
       lastAuthStatus,
@@ -1015,12 +1444,15 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
   // ─────────────────────────────────────────────────────────────────────────────
 
   function subscribeMarkets(marketTickers) {
-    const list = (Array.isArray(marketTickers) ? marketTickers : []).filter(Boolean);
+    const list = _normalizeMarketTickers(marketTickers);
     if (!list.length) return;
     window._kalshiActiveMarkets = list;
     desiredMarketTickers.clear();
     for (const ticker of list) desiredMarketTickers.add(ticker);
     if (!connected) return;
+    const signature = _marketSubscriptionSignature(list);
+    if (signature === lastSubscriptionSignature) return;
+    lastSubscriptionSignature = signature;
     subscribeToTicker(list);
     subscribeToOrderbook(list);
     subscribeToTrades(list);
@@ -1030,6 +1462,7 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
     intentionalDisconnect = false;
     lastRouteEventReason = reason;
     reconnectAttempts = 0;
+    _resetSuspendState();
     if (connected && ws) {
       try { ws.close(); } catch (_) { }
       return;
@@ -1037,10 +1470,31 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
     reconnect(reason);
   }
 
+  function forceRetry(reason = 'manual-force') {
+    intentionalDisconnect = false;
+    _resetSuspendState();
+    reconnectAttempts = 0;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      reconnectDueAt = 0;
+    }
+    connect({ reason: `force:${reason}`, force: true }).catch((err) => {
+      lastError = _formatError(err);
+      const fc = _classifyFailure(err);
+      const issue = _classifyIssueBucket(err, fc);
+      lastFailureClass = fc;
+      lastIssueBucket = issue.bucket;
+      lastIssueReason = issue.reason || lastError;
+      _emitStatusUpdate(`force-retry-failed:${lastError}`);
+    });
+  }
+
   const KalshiWS = {
     connect,
     disconnect,
     reconnectNow,
+    forceRetry,
     sendMessage,
     getState,
     getSnapshot,
@@ -1079,5 +1533,13 @@ N0uSfQxKmjGjqHSuaUN0OLaQAXHckEFsnOTBnSvwBRCei3N4C/36
     });
 
     window.KalshiWS = KalshiWS;
+    window.forceKalshiWsRetry = (reason = 'window-hook') => {
+      try {
+        KalshiWS.forceRetry(reason);
+        return true;
+      } catch (_) {
+        return false;
+      }
+    };
   }
 })();

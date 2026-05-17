@@ -35,6 +35,27 @@
   let soundEnabled = false;  // muted — no sound alerts
   let audioCtx = null;
   let _audioUnlockBound = false;
+  let _wallLogLastTs = 0;
+  let _wallLogSuppressed = 0;
+
+  function logWallAlert(message) {
+    const verbose = window.WECRYPTO_VERBOSE_ORDERBOOK === true || localStorage.getItem('wecrypto_verbose_orderbook') === '1';
+    if (verbose) {
+      console.log(message);
+      return;
+    }
+    const now = Date.now();
+    if ((now - _wallLogLastTs) < 5000) {
+      _wallLogSuppressed += 1;
+      return;
+    }
+    if (_wallLogSuppressed > 0) {
+      console.debug(`[OB] suppressed ${_wallLogSuppressed} wall-alert log(s)`);
+      _wallLogSuppressed = 0;
+    }
+    _wallLogLastTs = now;
+    console.debug(message);
+  }
 
   // Timestamp of last HL message per sym — used to suppress Binance data when HL is live
   const _hlLastMsg = {};
@@ -434,7 +455,7 @@
     if (!WALL_BEEPS_PERMANENTLY_DISABLED && soundEnabled) playBeep(bias);
     alertListeners.forEach(fn => fn(alert));
 
-    console.log(`[OB] ${sym} ${side}-WALL ${type} @ ${price} | qty=${qty.toFixed(2)} age=${ageMs}ms [${bias}]`);
+    logWallAlert(`[OB] ${sym} ${side}-WALL ${type} @ ${price} | qty=${qty.toFixed(2)} age=${ageMs}ms [${bias}]`);
   }
 
   // ── Audio ─────────────────────────────────────────────────────────────────

@@ -11,15 +11,105 @@ function safeRequire(name) {
 const crypto = safeRequire('crypto');
 const ws = safeRequire('ws');
 
+function createWebSocketBridge(url, options = {}) {
+  if (!ws) throw new Error('ws module unavailable in preload');
+  const WebSocketCtor = ws.WebSocket || ws;
+  const socket = new WebSocketCtor(url, {
+    handshakeTimeout: options.handshakeTimeout,
+    perMessageDeflate: options.perMessageDeflate,
+    headers: options.headers,
+  });
+
+  const api = {
+    url,
+    readyState: socket.readyState,
+    send: (data) => socket.send(data),
+    ping: () => {
+      api.readyState = socket.readyState;
+      if (socket.readyState !== 1 || typeof socket.ping !== 'function') return false;
+      socket.ping();
+      return true;
+    },
+    close: (code, reason) => socket.close(code, reason),
+    on: (eventName, callback) => {
+      if (typeof callback !== 'function') return false;
+      socket.on(eventName, (...args) => {
+        api.readyState = socket.readyState;
+        if (eventName === 'message') {
+          callback(args[0]?.toString?.() ?? String(args[0] ?? ''));
+          return;
+        }
+        if (eventName === 'error') {
+          const err = args[0] || {};
+          callback({
+            message: err.message || String(err),
+            code: err.code || null,
+            statusCode: err.statusCode || null,
+            statusMessage: err.statusMessage || null,
+          });
+          return;
+        }
+        if (eventName === 'close') {
+          callback(args[0], args[1]?.toString?.() ?? String(args[1] || ''));
+          return;
+        }
+        callback(...args);
+      });
+      return true;
+    },
+    once: (eventName, callback) => {
+      if (typeof callback !== 'function') return false;
+      socket.once(eventName, (...args) => {
+        api.readyState = socket.readyState;
+        if (eventName === 'message') {
+          callback(args[0]?.toString?.() ?? String(args[0] ?? ''));
+          return;
+        }
+        if (eventName === 'error') {
+          const err = args[0] || {};
+          callback({
+            message: err.message || String(err),
+            code: err.code || null,
+            statusCode: err.statusCode || null,
+            statusMessage: err.statusMessage || null,
+          });
+          return;
+        }
+        if (eventName === 'close') {
+          callback(args[0], args[1]?.toString?.() ?? String(args[1] || ''));
+          return;
+        }
+        if (eventName === 'unexpected-response') {
+          const res = args[1] || {};
+          callback(null, {
+            statusCode: res.statusCode || null,
+            statusMessage: res.statusMessage || '',
+          });
+          return;
+        }
+        callback(...args);
+      });
+      return true;
+    },
+  };
+
+  socket.on('open', () => { api.readyState = socket.readyState; });
+  socket.on('close', () => { api.readyState = socket.readyState; });
+  socket.on('error', () => { api.readyState = socket.readyState; });
+  return api;
+}
+
 contextBridge.exposeInMainWorld('desktopApp', {
   isElectron: true,
   // Expose optional Node modules when available in preload context.
   crypto: crypto,
   ws: ws,
+  createWebSocket: createWebSocketBridge,
   hasNodeCrypto: !!crypto,
   hasNodeWs: !!ws,
   proxyPort: () => ipcRenderer.invoke('proxy:port'),
   loadKalshiCredentials: () => ipcRenderer.invoke('kalshi:loadCredentials'),
+  getKalshiWsAuthHeaders: () => ipcRenderer.invoke('kalshi:wsAuthHeaders'),
   // Returns all local drives (C-Z), UNC network shares, and cloud sync folders
   getDrives: () => ipcRenderer.invoke('storage:getDrives'),
   networkError: (type, details) => ipcRenderer.invoke('network:logError', type, details),

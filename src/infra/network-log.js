@@ -9,7 +9,7 @@
   const entries = [];
   const dedupe = new Map();
   const recentFailures = [];
-  const OPTIONAL_DEDUPE_MS = 20_000;
+  const OPTIONAL_DEDUPE_MS = 75_000;
   const BASE_DEDUPE_MS = 6_000;
   let seq = 0;
   const PROVIDER_ALIASES = {
@@ -131,8 +131,56 @@
     if (text.includes('timeout') || text.includes('timed out') || text.includes('abort')) return 'timeout';
     if (text.includes('network changed') || text.includes('err_network_changed')) return 'route-change';
     if (text.includes('econnreset') || text.includes('socket hang up')) return 'socket-reset';
+    if (/credential|kalshi-api-key\.txt not found|auth-header-failed|signature generation|requires node ws|browser websocket cannot send/.test(text)) return 'auth-config-fail';
     if (status >= 500) return 'upstream-http-fail';
     return 'network-fail';
+  }
+
+  function classifyBucket(detail = {}) {
+    const status = Number(detail.status || 0);
+    const failureClass = String(detail.failureClass || '').toLowerCase();
+    const text = `${detail.error || ''} ${detail.statusText || ''} ${detail.reason || ''}`.toLowerCase();
+
+    if (/credential|kalshi-api-key\.txt not found|auth-header-failed|signature generation|requires node ws|browser websocket cannot send/.test(text)) {
+      return {
+        bucket: 'app/logic',
+        bucketReason: detail.error || detail.reason || 'local credential/auth configuration issue',
+      };
+    }
+    if (
+      status === 401 || status === 403 || status === 404 || status === 429 || status >= 500 ||
+      /unauthorized|forbidden|not found|rate limit|upstream/.test(text)
+    ) {
+      return {
+        bucket: 'provider/api',
+        bucketReason: status ? `upstream API reject (${status})` : 'upstream API reject',
+      };
+    }
+    if (/stale[-\s]*watchdog|demote|hysteresis|scheduler|circuit|oscillat|internal/.test(text)) {
+      return {
+        bucket: 'app/logic',
+        bucketReason: detail.error || detail.reason || 'internal handling issue',
+      };
+    }
+    if (/event:error/.test(text) && /readystate=3/.test(text)) {
+      return {
+        bucket: 'network/transport',
+        bucketReason: 'websocket connect failure (readyState=3 before open)',
+      };
+    }
+    if (
+      ['dns-fail', 'tls-fail', 'handshake-fail', 'timeout', 'route-change', 'socket-reset', 'network-fail'].includes(failureClass) ||
+      /dns|tls|ssl|cert|handshake|upgrade|timeout|abort|route|network|econnreset|socket hang up|websocket|wss/.test(text)
+    ) {
+      return {
+        bucket: 'network/transport',
+        bucketReason: detail.error || detail.reason || detail.statusText || 'network transport failure',
+      };
+    }
+    return {
+      bucket: 'unknown',
+      bucketReason: detail.error || detail.reason || '',
+    };
   }
 
   function isOptionalProvider(provider) {
@@ -174,6 +222,11 @@
 
   function record(type, detail) {
     const rawUrl = detail.url || 'unknown';
+    const bucketMeta = classifyBucket({
+      ...detail,
+      failureClass: detail.failureClass || classifyFailure(detail),
+      reason: detail.reason || detail.error || detail.statusText || '',
+    });
     const entry = {
       id: ++seq,
       ts: now(),
@@ -186,6 +239,8 @@
       durationMs: Number.isFinite(detail.durationMs) ? Math.round(detail.durationMs) : null,
       error: detail.error || '',
       failureClass: detail.failureClass || classifyFailure(detail),
+      bucket: bucketMeta.bucket,
+      bucketReason: bucketMeta.bucketReason,
     };
     entry.routeHint = inferRouteHint(entry);
 
@@ -212,6 +267,9 @@
           transient: isTransient(entry),
           reason: `${entry.error || `${entry.status || 'network'} ${entry.statusText}`.trim()}${entry.routeHint ? ` (${entry.routeHint})` : ''}`,
           failureClass: entry.failureClass,
+          statusCode: entry.status,
+          bucket: entry.bucket,
+          bucketReason: entry.bucketReason,
         });
       }
     } catch (_) {}
