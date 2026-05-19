@@ -1,6 +1,6 @@
-# WE-CFM-Orchestrator (WE-CRYPTO)
+# WE-CRYPTO (WE-CFM-Orchestrator)
 
-WE-CRYPTO is an Electron-based crypto prediction and orchestration app for 15-minute Kalshi market analysis, live multi-source signal aggregation, and adaptive model tuning.
+WE-CRYPTO is an Electron-based crypto prediction and orchestration app for 15-minute Kalshi market analysis, live multi-source signal aggregation, and adaptive model tuning. It uses a self-teaching three-layer learning stack (real-time, snapshot, and walk-forward) over a 9-signal prediction engine.
 
 Project page: [View on GitHub](https://github.com/JohnDaWalka/WE-CFM-Orchestrator)
 
