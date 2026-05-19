@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 /**
  * Kalshi Standalone Worker
  * 
@@ -82,9 +82,9 @@ console.log(`  API Key ID: ${config.apiKeyId.substring(0, 8)}...`);
 console.log(`  Private Key: ${config.privateKeyPem ? 'Yes (' + config.privateKeyPem.length + ' bytes)' : 'NO'};`);
 console.log(`  Environment: ${config.env}`);
 
-// ──────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Worker State
-// ──────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const state = {
   connected: false,
@@ -104,9 +104,9 @@ const state = {
   }
 };
 
-// ──────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Initialize Kalshi Client
-// ──────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function initializeKalshi() {
   try {
@@ -143,9 +143,9 @@ async function initializeKalshi() {
   }
 }
 
-// ──────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // HTTP Server (JSON RPC-like API)
-// ──────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const server = http.createServer(async (req, res) => {
   // CORS
@@ -267,6 +267,28 @@ async function handlePostRequest(req, res) {
   });
 
   req.on('end', async () => {
+    // Prediction persistence endpoint — accepts raw prediction object and appends to NDJSON
+    try {
+      if (req.url && req.url.startsWith('/predictions')) {
+        try {
+          const p = JSON.parse(body);
+          if (!p || !p.timestamp || !p.voteAction || !p.coin) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: 'missing required fields' }));
+            return;
+          }
+          const outPath = path.join(__dirname, '..', 'data', 'predictions.ndjson');
+          fs.mkdirSync(path.dirname(outPath), { recursive: true });
+          fs.appendFileSync(outPath, JSON.stringify(p) + '\n', 'utf8');
+          res.writeHead(204);
+          res.end();
+        } catch (parseErr) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'invalid json' }));
+        }
+        return;
+      }
+    } catch(err) { console.error('[Kalshi Worker] prediction handler', err); }
     try {
       const data = JSON.parse(body);
       const { command, params } = data;
@@ -322,9 +344,9 @@ async function handlePostRequest(req, res) {
   });
 }
 
-// ──────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Utilities
-// ──────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function recordError(type, message) {
   state.stats.errors++;
@@ -338,14 +360,14 @@ function recordError(type, message) {
   }
 }
 
-// ──────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Startup
-// ──────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function startup() {
-  console.log('╔════════════════════════════════════════════╗');
-  console.log('║  Kalshi Standalone Worker                 ║');
-  console.log('╚════════════════════════════════════════════╝');
+  console.log('â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—');
+  console.log('â•‘  Kalshi Standalone Worker                 â•‘');
+  console.log('â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
   console.log();
   console.log(`Environment: ${config.env}`);
   console.log(`API Key: ${config.apiKeyId.slice(0, 8)}...`);
@@ -361,14 +383,14 @@ async function startup() {
     console.log(`[Kalshi Worker] HTTP server listening on http://127.0.0.1:${config.port}`);
     console.log();
     console.log('Available endpoints:');
-    console.log(`  GET  /health              — Health check`);
-    console.log(`  GET  /status              — Full worker status`);
-    console.log(`  GET  /balance             — Account balance`);
-    console.log(`  GET  /markets             — List markets`);
-    console.log(`  GET  /events              — List events`);
-    console.log(`  GET  /positions           — Your positions`);
-    console.log(`  GET  /orders              — Your orders`);
-    console.log(`  POST /                    — Execute command (placeOrder, cancelOrder, etc.)`);
+    console.log(`  GET  /health              â€” Health check`);
+    console.log(`  GET  /status              â€” Full worker status`);
+    console.log(`  GET  /balance             â€” Account balance`);
+    console.log(`  GET  /markets             â€” List markets`);
+    console.log(`  GET  /events              â€” List events`);
+    console.log(`  GET  /positions           â€” Your positions`);
+    console.log(`  GET  /orders              â€” Your orders`);
+    console.log(`  POST /                    â€” Execute command (placeOrder, cancelOrder, etc.)`);
     console.log();
     console.log('Examples:');
     console.log(`  curl http://127.0.0.1:${config.port}/health`);
@@ -401,3 +423,4 @@ startup().catch(error => {
   console.error('[Kalshi Worker] Fatal error:', error.message);
   process.exit(1);
 });
+

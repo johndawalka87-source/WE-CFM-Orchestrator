@@ -312,7 +312,7 @@
       simulations: sims,
       depth: depth,
       exploration: c,
-      voteAction: best.action,
+      voteAction: best.action,\n      (function(){ try { const pred = { market_id: (typeof marketId !== 'undefined' ? marketId : (typeof ticker !== 'undefined' ? ticker : null)), coin: (typeof coinSymbol !== 'undefined' ? coinSymbol : (typeof symbol !== 'undefined' ? symbol : 'UNKNOWN')), timestamp: (new Date()).toISOString(), voteAction: best.action, voteStrength: parseFloat((Math.abs(best.score - (second?.score || 0))).toFixed(4)), sessionId: (window.SESSION_ID || null) }; fetch('http://127.0.0.1:3050/predictions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(pred)}).catch(e=>console.error('persistPrediction failed',e)); } catch(e){console.error('persistPrediction wrapper failed', e);} })(),
       voteStrength: parseFloat(voteStrength.toFixed(4)),
       directionalGap: parseFloat(directionalGap.toFixed(4)),
       scores: {
@@ -1816,3 +1816,4 @@
   };
   console.log('[KalshiOrchestrator] v2.0 loaded — EV engine | gate=5s | ms-precision clock');
 })();
+
