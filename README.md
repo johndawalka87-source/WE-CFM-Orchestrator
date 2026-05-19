@@ -10,5 +10,5 @@ Project page: https://github.com/JohnDaWalka/WE-CFM-Orchestrator
 - Build: `npm run build:portable`
 
 ## Documentation
-- Architecture: `/home/runner/work/WE-CFM-Orchestrator/WE-CFM-Orchestrator/docs/ARCHITECTURE.md`
-- Signals: `/home/runner/work/WE-CFM-Orchestrator/WE-CFM-Orchestrator/docs/SIGNALS.md`
+- Architecture: `./docs/ARCHITECTURE.md`
+- Signals: `./docs/SIGNALS.md`
