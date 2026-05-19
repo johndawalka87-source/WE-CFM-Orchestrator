@@ -1763,7 +1763,7 @@
       render();
       syncPredictionRefresh();
       // close mobile sidebar
-      $('#sidebar').classList.remove('open');
+      $('#sidebar')?.classList.remove('open');
     });
   });
 
@@ -3109,6 +3109,52 @@
     console.info('[PythLazer] ✓ Live ticker stream active');
   }
 
+  function liveTickerSources(cdcPromise = null) {
+    const sources = [];
+    if (cdcPromise) {
+      sources.push({
+        source: 'cdc',
+        run: async () => {
+          const data = await cdcPromise;
+          if (!data?.length) throw new Error('cdc empty');
+          return data;
+        },
+      });
+    }
+    sources.push(
+      { source: 'pyth-lazer', run: fetchPythLazerProxyTickers },
+      { source: 'pyth', run: fetchPythTickers },
+      { source: 'hyperliquid', run: fetchHyperliquidMids },
+      { source: 'binance', run: fetchBinanceTickers },
+      { source: 'kraken', run: fetchKrakenTickers },
+      { source: 'coinbase', run: fetchCoinbaseTickers },
+    );
+    return sources;
+  }
+
+  async function raceTickerSources(sources, batchSize = 2) {
+    const errors = [];
+    for (let i = 0; i < sources.length; i += batchSize) {
+      const batch = sources.slice(i, i + batchSize);
+      try {
+        return await Promise.any(batch.map(({ source, run }) => (
+          Promise.resolve()
+            .then(run)
+            .then(data => {
+              if (!Array.isArray(data) || data.length === 0) {
+                throw new Error(`${source} returned no ticker rows`);
+              }
+              return { source, data };
+            })
+        )));
+      } catch (err) {
+        if (err?.errors?.length) errors.push(...err.errors);
+        else errors.push(err);
+      }
+    }
+    throw new AggregateError(errors, 'All ticker fallback sources failed');
+  }
+
   async function fetchAll(manual = false, settlement = false) {
     setFeedStatus('loading');
     if (refreshBtn) refreshBtn.classList.add('spinning');
@@ -3122,18 +3168,10 @@
       if (settlement) {
         // ── Settlement blast: all 6 CEXes race from the gun — no cache, no CDC window ──
         // At :00/:15/:30/:45 we need the absolute freshest snapshot for the new contract.
-        console.info('[WE] ⚡ Blasting CDC+Pyth+HL+Binance+Kraken+Coinbase simultaneously');
+        console.info('[WE] ⚡ Settlement fetch: CDC+fallback feeds in bounded batches');
         try {
           const cdcPromise = fetchTickers().catch(() => null);
-          const winner = await Promise.any([
-            cdcPromise.then(d => { if (!d?.length) throw new Error('cdc empty'); return { source: 'cdc', data: d }; }),
-            fetchPythLazerProxyTickers().then(d => ({ source: 'pyth-lazer', data: d })),
-            fetchPythTickers().then(d => ({ source: 'pyth', data: d })),
-            fetchHyperliquidMids().then(d => ({ source: 'hyperliquid', data: d })),
-            fetchBinanceTickers().then(d => ({ source: 'binance', data: d })),
-            fetchKrakenTickers().then(d => ({ source: 'kraken', data: d })),
-            fetchCoinbaseTickers().then(d => ({ source: 'coinbase', data: d })),
-          ]);
+          const winner = await raceTickerSources(liveTickerSources(cdcPromise), 3);
           rawTickers = winner.data;
           dataSource = winner.source;
           // Let CDC finish in background and hydrate shared cache even if it lost the race
@@ -3166,17 +3204,10 @@
           rawTickers = _cdcQuick;
           dataSource = 'cdc';
         } else {
-          // ── Stage 2: Race all sources — decentralized oracles first ──────
-          console.warn('[WE] CDC slow — racing Pyth/HL/Binance/Kraken/Coinbase');
+          // ── Stage 2: Race fallback sources in small batches to avoid network bursts.
+          console.warn('[WE] CDC slow — racing fallback feeds in bounded batches');
           try {
-            const winner = await Promise.any([
-              fetchPythLazerProxyTickers().then(d => ({ source: 'pyth-lazer', data: d })),
-              fetchPythTickers().then(d => ({ source: 'pyth', data: d })),
-              fetchHyperliquidMids().then(d => ({ source: 'hyperliquid', data: d })),
-              fetchBinanceTickers().then(d => ({ source: 'binance', data: d })),
-              fetchKrakenTickers().then(d => ({ source: 'kraken', data: d })),
-              fetchCoinbaseTickers().then(d => ({ source: 'coinbase', data: d })),
-            ]);
+            const winner = await raceTickerSources(liveTickerSources(), 2);
             rawTickers = winner.data;
             dataSource = winner.source;
             _cdcFull.then(cdcData => {
@@ -5010,18 +5041,19 @@
   function refreshActiveView(force = false) {
     // NOTE: do NOT increment _rv here — refreshActiveView is a same-panel data refresh,
     // not navigation. Only render() (user nav click) should bump the version counter.
+    const view = currentView;
     if (currentView === 'charts' && document.getElementById('chartContainer')) {
       updateChartMarketPanels();
       loadCandles({ showLoader: false, reuseChart: true });
       return;
     }
-    if (currentView === 'cfm') { renderCFM(); return; }
-    if (currentView === 'predictions') { renderPredictions(); return; }
-    if (currentView === 'screener') { renderScreener(); return; }
-    if (currentView === 'universe') { renderUniverse(); return; }
-    if (currentView === 'markets5m') { renderMarkets5M(); return; }
-    if (currentView === 'debuglog') { renderDebugLog(); return; }
-    if (currentView === 'observability') { renderObservability(); return; }
+    if (currentView === 'cfm') { runPanelRender(view, renderCFM); return; }
+    if (currentView === 'predictions') { runPanelRender(view, renderPredictions); return; }
+    if (currentView === 'screener') { runPanelRender(view, renderScreener); return; }
+    if (currentView === 'universe') { runPanelRender(view, renderUniverse); return; }
+    if (currentView === 'markets5m') { runPanelRender(view, renderMarkets5M); return; }
+    if (currentView === 'debuglog') { runPanelRender(view, renderDebugLog); return; }
+    if (currentView === 'observability') { runPanelRender(view, renderObservability); return; }
     render();
   }
 
@@ -11995,8 +12027,30 @@
   // RENDER DISPATCH
   // ================================================================
 
+  function showPanelRenderError(view, token, error) {
+    if (token !== _rv || currentView !== view) return;
+    const message = error?.message || String(error || 'Unknown panel error');
+    console.error('[render] Panel error:', error);
+    content.innerHTML = `<div class="error-notice">⚠ Panel error: ${escapeHtml(message)}<br><small>${escapeHtml(error?.stack || '')}</small></div>`;
+  }
+
+  function runPanelRender(view, fn, token = _rv) {
+    try {
+      const result = fn();
+      if (result && typeof result.then === 'function') {
+        result.catch(error => showPanelRenderError(view, token, error));
+      }
+      return result;
+    } catch (error) {
+      showPanelRenderError(view, token, error);
+      return null;
+    }
+  }
+
   function render() {
     _rv++; // invalidate any in-flight async renders from previous navigation
+    const renderToken = _rv;
+    const view = currentView;
     if (candleChart && currentView !== 'charts') destroyChart();
     // Cancel orbital animation whenever leaving (or re-entering) universe
     if (orbitalAnimationFrame) { cancelAnimationFrame(orbitalAnimationFrame); orbitalAnimationFrame = null; }
@@ -12023,25 +12077,26 @@
 
     updateHeaderSummary();
 
-    try {
-      switch (currentView) {
-        case 'markets': renderMarkets(); break;
-        case 'markets5m': renderMarkets5M(); break;
-        case 'debuglog': renderDebugLog(); break;
-        case 'observability': renderObservability(); break;
-        case 'portfolio': renderPortfolio(); break;
-        case 'charts': renderCharts(); break;
-        case 'onchain': renderOnChain(); break;
-        case 'cfm': renderCFM(); break;
-        case 'predictions': renderPredictions(); break;
-        case 'screener': renderScreener(); break;
-        case 'depth': renderDepth(); break;
-        case 'universe': renderUniverse(); break;
-        case 'log': content.innerHTML = renderContractLog(); break;
-      }
-    } catch (e) {
-      console.error('[render] Panel error:', e);
-      content.innerHTML = `<div class="error-notice">⚠ Panel error: ${e.message}<br><small>${e.stack || ''}</small></div>`;
+    switch (view) {
+      case 'markets': runPanelRender(view, renderMarkets, renderToken); break;
+      case 'markets5m': runPanelRender(view, renderMarkets5M, renderToken); break;
+      case 'debuglog': runPanelRender(view, renderDebugLog, renderToken); break;
+      case 'observability': runPanelRender(view, renderObservability, renderToken); break;
+      case 'portfolio': runPanelRender(view, renderPortfolio, renderToken); break;
+      case 'charts': runPanelRender(view, renderCharts, renderToken); break;
+      case 'onchain': runPanelRender(view, renderOnChain, renderToken); break;
+      case 'cfm': runPanelRender(view, renderCFM, renderToken); break;
+      case 'predictions': runPanelRender(view, renderPredictions, renderToken); break;
+      case 'screener': runPanelRender(view, renderScreener, renderToken); break;
+      case 'depth': runPanelRender(view, renderDepth, renderToken); break;
+      case 'universe': runPanelRender(view, renderUniverse, renderToken); break;
+      case 'log':
+        content.innerHTML = renderContractLog();
+        break;
+      default:
+        currentView = 'cfm';
+        activateNav(currentView);
+        runPanelRender(currentView, renderCFM, renderToken);
     }
   }
 

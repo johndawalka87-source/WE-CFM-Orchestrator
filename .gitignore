@@ -57,6 +57,7 @@ venv/
 
 # HAR debug files (huge, personal)
 *.har
+COPILOT_DEBUG/
 
 # Backtest results (regenerated locally)
 backtest/results/

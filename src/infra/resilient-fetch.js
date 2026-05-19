@@ -51,9 +51,28 @@
   function normalizeKrakenPairToBinanceSymbol(pairRaw) {
     const pair = String(pairRaw || '').toUpperCase().replace(/[^A-Z]/g, '');
     if (!pair) return '';
+    const aliases = {
+      XBTUSD: 'BTCUSDT',
+      XXBTZUSD: 'BTCUSDT',
+      ETHUSD: 'ETHUSDT',
+      XETHZUSD: 'ETHUSDT',
+    };
+    if (aliases[pair]) return aliases[pair];
     const normalized = pair.replace(/^XBT/, 'BTC');
-    if (normalized.endsWith('USD')) return `${normalized}T`;
+    if (normalized.endsWith('USD')) return `${normalized.slice(0, -3)}USDT`;
     return normalized;
+  }
+
+  function krakenPairsToBinanceFallback(pairRaw) {
+    const symbols = String(pairRaw || '')
+      .split(',')
+      .map((pair) => normalizeKrakenPairToBinanceSymbol(decodeURIComponent(pair)))
+      .filter(Boolean);
+    if (!symbols.length) return '';
+    if (symbols.length === 1) {
+      return `https://data-api.binance.vision/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbols[0])}`;
+    }
+    return `https://data-api.binance.vision/api/v3/ticker/24hr?symbols=${encodeURIComponent(JSON.stringify(symbols))}`;
   }
 
   // Fallback URLs for APIs that fail frequently
@@ -64,9 +83,7 @@
       // Fallback 1: Try Binance spot
       (url) => {
         const pair = (url.match(/[?&]pair=([^&]+)/i) || [])[1] || '';
-        const symbol = normalizeKrakenPairToBinanceSymbol(decodeURIComponent(pair));
-        if (!symbol) return url;
-        return `https://data-api.binance.vision/api/v3/ticker/price?symbol=${encodeURIComponent(symbol)}`;
+        return krakenPairsToBinanceFallback(pair) || url;
       },
     ],
     // Coinbase → fallback to Kraken
@@ -257,6 +274,6 @@
   window.resilientFetch = resilientFetch;
 
   console.info(
-    `[ResilientFetch] v1.0 ready — ${MAX_RETRIES} retries, ${Object.keys(FALLBACK_URLS).length} known fallbacks`
+    `[ResilientFetch] v1.1 ready — ${MAX_RETRIES} retries, ${Object.keys(FALLBACK_URLS).length} known fallbacks`
   );
 })();
