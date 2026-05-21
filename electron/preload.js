@@ -173,6 +173,22 @@ contextBridge.exposeInMainWorld('wecryp', {
   },
 });
 
+// Orbital broadcaster bridge — renderer calls push(), main process relays to Firestore/RTDB.
+contextBridge.exposeInMainWorld('_orbitalBroadcaster', {
+  push: (orbitalResult) => {
+    if (!orbitalResult) return;
+    ipcRenderer.send('orbital:push', orbitalResult);
+  },
+  pushTick: (tick) => {
+    if (!tick) return;
+    ipcRenderer.send('orbital:pushTick', tick);
+  },
+  pushVertexExecution: (kind, data) => {
+    ipcRenderer.send('orbital:pushVertex', { kind, data: data || {} });
+  },
+  getDiagnostics: () => ipcRenderer.invoke('orbital:broadcaster:diagnostics'),
+});
+
 contextBridge.exposeInMainWorld('dataStore', {
   appendLine: (filePath, line) => ipcRenderer.invoke('data:appendLine', filePath, line),
   writeFile: (filePath, content) => ipcRenderer.invoke('data:writeFile', filePath, content),

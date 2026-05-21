@@ -119,6 +119,15 @@ try {
   console.warn('[FirebaseAdmin] Module unavailable:', e.message);
 }
 
+// ── Orbital Firebase Broadcaster ─────────────────────────────────────────────
+let OrbitalBroadcaster = null;
+try {
+  OrbitalBroadcaster = require('../src/orbital/orbital-firebase-broadcaster');
+  console.log('[OrbitalBroadcaster] Loaded — streams OEQ payloads to Firebase/TIDE');
+} catch (e) {
+  console.warn('[OrbitalBroadcaster] Module unavailable:', e.message);
+}
+
 // ── Pyth Lazer real-time WebSocket service ────────────────────────────────────
 let mainWin = null;
 let pythLazerClient = null;
@@ -1701,6 +1710,36 @@ ipcMain.handle('firebase:status', async () => {
   } catch (error) {
     return { success: false, error: error.message || 'Firebase status unavailable' };
   }
+});
+
+// Orbital broadcaster: renderer fires-and-forgets after each processInterval().
+ipcMain.on('orbital:push', (_event, orbitalResult) => {
+  if (!OrbitalBroadcaster || !orbitalResult) return;
+  try { OrbitalBroadcaster.push(orbitalResult); } catch (_) {}
+});
+
+ipcMain.on('orbital:pushTick', (_event, tick) => {
+  if (!OrbitalBroadcaster || !tick) return;
+  try {
+    if (typeof OrbitalBroadcaster.pushMarketTick === 'function') {
+      OrbitalBroadcaster.pushMarketTick(tick);
+    }
+  } catch (_) { }
+});
+
+ipcMain.on('orbital:pushVertex', (_event, payload = {}) => {
+  if (!OrbitalBroadcaster || !payload) return;
+  try {
+    if (typeof OrbitalBroadcaster.pushVertexExecution === 'function') {
+      OrbitalBroadcaster.pushVertexExecution(payload.kind, payload.data || {});
+    }
+  } catch (_) { }
+});
+
+ipcMain.handle('orbital:broadcaster:diagnostics', () => {
+  return OrbitalBroadcaster && typeof OrbitalBroadcaster.getDiagnostics === 'function'
+    ? OrbitalBroadcaster.getDiagnostics()
+    : { firestoreReady: false, error: 'broadcaster not loaded' };
 });
 
 ipcMain.handle('firebase:startupCheck', async (_event, options = {}) => {

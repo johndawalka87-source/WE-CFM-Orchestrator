@@ -59,17 +59,146 @@ if (
     cmc: { credits_per_month: 10000, per_request: 1, burst: 0, backoff_start: 5000 },
     polymarket: { reqs_per_second: 50, reqs_per_minute: 1000, burst: 1000, backoff_start: 1000 },
     coinbase: { reqs_per_second: 15, burst: 100, backoff_start: 1000 },
+    okx: { reqs_per_second: 12, reqs_per_minute: 700, burst: 30, backoff_start: 1000, backoff_max: 25000 },
+    okc: { reqs_per_second: 12, reqs_per_minute: 700, burst: 30, backoff_start: 1000, backoff_max: 25000 },
+    bitstamp: { reqs_per_second: 8, reqs_per_minute: 400, burst: 25, backoff_start: 1200, backoff_max: 30000 },
+    kraken: { reqs_per_second: 10, reqs_per_minute: 500, burst: 20, backoff_start: 1200, backoff_max: 30000 },
+    bybit: { reqs_per_second: 20, reqs_per_minute: 900, burst: 60, backoff_start: 800, backoff_max: 20000 },
+    binance: { reqs_per_second: 20, reqs_per_minute: 1200, burst: 100, backoff_start: 800, backoff_max: 15000 },
+    kucoin: { reqs_per_second: 12, reqs_per_minute: 700, burst: 30, backoff_start: 1200, backoff_max: 25000 },
+    mexc: { reqs_per_second: 10, reqs_per_minute: 600, burst: 30, backoff_start: 1500, backoff_max: 25000 },
+    bitfinex: { reqs_per_second: 10, reqs_per_minute: 600, burst: 25, backoff_start: 1500, backoff_max: 25000 },
+    cryptocom: { reqs_per_second: 10, reqs_per_minute: 600, burst: 25, backoff_start: 1400, backoff_max: 25000 },
     pyth: { reqs_per_second: Infinity, burst: Infinity, backoff_start: 0 },
-    coingecko: { reqs_per_minute: 50, burst: 0, backoff_start: 2000 },
+    coingecko: { reqs_per_minute: 1, burst: 0, backoff_start: 30000, backoff_max: 900000 },
+    blockchainraw: { reqs_per_second: 4, reqs_per_minute: 200, burst: 10, backoff_start: 1500, backoff_max: 30000 },
+    default: { reqs_per_second: 5, reqs_per_minute: 240, burst: 10, backoff_start: 1500, backoff_max: 30000 },
+  };
+
+  // Provider timing audit matrix (operational min/max bounds used by cascade timer).
+  const PROVIDER_TIMING_AUDIT = {
+    coingecko: {
+      hostPatterns: ['coingecko.com'],
+      minRpm: 1, maxRpm: 2,
+      minTimeoutMs: 6000, maxTimeoutMs: 20000,
+      minIntervalMs: 30000, maxIntervalMs: 120000,
+      maxPayloadBytes: 550000,
+    },
+    coinbase: {
+      hostPatterns: ['exchange.coinbase.com', 'coinbase.com'],
+      minRps: 4, maxRps: 15,
+      minTimeoutMs: 3000, maxTimeoutMs: 12000,
+      minIntervalMs: 70, maxIntervalMs: 1500,
+      maxPayloadBytes: 650000,
+    },
+    okx: {
+      hostPatterns: ['okx.com', 'okcoin.com'],
+      minRps: 5, maxRps: 12,
+      minTimeoutMs: 2800, maxTimeoutMs: 12000,
+      minIntervalMs: 80, maxIntervalMs: 1500,
+      maxPayloadBytes: 700000,
+    },
+    okc: {
+      hostPatterns: ['okx.com', 'okcoin.com'],
+      minRps: 5, maxRps: 12,
+      minTimeoutMs: 2800, maxTimeoutMs: 12000,
+      minIntervalMs: 80, maxIntervalMs: 1500,
+      maxPayloadBytes: 700000,
+    },
+    bitstamp: {
+      hostPatterns: ['bitstamp.net'],
+      minRps: 3, maxRps: 8,
+      minTimeoutMs: 3200, maxTimeoutMs: 12000,
+      minIntervalMs: 120, maxIntervalMs: 1800,
+      maxPayloadBytes: 600000,
+    },
+    binance: {
+      hostPatterns: ['binance.com', 'binance.vision'],
+      minRps: 8, maxRps: 20,
+      minTimeoutMs: 2400, maxTimeoutMs: 10000,
+      minIntervalMs: 45, maxIntervalMs: 1000,
+      maxPayloadBytes: 800000,
+    },
+    bybit: {
+      hostPatterns: ['bybit.com'],
+      minRps: 8, maxRps: 20,
+      minTimeoutMs: 2600, maxTimeoutMs: 11000,
+      minIntervalMs: 50, maxIntervalMs: 1200,
+      maxPayloadBytes: 800000,
+    },
+    kraken: {
+      hostPatterns: ['kraken.com'],
+      minRps: 5, maxRps: 15,
+      minTimeoutMs: 3000, maxTimeoutMs: 12000,
+      minIntervalMs: 80, maxIntervalMs: 1400,
+      maxPayloadBytes: 700000,
+    },
+    kucoin: {
+      hostPatterns: ['kucoin.com'],
+      minRps: 5, maxRps: 12,
+      minTimeoutMs: 3000, maxTimeoutMs: 12000,
+      minIntervalMs: 80, maxIntervalMs: 1600,
+      maxPayloadBytes: 700000,
+    },
+    mexc: {
+      hostPatterns: ['mexc.com'],
+      minRps: 4, maxRps: 10,
+      minTimeoutMs: 3200, maxTimeoutMs: 12500,
+      minIntervalMs: 100, maxIntervalMs: 1800,
+      maxPayloadBytes: 700000,
+    },
+    bitfinex: {
+      hostPatterns: ['bitfinex.com'],
+      minRps: 4, maxRps: 10,
+      minTimeoutMs: 3200, maxTimeoutMs: 12000,
+      minIntervalMs: 100, maxIntervalMs: 1800,
+      maxPayloadBytes: 700000,
+    },
+    cryptocom: {
+      hostPatterns: ['crypto.com'],
+      minRps: 4, maxRps: 10,
+      minTimeoutMs: 3200, maxTimeoutMs: 12000,
+      minIntervalMs: 100, maxIntervalMs: 1800,
+      maxPayloadBytes: 700000,
+    },
+    kalshi: {
+      hostPatterns: ['kalshi.com', 'elections.kalshi.com'],
+      minRps: 3, maxRps: 12,
+      minTimeoutMs: 3200, maxTimeoutMs: 13000,
+      minIntervalMs: 120, maxIntervalMs: 2500,
+      maxPayloadBytes: 900000,
+    },
+    polymarket: {
+      hostPatterns: ['polymarket.com'],
+      minRps: 8, maxRps: 30,
+      minTimeoutMs: 2600, maxTimeoutMs: 12000,
+      minIntervalMs: 40, maxIntervalMs: 1200,
+      maxPayloadBytes: 900000,
+    },
+    blockchainraw: {
+      hostPatterns: ['mempool.space', 'blockchair.com', 'etherscan.io', 'blockscout.com', 'xrplcluster.com', 'solana.com'],
+      minRps: 2, maxRps: 6,
+      minTimeoutMs: 3500, maxTimeoutMs: 14000,
+      minIntervalMs: 160, maxIntervalMs: 2500,
+      maxPayloadBytes: 600000,
+    },
+    default: {
+      hostPatterns: [],
+      minRps: 2, maxRps: 8,
+      minTimeoutMs: 3500, maxTimeoutMs: 12000,
+      minIntervalMs: 125, maxIntervalMs: 3000,
+      maxPayloadBytes: 500000,
+    },
   };
 
   // ── FALLBACK CHAINS ─────────────────────────────────────────────
   const FALLBACK_CHAINS = {
     'kalshi-markets': ['kalshi', 'polymarket', 'cache'],
     'kalshi-markets-legacy': ['kalshi', 'polymarket', 'cache'],
-    'cmc-quotes': ['cmc', 'pyth', 'cache'],
+    'cmc-quotes': ['cmc', 'coinbase', 'binance', 'blockchainraw', 'cache'],
     'kalshi-settlement': ['kalshi', 'polymarket', 'cache'],
     'polymarket-markets': ['polymarket', 'kalshi', 'cache'],
+    'market-data': ['coinbase', 'okx', 'binance', 'blockchainraw', 'coingecko', 'cache'],
   };
 
   // ── CACHE TTL CONFIGURATION ────────────────────────────────────
@@ -106,6 +235,7 @@ if (
       this.failures = 0;
       this.circuitOpen = false;
       this.circuitOpenUntil = 0;
+      this.authLockUntil = 0;
       this.backoffUntil = 0;
       this.backoffMultiplier = 1;
       this.lastRequestTime = 0;
@@ -132,10 +262,20 @@ if (
         } else {
           return false;
         }
+
+        // Provider auth rejection lock (401/403) to avoid hot-loop retries.
+        if (now < this.authLockUntil) {
+          return false;
+        }
       }
 
       // Backoff check
       if (now < this.backoffUntil) {
+        return false;
+      }
+
+      const minInterval = this.getSafeInterval();
+      if (minInterval > 0 && (now - this.lastRequestTime) < minInterval) {
         return false;
       }
 
@@ -146,8 +286,24 @@ if (
      * Calculate safe wait time before next request
      */
     getSafeInterval() {
+      if (Number.isFinite(this.config.reqs_per_second) && this.config.reqs_per_second > 0) {
+        return (1000 / this.config.reqs_per_second) * this.backoffMultiplier;
+      }
+      const rpm = this.config.reqs_per_minute || this.config.reqs_per_min;
+      if (Number.isFinite(rpm) && rpm > 0) {
+        return (60000 / rpm) * this.backoffMultiplier;
+      }
       const minInterval = this.config.backoff_start || 1000;
       return minInterval * this.backoffMultiplier;
+    }
+
+    getWaitMs() {
+      const now = Date.now();
+      if (this.circuitOpen && now < this.circuitOpenUntil) return this.circuitOpenUntil - now;
+      if (now < this.authLockUntil) return this.authLockUntil - now;
+      if (now < this.backoffUntil) return this.backoffUntil - now;
+      const minInterval = this.getSafeInterval();
+      return Math.max(0, minInterval - (now - this.lastRequestTime));
     }
 
     /**
@@ -161,11 +317,24 @@ if (
       this.failureHistory = [];
     }
 
+    recordAuthFailure(lockMs = 15 * 60_000, status = 401) {
+      const now = Date.now();
+      this.lastRequestTime = now;
+      this.failures += 1;
+      this.authLockUntil = Math.max(this.authLockUntil || 0, now + Math.max(60_000, lockMs));
+      this.backoffUntil = Math.max(this.backoffUntil || 0, now + Math.min(lockMs, this.config.backoff_max || 300000));
+      console.warn(
+        `[ProxyOrchestrator] ${this.endpoint} HTTP ${status}: auth lock ${Math.round((this.authLockUntil - now) / 1000)}s`
+      );
+      return this.authLockUntil - now;
+    }
+
     /**
      * Record a 429/503 failure — enter backoff or open circuit
      */
     recordFailure(status = 429) {
       const now = Date.now();
+      this.lastRequestTime = now;
       this.failures++;
       this.failureHistory.push(now);
 
@@ -208,11 +377,150 @@ if (
         healthy: this.canRequest() && !this.circuitOpen,
         circuitOpen: this.circuitOpen,
         failures: this.failures,
+        authLockUntil: this.authLockUntil,
+        authLockRemaining: Math.max(0, this.authLockUntil - now),
         backoffUntil: this.backoffUntil,
         nextRetry: Math.max(0, this.backoffUntil - now),
         safeInterval: this.getSafeInterval(),
       };
     }
+  }
+
+  class CascadingTimer {
+    constructor(policies = {}) {
+      this.policies = policies;
+      this.state = {}; // endpoint => adaptive stats
+    }
+
+    _policy(endpoint) {
+      return this.policies[endpoint] || this.policies.default || {};
+    }
+
+    _ensure(endpoint) {
+      if (!this.state[endpoint]) {
+        this.state[endpoint] = {
+          failures: 0,
+          consecutiveTimeouts: 0,
+          lastLatencyMs: 0,
+          avgLatencyMs: 0,
+          lastStatus: 'idle',
+          lastError: '',
+          lastSuccessTs: 0,
+          lastFailureTs: 0,
+          cascadeLevel: 0,
+        };
+      }
+      return this.state[endpoint];
+    }
+
+    _deriveBaseInterval(policy) {
+      if (Number.isFinite(policy.maxRps) && policy.maxRps > 0) {
+        return 1000 / policy.maxRps;
+      }
+      if (Number.isFinite(policy.maxRpm) && policy.maxRpm > 0) {
+        return 60000 / policy.maxRpm;
+      }
+      return Number.isFinite(policy.minIntervalMs) ? policy.minIntervalMs : 250;
+    }
+
+    getWindow(endpoint) {
+      const policy = this._policy(endpoint);
+      const s = this._ensure(endpoint);
+      const baseInterval = this._deriveBaseInterval(policy);
+      const minInterval = Number.isFinite(policy.minIntervalMs) ? policy.minIntervalMs : baseInterval;
+      const maxInterval = Number.isFinite(policy.maxIntervalMs) ? policy.maxIntervalMs : Math.max(minInterval * 8, 4000);
+      const level = Math.max(0, Math.min(6, s.cascadeLevel));
+      const adaptiveInterval = Math.min(maxInterval, minInterval + (Math.pow(1.7, level) * minInterval * 0.35));
+
+      const minTimeout = Number.isFinite(policy.minTimeoutMs) ? policy.minTimeoutMs : 3500;
+      const maxTimeout = Number.isFinite(policy.maxTimeoutMs) ? policy.maxTimeoutMs : 12000;
+      const latencyFactor = s.avgLatencyMs > 0 ? Math.min(1.8, Math.max(0.7, s.avgLatencyMs / Math.max(1, minTimeout))) : 1;
+      const adaptiveTimeout = Math.max(minTimeout, Math.min(maxTimeout, Math.round(minTimeout * (1 + level * 0.2) * latencyFactor)));
+
+      return {
+        endpoint,
+        intervalMs: Math.round(adaptiveInterval),
+        timeoutMs: adaptiveTimeout,
+        maxPayloadBytes: Number.isFinite(policy.maxPayloadBytes) ? policy.maxPayloadBytes : 500000,
+        cascadeLevel: level,
+      };
+    }
+
+    recordSuccess(endpoint, latencyMs = 0, payloadBytes = 0) {
+      const s = this._ensure(endpoint);
+      const now = Date.now();
+      s.lastSuccessTs = now;
+      s.lastStatus = 'ok';
+      s.lastError = '';
+      s.failures = Math.max(0, s.failures - 1);
+      s.consecutiveTimeouts = 0;
+      s.cascadeLevel = Math.max(0, s.cascadeLevel - 1);
+      s.lastLatencyMs = Number(latencyMs) || 0;
+      if (s.avgLatencyMs <= 0) s.avgLatencyMs = s.lastLatencyMs;
+      else s.avgLatencyMs = Math.round((s.avgLatencyMs * 0.82) + (s.lastLatencyMs * 0.18));
+      s.lastPayloadBytes = Number(payloadBytes) || 0;
+    }
+
+    recordFailure(endpoint, errLike) {
+      const s = this._ensure(endpoint);
+      const now = Date.now();
+      const msg = String(errLike && errLike.message ? errLike.message : errLike || '');
+      s.lastFailureTs = now;
+      s.lastStatus = 'fail';
+      s.lastError = msg;
+      s.failures += 1;
+      if (/timeout|abort|timed out/i.test(msg)) {
+        s.consecutiveTimeouts += 1;
+      }
+      const growth = /429|503|timeout|abort|timed out/i.test(msg) ? 2 : 1;
+      s.cascadeLevel = Math.min(6, s.cascadeLevel + growth);
+    }
+
+    getStatus() {
+      return Object.keys(this.state).reduce((acc, endpoint) => {
+        acc[endpoint] = {
+          ...this.state[endpoint],
+          window: this.getWindow(endpoint),
+        };
+        return acc;
+      }, {});
+    }
+  }
+
+  function inferEndpointFromUrl(url) {
+    try {
+      const host = new URL(String(url), (typeof window !== 'undefined' ? window.location.href : 'http://localhost')).hostname.toLowerCase();
+      for (const [endpoint, policy] of Object.entries(PROVIDER_TIMING_AUDIT)) {
+        if (!policy || !Array.isArray(policy.hostPatterns)) continue;
+        if (policy.hostPatterns.some((p) => host.includes(String(p).toLowerCase()))) return endpoint;
+      }
+    } catch (_) { }
+    return 'default';
+  }
+
+  function truncateJsonPayload(value, limits = {}, depth = 0) {
+    const maxDepth = Number.isFinite(limits.maxDepth) ? limits.maxDepth : 5;
+    const maxArray = Number.isFinite(limits.maxArray) ? limits.maxArray : 250;
+    const maxString = Number.isFinite(limits.maxString) ? limits.maxString : 2000;
+    if (depth > maxDepth) return null;
+    if (value == null) return value;
+    if (typeof value === 'string') {
+      return value.length > maxString ? `${value.slice(0, maxString)}…` : value;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') return value;
+    if (Array.isArray(value)) {
+      const sliced = value.slice(0, maxArray).map((item) => truncateJsonPayload(item, limits, depth + 1));
+      if (value.length > maxArray) sliced.push({ _truncated: value.length - maxArray });
+      return sliced;
+    }
+    if (typeof value === 'object') {
+      const out = {};
+      Object.keys(value).forEach((k) => {
+        out[k] = truncateJsonPayload(value[k], limits, depth + 1);
+      });
+      return out;
+    }
+    return null;
   }
 
   // ── REQUEST BATCHER CLASS ────────────────────────────────────────
@@ -566,6 +874,7 @@ if (
     constructor(config = {}) {
       this.config = config;
       this.rateLimiters = {};       // endpoint → RateLimiter
+      this.cascadeTimer = new CascadingTimer(PROVIDER_TIMING_AUDIT);
       this.batcher = new RequestBatcher(500);
       this.fallback = new FallbackRouter();
       this.cache = new CacheOrchestrator();
@@ -602,12 +911,13 @@ if (
      */
     async fetch(url, options = {}) {
       const {
-        endpoint = 'default',
+        endpoint: endpointOpt = null,
         cacheType = 'market-data',
         skipCache = false,
         fallbackChain = null,
         retries = 2,
       } = options;
+      const endpoint = endpointOpt || inferEndpointFromUrl(url);
 
       const startTime = Date.now();
       const cacheKey = this.cache._cacheKey(url, endpoint);
@@ -626,11 +936,18 @@ if (
 
       // 2. Get rate limiter
       const limiter = this.rateLimiters[endpoint] || this.rateLimiters.default;
+      const cascadeWindow = this.cascadeTimer.getWindow(endpoint);
       if (!limiter.canRequest()) {
-        console.warn(`[ProxyOrchestrator] Rate limited (${endpoint}), using cache...`);
-        const cached = this.cache.get(cacheKey, cacheType);
-        if (cached) return cached;
-        throw new Error(`Rate limited and no cache available: ${endpoint}`);
+        const waitMs = Math.max(limiter.getWaitMs(), cascadeWindow.intervalMs);
+        const canWait = waitMs > 0 && waitMs <= Math.max(10000, cascadeWindow.timeoutMs) && !limiter.circuitOpen;
+        if (canWait) {
+          await new Promise(r => setTimeout(r, waitMs));
+        } else {
+          console.warn(`[ProxyOrchestrator] Rate limited (${endpoint}), using cache...`);
+          const cached = this.cache.get(cacheKey, cacheType);
+          if (cached) return cached;
+          throw new Error(`Rate limited and no cache available: ${endpoint}`);
+        }
       }
 
       // 3. Execute fetch (with deduplication and fallback)
@@ -664,6 +981,10 @@ if (
 
         const latency = Date.now() - startTime;
         this._recordLatency(latency);
+        const payloadBytes = (() => {
+          try { return JSON.stringify(result).length; } catch (_) { return 0; }
+        })();
+        this.cascadeTimer.recordSuccess(endpoint, latency, payloadBytes);
 
         console.log(`[ProxyOrchestrator] Success (${endpoint}): ${url} (${latency}ms)`);
         metrics.requests[endpoint] = (metrics.requests[endpoint] || 0) + 1;
@@ -673,6 +994,7 @@ if (
         const latency = Date.now() - startTime;
         this._recordLatency(latency);
         limiter.recordFailure();
+        this.cascadeTimer.recordFailure(endpoint, err);
         metrics.failures[endpoint] = (metrics.failures[endpoint] || 0) + 1;
 
         console.error(`[ProxyOrchestrator] Failed (${endpoint}): ${err.message}`);
@@ -687,11 +1009,23 @@ if (
       let lastErr;
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
+          const cascadeWindow = this.cascadeTimer.getWindow(endpoint);
           // Use batcher to deduplicate
           return await this.batcher.batch(url, { endpoint }, async () => {
-            const res = await fetch(url, {
-              headers: { Accept: 'application/json' },
-            });
+            limiter.lastRequestTime = Date.now();
+            const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+            const timer = setTimeout(() => {
+              try { if (controller) controller.abort(); } catch (_) { }
+            }, cascadeWindow.timeoutMs);
+            let res;
+            try {
+              res = await fetch(url, {
+                headers: { Accept: 'application/json' },
+                signal: controller ? controller.signal : undefined,
+              });
+            } finally {
+              clearTimeout(timer);
+            }
 
             if (res.status === 429 || res.status === 503) {
               const backoffMs = limiter.recordFailure(res.status);
@@ -702,14 +1036,30 @@ if (
               throw new Error(`HTTP ${res.status} after ${retries} retries`);
             }
 
+            if (res.status === 401 || res.status === 403) {
+              const isGecko = endpoint === 'coingecko' || /coingecko/i.test(String(url));
+              const lockMs = isGecko ? 60 * 60_000 : 15 * 60_000;
+              limiter.recordAuthFailure(lockMs, res.status);
+              throw new Error(`HTTP ${res.status}: auth rejection (${endpoint})`);
+            }
+
             if (!res.ok) {
               throw new Error(`HTTP ${res.status}: ${res.statusText}`);
             }
-
-            return res.json();
+            const raw = await res.text();
+            let parsed = JSON.parse(raw);
+            if (raw.length > cascadeWindow.maxPayloadBytes) {
+              parsed = truncateJsonPayload(parsed, { maxDepth: 5, maxArray: 200, maxString: 2000 });
+              console.warn(`[ProxyOrchestrator] Truncated oversized payload (${endpoint}) at ${raw.length}B`);
+            }
+            return parsed;
           });
         } catch (err) {
           lastErr = err;
+          if (/HTTP 401|HTTP 403|auth rejection/i.test(String(err?.message || err || ''))) {
+            // Hard auth rejects should not be retried in this cycle.
+            break;
+          }
           if (attempt < retries) {
             const backoffMs = (this.config.backoff_start || 2000) * Math.pow(2, attempt);
             console.log(`[ProxyOrchestrator] Retry ${attempt + 1}/${retries} after ${backoffMs}ms`);
@@ -775,6 +1125,7 @@ if (
         },
         batcher: this.batcher.getStatus(),
         fallback: this.fallback.getStatus(),
+        providerTiming: this.cascadeTimer.getStatus(),
       };
     }
 

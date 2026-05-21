@@ -46,8 +46,8 @@ const BACKTEST_FILTER_OVERRIDES = {
   // Retuned 2026-05-08 via 60-day walk-forward OOS calibration.
   // Medians from rolling train/test splits to reduce overfit and normalize h15 trigger quality.
   // DISABLED (per backtest): BNB 33.3%, HYPE 39.3%, DOGE (no feed)
-  BTC:  { h1: { entryThreshold: 0.30, minAgreement: 0.54 }, h5: { entryThreshold: 0.30, minAgreement: 0.54 }, h10: { entryThreshold: 0.30, minAgreement: 0.54 }, h15: { entryThreshold: 0.35, minAgreement: 0.54 } },
-  ETH:  { h1: { entryThreshold: 0.30, minAgreement: 0.54 }, h5: { entryThreshold: 0.30, minAgreement: 0.54 }, h10: { entryThreshold: 0.30, minAgreement: 0.54 }, h15: { entryThreshold: 0.30, minAgreement: 0.54 } },
+  BTC:  { h1: { entryThreshold: 0.34, minAgreement: 0.56 }, h5: { entryThreshold: 0.34, minAgreement: 0.56 }, h10: { entryThreshold: 0.35, minAgreement: 0.57 }, h15: { entryThreshold: 0.38, minAgreement: 0.58 } },
+  ETH:  { h1: { entryThreshold: 0.36, minAgreement: 0.58 }, h5: { entryThreshold: 0.36, minAgreement: 0.58 }, h10: { entryThreshold: 0.35, minAgreement: 0.58 }, h15: { entryThreshold: 0.34, minAgreement: 0.58 } },
   XRP:  { h1: { entryThreshold: 0.30, minAgreement: 0.58 }, h5: { entryThreshold: 0.30, minAgreement: 0.58 }, h10: { entryThreshold: 0.30, minAgreement: 0.54 }, h15: { entryThreshold: 0.35, minAgreement: 0.54 } },
   SOL:  { h1: { entryThreshold: 0.35, minAgreement: 0.54 }, h5: { entryThreshold: 0.35, minAgreement: 0.54 }, h10: { entryThreshold: 0.35, minAgreement: 0.54 }, h15: { entryThreshold: 0.35, minAgreement: 0.54 } },
   BNB:  { h1: { entryThreshold: 0.50, minAgreement: 0.72 }, h5: { entryThreshold: 0.50, minAgreement: 0.72 }, h10: { entryThreshold: 0.50, minAgreement: 0.72 }, h15: { entryThreshold: 0.50, minAgreement: 0.72 } },
@@ -95,46 +95,46 @@ const OUTER_ORBITAL_WEIGHTS = {
 // Updated 2026-04-29. Each value = multiplier on COMPOSITE_WEIGHTS for that coin.
 // Best/Worst indicators per coin sourced directly from backtest-runner.js diagnostic output.
 const PER_COIN_INDICATOR_BIAS = {
-  BTC: {
+  BTC: { // outcome-retuned 2026-05-20 from 106 windows
     // h15 best: stochrsi 64%, vwma 62%, volume 60%
     // h15 worst: momentum 32%, obv 36%, hma 37%
     // ──── TUNED 2026-05-04: Reduce short-horizon overweights, boost microstructure ─
-    stochrsi: 1.8,   // ★ REDUCED FROM 3.5 (64% at h15 but ~40% at h1/h5 - oscillators less reliable short-term)
-    vwma:     1.2,   // ★ REDUCED FROM 2.5 (62% at h15 but less reliable at h1/h5)
-    volume:   1.4,   // ★ REDUCED FROM 2.2 (60% at h15 but noisy at h1/h5)
+    stochrsi: 1.8,   // retained: still >55% in 4-day retune
+    vwma:     1.05,  // reduced: sub-50% in 4-day BTC retune
+    volume:   1.2,   // reduced: sub-50% in 4-day BTC retune
     // Keep proven mean-reversion core
-    bands:      2.5, williamsR: 2.0, structure: 1.4, fisher: 1.3, keltner: 1.6, cci: 1.2,
-    cmf: 1.0, rsi: 0.8, macd: 0.6, persistence: 0.8, ema: 0.5, ichimoku: 0.3, adx: 0.3,
-    vwap: 0.2, sma: 0.185,
+    bands:      3.0, williamsR: 2.4, structure: 1.55, fisher: 1.3, keltner: 1.95, cci: 1.25,
+    cmf: 0.85, rsi: 0.9, macd: 0.5, persistence: 0.66, ema: 0.42, ichimoku: 0.24, adx: 0.24,
+    vwap: 0.15, sma: 0.12,
     // Kill worst performers
-    momentum: 0.25,  // restored for regime-aware trending detection
-    obv:      0.12,  // outcome-retuned 2026-05-08 (180 windows)
-    hma:      0.121, // outcome-retuned 2026-05-08 (180 windows)
-    mfi:      0.5,
-    supertrend: 0.368,
+    momentum: 0.16,   // reduced: <50% in 4-day BTC retune
+    obv:      0.1,    // reduced: <50% in 4-day BTC retune
+    hma:      0.09,   // reduced: <50% in 4-day BTC retune
+    mfi:      0.32,
+    supertrend: 0.3,
     // ★ BOOST MICROSTRUCTURE FOR h1/h5 RECOVERY ★
-    book:     0.26,  // NEW: Order book imbalance
-    flow:     0.24,  // NEW: Trade flow signal
+    book:     0.267,  // NEW: Order book imbalance
+    flow:     0.247,  // NEW: Trade flow signal
   },
-  ETH: {
+  ETH: { // outcome-retuned 2026-05-20 from 119 windows
     // h15 best: rsi 82%, stochrsi 56%, williamsR 55%
     // h15 worst: mfi 38%, momentum 43%, hma 45%
     // ──── TUNED 2026-05-04: Horizon-specific weights to fix h1/h5 bleeding ─────
     // CRITICAL: rsi 82% at h15 but only 37% at h1/h5 (MASSIVE OVERFITTING)
     // Solution: Reduce RSI weight dramatically for short horizons
-    rsi:      0.5,   // ★ REDUCED FROM 5.0 (82% at h15 but 37% at h1 - disable for short horizons)
-    stochrsi: 1.0,   // ★ REDUCED FROM 3.5 (56% at h15 but ~30% at h1/h5 - oscillators less reliable short-term)
-    williamsR: 1.4,  // ★ REDUCED FROM 3.0 (62% at h1 is not justified for 3.0x - mean reversion less reliable)
-    bands:    2.5,   // Keep (proven mean-reversion core works across horizons)
-    structure: 1.4, keltner: 1.2, cci: 0.9, fisher: 0.8, cmf: 0.6,
-    volume: 0.9, persistence: 0.8, obv: 0.5, macd: 0.4,
-    ema: 0.35, sma: 0.079, adx: 0.25, ichimoku: 0.2, vwap: 0.15, vwma: 0.5, supertrend: 0.271,
+    rsi:      0.35,  // reduced: 39% in 4-day ETH retune
+    stochrsi: 1.1,   // mild boost: ~53% in 4-day ETH retune
+    williamsR: 2.05, // boosted: strongest consistent ETH feature
+    bands:    3.0,   // boosted: strong ETH performer in recent window
+    structure: 1.6, keltner: 1.55, cci: 1.0, fisher: 1.0, cmf: 0.5,
+    volume: 0.75, persistence: 0.6, obv: 0.6, macd: 0.32,
+    ema: 0.28, sma: 0.03, adx: 0.17, ichimoku: 0.15, vwap: 0.11, vwma: 0.38, supertrend: 0.14,
     // Kill worst performers
-    mfi:      0.055, // outcome-retuned 2026-05-08 (180 windows)
-    momentum: 0.20,  // restored for regime-aware trending detection
-    hma:      0.07,  // outcome-retuned 2026-05-08 (180 windows)
+    mfi:      0.03,   // reduced: weak in 4-day ETH retune
+    momentum: 0.24,   // retained mild positive edge in 4-day ETH retune
+    hma:      0.07,   // reduced: weak in 4-day ETH retune
   },
-  SOL: {
+  SOL: { // outcome-retuned 2026-05-20 from 122 windows
     // ── Tuned 2026-04-30 & RETUNED 2026-05-04 for h1/h5 recovery ──────────────
     // h15 best: bands 61%, williamsR 58%, fisher 58%, keltner 57%, structure 57%
     // h15 worst: vwap 37%, mfi 21%, stochrsi 27%, rsi 29%, momentum 38%
@@ -145,46 +145,46 @@ const PER_COIN_INDICATOR_BIAS = {
     bands:     2.0,   // ★ REDUCED FROM 6.5 (mean-reversion fails at h1/h5, noise dominates)
     fisher:    1.5,   // ★ REDUCED FROM 4.5 (extreme price levels hard to identify on h1)
     williamsR: 4.0,   // Keep (proven oscillator, works across horizons)
-    hma:       0.1,   // ★ REDUCED FROM 4.0 (CRITICAL: 41% accuracy = BROKEN quality gate at h1/h5)
+    hma:       0.065,   // ★ REDUCED FROM 4.0 (CRITICAL: 41% accuracy = BROKEN quality gate at h1/h5)
     structure: 1.2,   // ★ REDUCED FROM 3.5 (support/resistance needs multiple candles to form)
     cci:       3.5,   // Keep (solid oscillator)
     keltner:   0.8,   // ★ REDUCED FROM 3.0 (ATR bands too volatile at h1)
-    obv:       0.8,   // Keep (volume direction mild signal)
-    macd:      0.3, ichimoku: 0.2, adx: 0.2,
-    vwma:      0.1, volume: 0.2, sma: 0.0,
+    obv:       1.261,   // Keep (volume direction mild signal)
+    macd:      0.886, ichimoku: 0.35, adx: 0.2,
+    vwma:      0.146, volume: 0.232, sma: 0.054,
     // Kill confirmed worst performers (all verified across 14-day run)
-    vwap:      0.05,  // 37% worst
-    rsi:       0.05,  // 29% worst — mean-reversion makes RSI signals backwards
-    persistence: 0.05,  // consistently worst
-    ema:       0.05,  // 36% worst
-    cmf:       0.05,  // consistently bad
-    supertrend: 0.038, // outcome-retuned 2026-05-08 (180 windows)
-    momentum:  0.50,  // restored for regime-aware trending detection
-    mfi:       0.05,  // 21% worst
+    vwap:      0.031,  // 37% worst
+    rsi:       0.031,  // 29% worst — mean-reversion makes RSI signals backwards
+    persistence: 0.034,  // consistently worst
+    ema:       0.054,  // 36% worst
+    cmf:       0.044,  // consistently bad
+    supertrend: 0.02, // outcome-retuned 2026-05-08 (180 windows)
+    momentum:  0.044,  // restored for regime-aware trending detection
+    mfi:       0.037,  // 21% worst
     stochrsi:  0.05,  // 27% worst
     // ★ BOOST MICROSTRUCTURE FOR h1/h5 RECOVERY ★
-    book:      0.30,  // NEW: Order book imbalance (momentum signal at h1/h5)
-    flow:      0.28,  // NEW: Trade flow ratio (key momentum driver for SOL)
+    book:      0.465,  // NEW: Order book imbalance (momentum signal at h1/h5)
+    flow:      0.439,  // NEW: Trade flow ratio (key momentum driver for SOL)
   },
-  XRP: {
+  XRP: { // outcome-retuned 2026-05-20 from 123 windows
     // h15 best: structure 72%, volume 66%, vwap 65%, fisher 69-70% (h1/h10)
     // h15 worst: momentum 28%, vwma 31%, hma 31%
     // ──── TUNED 2026-05-04: Reduce h15-specific weights, boost h1/h5 performers ──
-    structure: 1.0,   // ★ REDUCED FROM 5.0 (72% at h15 but meaningless at h1/h5 - needs multiple candles)
+    structure: 1.01,   // ★ REDUCED FROM 5.0 (72% at h15 but meaningless at h1/h5 - needs multiple candles)
     volume:    1.5,   // ★ REDUCED FROM 4.5 (66% at h15 but volume spikes = noise at h1/h5)
     vwap:      4.0,   // Keep (65% best)
     fisher:    2.5,   // 70% at h1/h5 — strong signal, keep
     rsi:       3.5,   // ★ INCREASED FROM 2.0 (80-100% at h1/h10 - massive underweight!)
     obv:       1.5,   // volume direction confirm
     williamsR: 1.2,   // moderate keep
-    bands:     0.8, supertrend: 0.46, cci: 0.5, cmf: 0.6, keltner: 0.4,
-    macd: 0.3, stochrsi: 0.8, persistence: 0.176, ema: 0.19, adx: 0.2, ichimoku: 0.184,
+    bands:     0.809, supertrend: 0.36, cci: 0.521, cmf: 0.592, keltner: 0.435,
+    macd: 0.347, stochrsi: 0.8, persistence: 0.107, ema: 0.149, adx: 0.166, ichimoku: 0.163,
     sma: 0.0,
-    mfi: 0.105,
+    mfi: 0.122,
     // Kill confirmed worst performers
-    momentum: 0.017,
-    vwma:     0.045,
-    hma:      0.066,
+    momentum: 0.034,
+    vwma:     0.03,
+    hma:      0.09,
   },
   HYPE: {
     // h15 best: williamsR 79%, fisher 77%, cci 75%, bands 78% (h1/h5)
@@ -208,7 +208,7 @@ const PER_COIN_INDICATOR_BIAS = {
     volume:   0.3,   // was 4.5 — not in h15 best list
     mfi:      0.3,   // was 3.5 — not in h15 best list
   },
-  DOGE: {
+  DOGE: { // outcome-retuned 2026-05-21 from 305 windows
     // h15 best: obv 68%, volume 61%, cmf 60%
     // h15 worst: stochrsi 36%, momentum 42%, vwma 43%
     obv:    4.5,  // ★ 68% best — was 0.3 (massive correction)
@@ -216,15 +216,15 @@ const PER_COIN_INDICATOR_BIAS = {
     cmf:    3.0,  // ★ 60% best — was 0.5 (major correction)
     bands:  2.5,  // proven extreme mean-reversion
     mfi:    2.0,  // keep — was proven in original
-    structure: 1.8, fisher: 1.8, keltner: 1.2, cci: 1.0, williamsR: 0.8,
-    rsi: 0.5, persistence: 0.3, ema: 0.3, macd: 0.2, ichimoku: 0.2, adx: 0.1,
-    hma: 0.3, sma: 0.0, supertrend: 0.2, vwap: 0.1,
+    structure: 1.8, fisher: 1.8, keltner: 1.2, cci: 1.0, williamsR: 0.81,
+    rsi: 0.5, persistence: 0.278, ema: 0.289, macd: 0.191, ichimoku: 0.19, adx: 0.103,
+    hma: 0.3, sma: 0.0, supertrend: 0.2, vwap: 0.101,
     // Kill confirmed worst performers
-    stochrsi: 0.05,  // 36% worst — was 1.7
-    momentum: 0.05,  // 42% worst — was 0.25
-    vwma:     0.05,  // 43% worst — was 1.5
+    stochrsi: 0.058,  // 36% worst — was 1.7
+    momentum: 0.051,  // 42% worst — was 0.25
+    vwma:     0.04,  // 43% worst — was 1.5
   },
-  BNB: {
+  BNB: { // outcome-retuned 2026-05-21 from 268 windows
     // h15 best: sma 92%, mfi 91%, ema 86% (NOTE: only 14 signals — high noise)
     // h15 worst: structure 0%, keltner 17%, williamsR 29%
     // Use data cautiously given tiny sample; align with original research where consistent
@@ -236,14 +236,14 @@ const PER_COIN_INDICATOR_BIAS = {
     vwma:   2.5,  // 63% from prior research
     volume: 3.5,  // 80% from prior research
     momentum: 2.0, persistence: 2.0, macd: 1.5, ichimoku: 2.0, supertrend: 2.0,
-    cmf: 1.5, obv: 0.5, fisher: 0.8, cci: 0.3, adx: 0.5,
+    cmf: 1.5, obv: 0.5, fisher: 0.81, cci: 0.313, adx: 0.505,
     // Kill confirmed worst (and consistent with prior research)
-    structure:  0.01,  // 0% worst — certain kill
-    keltner:    0.05,  // 17% worst
-    williamsR:  0.05,  // 29% worst — consistent with prior research
-    bands:      0.05,  // prior research: 30-43% — confirmed bad
-    rsi:        0.05,  // prior research: 34-43% — confirmed bad
-    stochrsi:   0.05,  // aligned with kill-mean-reversion theme
+    structure:  0.029,  // 0% worst — certain kill
+    keltner:    0.064,  // 17% worst
+    williamsR:  0.064,  // 29% worst — consistent with prior research
+    bands:      0.064,  // prior research: 30-43% — confirmed bad
+    rsi:        0.057,  // prior research: 34-43% — confirmed bad
+    stochrsi:   0.064,  // aligned with kill-mean-reversion theme
   },
 };
 

@@ -5,7 +5,7 @@
  * Each API has configurable requests-per-second limit.
  *
  * Usage:
- *   const limiter = new RateLimiter('coingecko', 8);  // 8 req/sec
+ *   const limiter = new RateLimiter('coingecko', 0.33);  // ~20 req/min
  *   await limiter.acquire();
  *   const response = await fetch(url);
  */
@@ -17,9 +17,33 @@
     constructor(name, requestsPerSecond) {
       this.name = name;
       this.rps = requestsPerSecond || 10;
-      this.tokens = this.rps;
+      this.capacity = Math.max(1, Math.ceil(this.rps));
+      this.tokens = this.capacity;
       this.lastRefill = Date.now();
       this.waitQueue = [];
+      this.drainTimer = null;
+    }
+
+    _refill() {
+      const now = Date.now();
+      const timePassed = (now - this.lastRefill) / 1000;
+      this.tokens = Math.min(this.capacity, this.tokens + timePassed * this.rps);
+      this.lastRefill = now;
+    }
+
+    _scheduleDrain() {
+      if (this.drainTimer || this.waitQueue.length === 0) return;
+      const waitTime = this.tokens >= 1 ? 0 : ((1 - this.tokens) * 1000 / this.rps);
+      this.drainTimer = setTimeout(() => {
+        this.drainTimer = null;
+        this._refill();
+        while (this.tokens >= 1 && this.waitQueue.length > 0) {
+          this.tokens -= 1;
+          const resolve = this.waitQueue.shift();
+          resolve();
+        }
+        this._scheduleDrain();
+      }, Math.max(0, Math.ceil(waitTime)));
     }
 
     /**
@@ -28,25 +52,15 @@
      */
     async acquire() {
       return new Promise((resolve) => {
-        const now = Date.now();
-        const timePassed = (now - this.lastRefill) / 1000;
-        
-        // Refill tokens based on time passed
-        this.tokens = Math.min(this.rps, this.tokens + timePassed * this.rps);
-        this.lastRefill = now;
+        this._refill();
 
         if (this.tokens >= 1) {
           // Immediate acquisition
           this.tokens -= 1;
           resolve();
         } else {
-          // Queue for later
-          const waitTime = (1 - this.tokens) * 1000 / this.rps;
-          setTimeout(() => {
-            this.tokens = Math.min(this.rps, Date.now() - this.lastRefill);
-            this.tokens -= 1;
-            resolve();
-          }, Math.ceil(waitTime));
+          this.waitQueue.push(resolve);
+          this._scheduleDrain();
         }
       });
     }
@@ -69,22 +83,35 @@
      * Reset limiter
      */
     reset() {
-      this.tokens = this.rps;
+      this.tokens = this.capacity;
       this.lastRefill = Date.now();
       this.waitQueue = [];
+      if (this.drainTimer) clearTimeout(this.drainTimer);
+      this.drainTimer = null;
     }
   }
 
   // Registry of all limiters by name
   const limiters = {
-    'coingecko': new RateLimiter('coingecko', 8),      // 10 req/sec official, 8 conservative
-    'coinmarketcap': new RateLimiter('coinmarketcap', 14), // ~30 req/min, = ~0.5 req/sec, but burst to 14
+    'coingecko': new RateLimiter('coingecko', 1 / 60), // hard backoff: 1 req/min
+    'coinbase': new RateLimiter('coinbase', 8),        // adaptive floor/ceiling handled by orchestrator
+    'okx': new RateLimiter('okx', 10),
+    'okc': new RateLimiter('okc', 10),
+    'bitstamp': new RateLimiter('bitstamp', 5),
+    'coinmarketcap': new RateLimiter('coinmarketcap', 0.45), // ~27 req/min
     'binance': new RateLimiter('binance', 10),         // 1200 req/min = 20 req/sec
     'bybit': new RateLimiter('bybit', 10),             // 50 req/sec
     'kraken': new RateLimiter('kraken', 15),           // 15 req/sec public
-    'blockcypher': new RateLimiter('blockcypher', 3),  // 200 req/hr free = ~0.056 req/sec
-    'blockscout': new RateLimiter('blockscout', 10),   // 5 req/sec default
-    'chainso': new RateLimiter('chainso', 5),          // 5 req/sec
+    'kucoin': new RateLimiter('kucoin', 10),
+    'mexc': new RateLimiter('mexc', 8),
+    'bitfinex': new RateLimiter('bitfinex', 8),
+    'cryptocom': new RateLimiter('cryptocom', 8),
+    'kalshi': new RateLimiter('kalshi', 5),
+    'polymarket': new RateLimiter('polymarket', 12),
+    'blockchainraw': new RateLimiter('blockchainraw', 4),
+    'blockcypher': new RateLimiter('blockcypher', 0.05), // 180 req/hr, below 200 req/hr free
+    'blockscout': new RateLimiter('blockscout', 3),    // conservative public API pacing
+    'chainso': new RateLimiter('chainso', 1),          // conservative fallback pacing
     'default': new RateLimiter('default', 5),          // Conservative default
   };
 

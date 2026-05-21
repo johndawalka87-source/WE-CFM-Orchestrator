@@ -210,33 +210,55 @@
     return data;
   }
 
+  function toFiniteProbability(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    return Math.max(0, Math.min(1, n));
+  }
+
+  function deriveAskFromReciprocal(directAsk, opposingBid) {
+    const ask = toFiniteProbability(directAsk);
+    if (ask != null && ask > 0) return ask;
+    const oppBid = toFiniteProbability(opposingBid);
+    if (oppBid == null) return null;
+    return toFiniteProbability(1 - oppBid);
+  }
+
+  function resolveKalshiQuote(raw = {}) {
+    const yesBid = toFiniteProbability(raw.yes_bid_dollars ?? raw.yes_bid);
+    const noBid = toFiniteProbability(raw.no_bid_dollars ?? raw.no_bid);
+    const yesAsk = deriveAskFromReciprocal(raw.yes_ask_dollars ?? raw.yes_ask, noBid);
+    const noAsk = deriveAskFromReciprocal(raw.no_ask_dollars ?? raw.no_ask, yesBid);
+    const last = toFiniteProbability(raw.last_price_dollars ?? raw.last_traded_price ?? raw.last_traded);
+
+    let probability = null;
+    if (yesAsk != null && yesBid != null && yesAsk > 0 && yesBid > 0) probability = (yesAsk + yesBid) / 2;
+    else if (yesAsk != null && yesAsk > 0) probability = yesAsk;
+    else if (yesBid != null && yesBid > 0) probability = yesBid;
+    else if (noAsk != null && noBid != null && noAsk > 0 && noBid > 0) probability = 1 - (noAsk + noBid) / 2;
+    else if (last != null && last > 0) probability = last;
+
+    if (probability != null) {
+      probability = Math.min(0.99, Math.max(0.01, probability));
+    }
+
+    return { yesAsk, yesBid, noAsk, noBid, last, probability };
+  }
+
   function applyWsTickerToContract(contract) {
     if (!contract?.ticker || !window.KalshiWS?.getSnapshot) return contract;
     const tick = window.KalshiWS.getSnapshot().tickers?.[contract.ticker];
     if (!tick || Date.now() - (tick.ts || 0) > 45_000) return contract;
 
-    const yesAsk = parseFloat(tick.yes_ask || 0);
-    const yesBid = parseFloat(tick.yes_bid || 0);
-    const noAsk = parseFloat(tick.no_ask || 0);
-    const noBid = parseFloat(tick.no_bid || 0);
-    const last = parseFloat(tick.last_traded || 0);
-
-    let probability = contract.probability;
-    if (yesAsk > 0 && yesBid > 0) probability = (yesAsk + yesBid) / 2;
-    else if (yesAsk > 0) probability = yesAsk;
-    else if (yesBid > 0) probability = yesBid;
-    else if (noAsk > 0 && noBid > 0) probability = 1 - (noAsk + noBid) / 2;
-    else if (last > 0) probability = last;
-    if (probability != null) {
-      probability = Math.min(0.99, Math.max(0.01, probability));
-    }
+    const { yesAsk, yesBid, last, probability: wsProbability } = resolveKalshiQuote(tick);
+    const probability = wsProbability != null ? wsProbability : contract.probability;
 
     return {
       ...contract,
       probability,
-      yesAsk: yesAsk || contract.yesAsk,
-      yesBid: yesBid || contract.yesBid,
-      last: last || contract.last,
+      yesAsk: yesAsk ?? contract.yesAsk,
+      yesBid: yesBid ?? contract.yesBid,
+      last: last ?? contract.last,
       _liveTransport: 'wss',
     };
   }
@@ -295,21 +317,7 @@
   }
 
   function buildKalshiContractData(m, extra = {}) {
-    const yesAsk = parseFloat(m.yes_ask_dollars || 0);
-    const yesBid = parseFloat(m.yes_bid_dollars || 0);
-    const noAsk = parseFloat(m.no_ask_dollars || 0);
-    const noBid = parseFloat(m.no_bid_dollars || 0);
-    const last = parseFloat(m.last_price_dollars || 0);
-
-    let probability = null;
-    if (yesAsk > 0 && yesBid > 0) probability = (yesAsk + yesBid) / 2;
-    else if (yesAsk > 0) probability = yesAsk;
-    else if (yesBid > 0) probability = yesBid;
-    else if (noAsk > 0 && noBid > 0) probability = 1 - (noAsk + noBid) / 2;
-    else if (last > 0) probability = last;
-    if (probability !== null) {
-      probability = Math.min(0.99, Math.max(0.01, probability));
-    }
+    const { yesAsk, yesBid, last, probability } = resolveKalshiQuote(m);
 
     const floorStrike = m.floor_strike != null ? parseFloat(m.floor_strike) : null;
     const floorPriceRaw = m.floor_price != null ? parseFloat(m.floor_price) : null;
@@ -353,9 +361,9 @@
       capPrice,
       targetPrice,
       targetPriceNum,
-      volume: parseFloat(m.volume_fp || 0),
-      liquidity: parseFloat(m.liquidity_dollars || 0),
-      openInterest: parseFloat(m.open_interest_fp || 0),
+      volume: Number(m.volume_fp || 0) || 0,
+      liquidity: Number(m.liquidity_dollars || 0) || 0,
+      openInterest: Number(m.open_interest_fp || 0) || 0,
       ...extra,
     };
   }

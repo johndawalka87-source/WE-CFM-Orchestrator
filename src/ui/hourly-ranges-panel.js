@@ -17,20 +17,21 @@
     BTC: '#f7931a', ETH: '#627eea', SOL: '#00d4aa', XRP: '#23292f',
     DOGE: '#c2a633', BNB: '#f3ba2f', HYPE: '#00dcff',
   };
-  const KALSHI_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
+  // Route through local IPC worker that has the authenticated SDK credentials loaded
+  const KALSHI_BASE = 'http://127.0.0.1:3050';
   const COINBASE_BASE = 'https://api.coinbase.com/api/v3/brokerage';
   const KRAKEN_BASE = 'https://api.kraken.com/0/public';
   const COINGECKO_BASE = 'https://api.coingecko.com/api/v3';
   
-  // Hourly range series base names (e.g., KXBTC_H)
+  // Crypto price ladder series on Kalshi (includes initialized ladders before trading opens).
   const HOURLY_RANGE_SERIES = {
-    BTC:  'KXBTC_H',
-    ETH:  'KXETH_H',
-    SOL:  'KXSOL_H',
-    XRP:  'KXXRP_H',
-    DOGE: 'KXDOGE_H',
-    BNB:  'KXBNB_H',
-    HYPE: 'KXHYPE_H',
+    BTC:  'KXBTCD',
+    ETH:  'KXETHD',
+    SOL:  'KXSOLD',
+    XRP:  'KXXRPD',
+    DOGE: 'KXDOGED',
+    BNB:  'KXBNB',
+    HYPE: 'KXHYPE',
   };
 
   // Coinbase product IDs for live pricing
@@ -53,22 +54,66 @@
 
   let _cachedRanges = {}; // { 'BTC': [{ ...market }, ...], ... }
   let _cachedPrices = {}; // { 'BTC': 45000, ... }
+  let _priceHistory = {}; // { 'BTC': [{ ts, price }], ... }
   let _pollTimer = null;
+  const REQUEST_TIMEOUT_MS = 10000;
+  const ACTIVE_VIEW_KEY = '__weCurrentView';
+  const TARGET_BUCKET_MIN = 11;
+  const TARGET_BUCKET_MAX = 11;
+  const TARGET_BUCKET_DEFAULT = 11;
+  const PRICE_HISTORY_WINDOW_MS = 2 * 60 * 60 * 1000;
+  const MIN_TARGET_CLOSE_LEAD_MS = 6 * 60 * 1000;
+  const MAX_MARKET_PAGES = 6;
+  const OPEN_SOON_WINDOW_MS = 90 * 60 * 1000;
+
+  function isHourlyRangesActive() {
+    if (window[ACTIVE_VIEW_KEY]) return window[ACTIVE_VIEW_KEY] === 'hourly-ranges';
+    const activeBtn = document.querySelector('.nav-btn.active');
+    return activeBtn?.dataset?.view === 'hourly-ranges';
+  }
+
+  function withTimeout(promise, timeoutMs = REQUEST_TIMEOUT_MS) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`timeout ${timeoutMs}ms`)), timeoutMs)),
+    ]);
+  }
 
   // ── Route through Tauri suppFetch for CORS bypass ───────────────
   async function proxyFetch(url) {
+    if (typeof window._proxyOrchestrator !== 'undefined' && window._proxyOrchestrator) {
+      try {
+        const host = new URL(String(url), window.location.href).hostname.toLowerCase();
+        let endpoint = null;
+        if (host.includes('coingecko')) endpoint = 'coingecko';
+        else if (String(url).includes(KALSHI_BASE)) endpoint = 'kalshi';
+        return await window._proxyOrchestrator.fetch(url, { endpoint });
+      } catch (e) {
+        console.warn('[HR] ProxyOrchestrator error:', url, e.message);
+        return null;
+      }
+    }
+
+    try {
+      const host = new URL(String(url), window.location.href).hostname.toLowerCase();
+      const apiName = host.includes('coingecko') ? 'coingecko'
+        : host.includes('kraken') ? 'kraken'
+          : null;
+      if (apiName && window.ApiRateLimiter) await window.ApiRateLimiter.acquireToken(apiName);
+    } catch (_) { }
     if (typeof window.suppFetch === 'function') {
       try {
-        const txt = await window.suppFetch(url);
+        const txt = await withTimeout(window.suppFetch(url));
         return typeof txt === 'string' ? JSON.parse(txt) : txt;
       } catch (e) {
         console.warn('[HR] suppFetch error:', url, e.message);
       }
     }
     try {
-      const res = await fetch(url);
+      const fetchImpl = window.throttledFetch || fetch;
+      const res = await withTimeout(fetchImpl(url));
       if (!res.ok) throw new Error(res.status);
-      return res.json();
+      return withTimeout(res.json());
     } catch (e) {
       console.warn('[HR] fetch error:', url, e.message);
       return null;
@@ -133,39 +178,335 @@
   }
 
   // ── Fetch all hourly range contracts for a coin ─────────────────
+  function toFiniteNumber(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function clamp01(n) {
+    if (!Number.isFinite(n)) return null;
+    return Math.max(0, Math.min(1, n));
+  }
+
+  function clamp(n, lo, hi) {
+    return Math.max(lo, Math.min(hi, n));
+  }
+
+  function formatRangeUsd(low, high) {
+    if (!Number.isFinite(low) || !Number.isFinite(high)) return '—';
+    return low >= 1
+      ? `$${low.toFixed(0)}-$${high.toFixed(0)}`
+      : `$${low.toFixed(4)}-$${high.toFixed(4)}`;
+  }
+
+  function toPercentStr(v, digits = 1) {
+    if (!Number.isFinite(v)) return '—';
+    return `${(v * 100).toFixed(digits)}%`;
+  }
+
+  function parseContractPrice(...candidates) {
+    for (const c of candidates) {
+      const n = Number(c);
+      if (Number.isFinite(n)) return n;
+    }
+    return null;
+  }
+
+  function recordPriceHistory(sym, price) {
+    if (!Number.isFinite(price) || price <= 0) return;
+    const now = Date.now();
+    if (!_priceHistory[sym]) _priceHistory[sym] = [];
+    _priceHistory[sym].push({ ts: now, price });
+    _priceHistory[sym] = _priceHistory[sym].filter(p => (now - p.ts) <= PRICE_HISTORY_WINDOW_MS);
+  }
+
+  function sampleAtAge(samples, ageMs) {
+    if (!Array.isArray(samples) || samples.length < 2) return null;
+    const targetTs = Date.now() - ageMs;
+    for (let i = samples.length - 1; i >= 0; i--) {
+      if (samples[i].ts <= targetTs) return samples[i];
+    }
+    return samples[0];
+  }
+
+  function getTrendMetrics(sym, currentPrice) {
+    const samples = _priceHistory[sym] || [];
+    const base = Number.isFinite(currentPrice) && currentPrice > 0 ? currentPrice : samples[samples.length - 1]?.price;
+    if (!Number.isFinite(base) || base <= 0 || samples.length < 2) {
+      return { momentum10m: 0, momentum30m: 0, volatilityPct: 0.0035 };
+    }
+    const p10 = sampleAtAge(samples, 10 * 60 * 1000);
+    const p30 = sampleAtAge(samples, 30 * 60 * 1000);
+    const momentum10m = p10 && p10.price > 0 ? (base - p10.price) / p10.price : 0;
+    const momentum30m = p30 && p30.price > 0 ? (base - p30.price) / p30.price : 0;
+    const returns = [];
+    for (let i = 1; i < samples.length; i++) {
+      const prev = samples[i - 1].price;
+      const cur = samples[i].price;
+      if (!Number.isFinite(prev) || !Number.isFinite(cur) || prev <= 0 || cur <= 0) continue;
+      returns.push(Math.log(cur / prev));
+    }
+    const mean = returns.length ? returns.reduce((s, r) => s + r, 0) / returns.length : 0;
+    const variance = returns.length
+      ? returns.reduce((s, r) => s + Math.pow(r - mean, 2), 0) / returns.length
+      : 0;
+    const volatilityPct = Math.max(0.0008, Math.sqrt(Math.max(0, variance)));
+    return { momentum10m, momentum30m, volatilityPct };
+  }
+
+  function parseStrikeFromTicker(ticker) {
+    if (!ticker) return null;
+    const m = String(ticker).match(/-T([0-9.]+)$/);
+    if (!m) return null;
+    return toFiniteNumber(m[1]);
+  }
+
+  function pickTargetCloseTime(markets, minLeadMs = 0) {
+    const now = Date.now();
+    const byClose = new Map();
+    for (const m of (Array.isArray(markets) ? markets : [])) {
+      const closeMs = Date.parse(m.close_time);
+      if (!Number.isFinite(closeMs)) continue;
+      const openMs = Date.parse(m.open_time);
+      const existing = byClose.get(closeMs) || {
+        closeMs,
+        count: 0,
+        hasActive: false,
+        opensSoon: false,
+      };
+      existing.count += 1;
+      if (Number.isFinite(openMs) && openMs <= now && closeMs >= now) existing.hasActive = true;
+      if (Number.isFinite(openMs) && openMs > now && (openMs - now) <= OPEN_SOON_WINDOW_MS) existing.opensSoon = true;
+      byClose.set(closeMs, existing);
+    }
+    const entries = [...byClose.values()];
+    if (!entries.length) return null;
+
+    const activeOrSoon = entries.filter(e =>
+      (e.hasActive || e.opensSoon) &&
+      e.closeMs >= now &&
+      (e.closeMs - now) >= minLeadMs
+    );
+    const upcomingWithLead = entries.filter(e => e.closeMs >= now && (e.closeMs - now) >= minLeadMs);
+    const upcoming = entries.filter(e => e.closeMs >= now);
+    const pool = activeOrSoon.length
+      ? activeOrSoon
+      : (upcomingWithLead.length ? upcomingWithLead : (upcoming.length ? upcoming : entries));
+    pool.sort((a, b) => {
+      // Prefer soonest actionable close bucket, then deepest ladder.
+      if (a.closeMs !== b.closeMs) return a.closeMs - b.closeMs;
+      return b.count - a.count;
+    });
+    return new Date(pool[0].closeMs).toISOString();
+  }
+
+  function estimateStepFromStrikes(strikes) {
+    if (!Array.isArray(strikes) || strikes.length < 2) return 1;
+    let best = Infinity;
+    for (let i = 1; i < strikes.length; i++) {
+      const d = strikes[i] - strikes[i - 1];
+      if (Number.isFinite(d) && d > 0 && d < best) best = d;
+    }
+    return Number.isFinite(best) && best > 0 ? best : 1;
+  }
+
+  function isYesAboveContract(market = {}) {
+    const strikeType = String(market.strike_type || '').toLowerCase();
+    const yesText = String(market.yes_sub_title || market.subtitle || market.title || '').toLowerCase();
+    if (strikeType.includes('below') || strikeType.includes('under')) return false;
+    if (strikeType.includes('above') || strikeType.includes('over') || strikeType.includes('greater')) return true;
+    if (yesText.includes('below') || yesText.includes('under')) return false;
+    return true;
+  }
+
+  function buildRangesFromContracts(markets) {
+    const contracts = (Array.isArray(markets) ? markets : []).map(m => {
+      const floor = toFiniteNumber(m.floor_strike) ?? toFiniteNumber(m.floor_price);
+      const cap = toFiniteNumber(m.cap_strike) ?? toFiniteNumber(m.cap_price);
+      const strike = floor ?? cap ?? parseStrikeFromTicker(m.ticker);
+      const yesPriceRaw = parseContractPrice(
+        m.yes_price_dollars,
+        m.yes_price,
+        m.yes_ask_dollars,
+        m.last_price_dollars,
+        m.last_price
+      );
+      const noPriceRaw = parseContractPrice(
+        m.no_price_dollars,
+        m.no_price,
+        m.no_ask_dollars
+      );
+      const yesPrice = Number.isFinite(yesPriceRaw) ? yesPriceRaw : 0;
+      const noPrice = Number.isFinite(noPriceRaw) ? noPriceRaw : (yesPrice <= 1 ? (1 - yesPrice) : (100 - yesPrice));
+      const rawProb = yesPrice > 1 ? yesPrice / 100 : yesPrice;
+      const prob = clamp01(rawProb);
+      return {
+        ticker: m.ticker,
+        status: m.status || 'unknown',
+        closeTime: m.close_time,
+        floor,
+        cap,
+        strike,
+        yesPrice,
+        noPrice,
+        prob,
+        yesIsAbove: isYesAboveContract(m),
+      };
+    });
+
+    // 1) Native bounded contracts (floor + cap) if present.
+    const bounded = contracts
+      .filter(c => Number.isFinite(c.floor) && Number.isFinite(c.cap) && c.cap > c.floor)
+      .map(c => ({
+        ticker: c.ticker,
+        low: c.floor,
+        high: c.cap,
+        yesPrice: c.yesPrice,
+        noPrice: c.noPrice,
+        prob: c.prob,
+        closeTime: c.closeTime,
+        status: c.status,
+      }));
+    if (bounded.length) return bounded;
+
+    // 2) Threshold ladders (-Tstrike): synthesize bounded bands from adjacent strikes.
+    const thresholds = contracts
+      .filter(c => Number.isFinite(c.strike))
+      .sort((a, b) => a.strike - b.strike);
+    if (thresholds.length < 2) return [];
+
+    const strikes = thresholds.map(t => t.strike);
+    const step = estimateStepFromStrikes(strikes);
+    const exceedance = thresholds.map(t => {
+      const pYes = clamp01(t.prob);
+      if (pYes == null) return null;
+      return t.yesIsAbove ? pYes : (1 - pYes);
+    });
+
+    const synthetic = [];
+    // Lower tail: P(price < first strike)
+    const firstEx = exceedance[0];
+    if (firstEx != null) {
+      synthetic.push({
+        ticker: `${thresholds[0].ticker}|tail-lower`,
+        low: thresholds[0].strike - step,
+        high: thresholds[0].strike,
+        yesPrice: thresholds[0].yesPrice,
+        noPrice: thresholds[0].noPrice,
+        prob: clamp01(1 - firstEx),
+        closeTime: thresholds[0].closeTime,
+        status: thresholds[0].status,
+      });
+    }
+
+    for (let i = 0; i < thresholds.length - 1; i++) {
+      const lowC = thresholds[i];
+      const highC = thresholds[i + 1];
+      const pLow = exceedance[i];
+      const pHigh = exceedance[i + 1];
+      synthetic.push({
+        ticker: `${lowC.ticker}|band`,
+        low: lowC.strike,
+        high: highC.strike,
+        yesPrice: lowC.yesPrice,
+        noPrice: lowC.noPrice,
+        prob: (pLow != null && pHigh != null) ? clamp01(pLow - pHigh) : clamp01(lowC.prob),
+        closeTime: lowC.closeTime || highC.closeTime,
+        status: lowC.status,
+      });
+    }
+
+    // Upper tail: P(price >= last strike)
+    const last = thresholds[thresholds.length - 1];
+    const lastEx = exceedance[exceedance.length - 1];
+    if (lastEx != null) {
+      synthetic.push({
+        ticker: `${last.ticker}|tail-upper`,
+        low: last.strike,
+        high: last.strike + step,
+        yesPrice: last.yesPrice,
+        noPrice: last.noPrice,
+        prob: clamp01(lastEx),
+        closeTime: last.closeTime,
+        status: last.status,
+      });
+    }
+    return synthetic;
+  }
+
+  function normalizeRangeLikelihoods(ranges, currentPrice) {
+    const src = Array.isArray(ranges) ? ranges : [];
+    if (!src.length) return [];
+
+    const existingMass = src.reduce((sum, r) => sum + (Number.isFinite(r.prob) ? Math.max(0, r.prob) : 0), 0);
+    if (existingMass > 0.05) {
+      return src.map(r => ({ ...r, prob: clamp01(r.prob) ?? 0 }));
+    }
+
+    // Kalshi often posts initialized ladders with 0/1 placeholders.
+    // When that happens, derive a distance-weighted likelihood across posted buckets.
+    const mids = src.map(r => ({ r, mid: (r.low + r.high) / 2 }));
+    const sortedMids = mids.map(x => x.mid).sort((a, b) => a - b);
+    const step = estimateStepFromStrikes(sortedMids);
+    const anchor = (Number.isFinite(currentPrice) && currentPrice > 0)
+      ? currentPrice
+      : (sortedMids[Math.floor(sortedMids.length / 2)] || 0);
+    const scale = Math.max(step * 1.75, Math.abs(anchor) * 0.0025, 0.0001);
+
+    const weighted = mids.map(x => {
+      const dist = Math.abs(x.mid - anchor);
+      const w = Math.exp(-(dist / scale));
+      return { ...x.r, prob: w };
+    });
+    const total = weighted.reduce((s, r) => s + r.prob, 0) || 1;
+    return weighted.map(r => ({ ...r, prob: clamp01(r.prob / total) || 0 }));
+  }
+
   async function fetchHourlyRangesForCoin(sym) {
     const series = HOURLY_RANGE_SERIES[sym];
     if (!series) return [];
 
     try {
-      // Fetch all markets matching the hourly range series (status=open, limit=100)
-      const url = `${KALSHI_BASE}/markets?series_ticker=${series}&status=open&limit=100`;
-      console.log(`[HR] Fetching ${sym} ranges from: ${url}`);
-      const data = await proxyFetch(url);
-      
-      if (!data?.markets) {
-        console.warn(`[HR] No markets returned for ${sym}:`, data);
+      // Make a single call since hourly ranges fit within the 200 limit
+      const fetchSeriesMarkets = async (seriesTicker) => {
+        const url = `${KALSHI_BASE}/markets?series_ticker=${seriesTicker}&limit=200`;
+        const data = await proxyFetch(url);
+        const payload = (data && data.success && data.data) ? data.data : data;
+        return Array.isArray(payload?.markets) ? payload.markets : [];
+      };
+
+      console.log(`[HR] Fetching ${sym} ranges (paged): ${series}`);
+      let markets = await fetchSeriesMarkets(series);
+
+      if (!markets.length) {
+        console.warn(`[HR] No markets returned for ${sym}`);
         return [];
       }
 
-      console.log(`[HR] Got ${data.markets.length} ranges for ${sym}`);
+      // Dedupe then focus only on the active/next close bucket (e.g., the 5AM ladder).
+      const uniqueMarkets = Array.from(new Map(markets.map(m => [m.ticker, m])).values());
+      const targetClose = pickTargetCloseTime(uniqueMarkets, MIN_TARGET_CLOSE_LEAD_MS);
+      const allRanges = buildRangesFromContracts(uniqueMarkets);
+      if (targetClose) {
+        markets = uniqueMarkets.filter(m => {
+          const ms = Date.parse(m.close_time);
+          return Number.isFinite(ms) && new Date(ms).toISOString() === targetClose;
+        });
+      } else {
+        markets = uniqueMarkets;
+      }
 
-      // Parse contract titles to extract range bounds: "KXBTC_H_75000_75100" → { low: 75000, high: 75100 }
-      const ranges = data.markets.map(m => {
-        const parts = m.ticker.split('_');
-        // Format: [KXBTC, H, 75000, 75100]
-        const low = parseFloat(parts[2]);
-        const high = parseFloat(parts[3]);
-        return {
-          ticker: m.ticker,
-          low,
-          high,
-          yesPrice: m.yes_price || 0,
-          noPrice: m.no_price || 0,
-          prob: m.yes_price / 100, // yes_price is in cents, convert to probability (0-1)
-          closeTime: m.close_time,
-        };
-      });
+      let ranges = buildRangesFromContracts(markets);
+      const anchorPrice = Number.isFinite(_cachedPrices[sym]) && _cachedPrices[sym] > 0
+        ? _cachedPrices[sym]
+        : Number(window._predictions?.[sym]?.price);
+      const hasCurrentCoverage = Number.isFinite(anchorPrice) && anchorPrice > 0
+        ? ranges.some(r => anchorPrice >= r.low && anchorPrice <= r.high)
+        : true;
+      if (ranges.length < TARGET_BUCKET_MIN || !hasCurrentCoverage) {
+        ranges = allRanges;
+      }
+      console.log(`[HR] Got ${ranges.length} ranges for ${sym} (targetClose=${targetClose || 'n/a'})`);
 
       // Sort by low price descending (highest at top, lowest at bottom)
       ranges.sort((a, b) => b.low - a.low);
@@ -179,25 +520,36 @@
   // ── Fetch all hourly ranges for all coins + live prices ────────
   async function loadAllRanges() {
     console.log('[HR] ⏳ Starting loadAllRanges...');
-    _cachedRanges = {};
-    _cachedPrices = {};
-    
     const results = [];
     for (const sym of MAIN_COINS) {
       console.log(`[HR] Fetching ${sym}...`);
       try {
+        // Stagger per-symbol calls to avoid Kalshi burst 429s.
+        await new Promise(r => setTimeout(r, 220));
         // Fetch ranges and live price in parallel
-        const [ranges, price] = await Promise.all([
+        const [ranges, price] = await withTimeout(Promise.all([
           fetchHourlyRangesForCoin(sym),
           getLivePrice(sym),
-        ]);
-        _cachedRanges[sym] = ranges;
-        _cachedPrices[sym] = price;
-        const status = ranges.length > 0 ? `✓ ${ranges.length} ranges` : '✗ No ranges';
+        ]), REQUEST_TIMEOUT_MS + 2000);
+        
+        if (Array.isArray(ranges) && ranges.length > 0) {
+          _cachedRanges[sym] = ranges;
+        } else if (!_cachedRanges[sym]) {
+          _cachedRanges[sym] = [];
+        }
+        if (Number.isFinite(price) && price > 0) {
+          _cachedPrices[sym] = price;
+          recordPriceHistory(sym, price);
+        } else if (!_cachedPrices[sym]) {
+          _cachedPrices[sym] = null;
+        }
+        const status = (_cachedRanges[sym] || []).length > 0 ? `✓ ${_cachedRanges[sym].length} ranges` : '✗ No ranges';
         console.log(`[HR] ${sym}: ${status}, price=$${price}`);
-        results.push({ sym, ranges: ranges.length, price });
+        results.push({ sym, ranges: (_cachedRanges[sym] || []).length, price: _cachedPrices[sym] });
       } catch (e) {
         console.error(`[HR] ERROR loading ${sym}:`, e);
+        if (!_cachedRanges[sym]) _cachedRanges[sym] = [];
+        if (!_cachedPrices[sym]) _cachedPrices[sym] = null;
         results.push({ sym, error: e.message });
       }
     }
@@ -213,34 +565,172 @@
     return 'higher'; // ORANGE (projected higher)
   }
 
+  // ── Select exact -5 to +5 buckets around current price ─────────
+  function selectTargetBuckets(ranges, currentPrice) {
+    if (!ranges || ranges.length === 0) return [];
+    
+    // Sort ascending by price
+    const asc = [...ranges].sort((a, b) => a.low - b.low);
+    
+    // Find the bucket containing current price, or the nearest bucket
+    let currentIndex = -1;
+    if (Number.isFinite(currentPrice) && currentPrice > 0) {
+      currentIndex = asc.findIndex(r => currentPrice >= r.low && currentPrice <= r.high);
+      
+      if (currentIndex === -1) {
+        let nearestDist = Infinity;
+        for (let i = 0; i < asc.length; i++) {
+          const mid = (asc[i].low + asc[i].high) / 2;
+          const dist = Math.abs(mid - currentPrice);
+          if (dist < nearestDist) {
+            nearestDist = dist;
+            currentIndex = i;
+          }
+        }
+      }
+    }
+    
+    if (currentIndex === -1) {
+      // Default to highest probability bucket if no price
+      const best = [...asc].sort((a, b) => (b.prob || 0) - (a.prob || 0))[0];
+      currentIndex = asc.indexOf(best);
+    }
+    
+    // Grab exactly 5 below and 5 above (11 total)
+    const startIdx = Math.max(0, currentIndex - 5);
+    const endIdx = Math.min(asc.length - 1, currentIndex + 5);
+    
+    const selected = asc.slice(startIdx, endIdx + 1);
+    
+    // Sort descending for the UI ladder (highest price at top)
+    return selected.sort((a, b) => b.low - a.low);
+  }
+
+  function deriveHourlyContractForecast(sym, normalizedRanges, currentPrice) {
+    const ranges = Array.isArray(normalizedRanges) ? normalizedRanges.filter(r => Number.isFinite(r.low) && Number.isFinite(r.high)) : [];
+    if (!ranges.length || !Number.isFinite(currentPrice) || currentPrice <= 0) return null;
+
+    const mass = ranges.reduce((s, r) => s + Math.max(0, Number(r.prob) || 0), 0) || 1;
+    const expectedPx = ranges.reduce((s, r) => {
+      const mid = (r.low + r.high) / 2;
+      const p = Math.max(0, Number(r.prob) || 0);
+      return s + (mid * p);
+    }, 0) / mass;
+    const expectedMovePct = (expectedPx - currentPrice) / currentPrice;
+
+    const trend = getTrendMetrics(sym, currentPrice);
+    const modelScore = clamp(Number(window._predictions?.[sym]?.score) || 0, -1, 1);
+    const trackerStats = window.HourlyKalshiTracker?.getStats?.(sym) || null;
+    const trackerBias = (trackerStats && Number(trackerStats.totalBets) >= 6)
+      ? clamp(((Number(trackerStats.winRate) || 50) - 50) / 100, -0.2, 0.2)
+      : 0;
+
+    const rangeBias = Math.tanh(expectedMovePct / Math.max(0.0025, trend.volatilityPct * 0.8));
+    const composite = (
+      (0.56 * rangeBias) +
+      (0.16 * clamp(trend.momentum10m * 8, -1, 1)) +
+      (0.10 * clamp(trend.momentum30m * 6, -1, 1)) +
+      (0.14 * modelScore) +
+      (0.04 * trackerBias)
+    );
+    const probUp = clamp01(0.5 + (composite / 2)) ?? 0.5;
+
+    const sideCandidates = ranges.filter(r => {
+      const mid = (r.low + r.high) / 2;
+      return probUp >= 0.5 ? (mid >= currentPrice) : (mid <= currentPrice);
+    });
+    const chosenPool = sideCandidates.length ? sideCandidates : ranges;
+    const target = [...chosenPool].sort((a, b) => (Number(b.prob) || 0) - (Number(a.prob) || 0))[0] || null;
+    if (!target) return null;
+
+    const confidence = clamp(
+      (Math.abs(probUp - 0.5) * 1.35) + ((Number(target.prob) || 0) * 0.5),
+      0.05,
+      0.97
+    );
+    const action = probUp >= 0.56 ? 'YES' : probUp <= 0.44 ? 'NO' : 'WAIT';
+    const closeMs = Date.parse(target.closeTime || '');
+    const minsToClose = Number.isFinite(closeMs) ? Math.max(0, Math.round((closeMs - Date.now()) / 60000)) : null;
+
+    return {
+      action,
+      confidence,
+      probUp,
+      expectedPx,
+      expectedMovePct,
+      target,
+      minsToClose,
+      trend,
+      trackerStats,
+    };
+  }
+
   // ── Build range ladder with color coding ──────────────────────
-  function buildRangeLadder(sym, ranges, currentPrice) {
+  function buildRangeLadder(sym, ranges, currentPrice, maxRanges = TARGET_BUCKET_DEFAULT) {
     if (!ranges || ranges.length === 0) {
       return `<div class="hr-ladder-empty">No ranges available…</div>`;
     }
 
-    const levels = ranges.map(r => {
+    const normalizedRanges = normalizeRangeLikelihoods(ranges, currentPrice);
+
+    // Show focused actionable targets (3–6 buckets) instead of overloaded ladders.
+    const filteredRanges = selectTargetBuckets(normalizedRanges, currentPrice, maxRanges);
+    if (filteredRanges.length === 0) {
+      return `<div class="hr-ladder-empty">No ranges available…</div>`;
+    }
+
+    const currentBucket = Number.isFinite(currentPrice)
+      ? filteredRanges.find(r => currentPrice >= r.low && currentPrice <= r.high) || normalizedRanges.find(r => currentPrice >= r.low && currentPrice <= r.high)
+      : null;
+    const hourTarget = currentBucket || [...normalizedRanges].sort((a, b) => (b.prob || 0) - (a.prob || 0))[0] || null;
+    const hourTargetStr = hourTarget ? formatRangeUsd(hourTarget.low, hourTarget.high) : '—';
+    const hourlyForecast = deriveHourlyContractForecast(sym, normalizedRanges, currentPrice);
+    const forecastSummary = hourlyForecast ? `
+      <div class="hr-target-summary">
+        Hourly contract call:
+        <strong>${hourlyForecast.action}</strong>
+        ${hourlyForecast.target?.ticker ? `<span style="opacity:.75">(${hourlyForecast.target.ticker})</span>` : ''}
+        · Target <strong>${formatRangeUsd(hourlyForecast.target?.low, hourlyForecast.target?.high)}</strong>
+        · Conf <strong>${Math.round(hourlyForecast.confidence * 100)}%</strong>
+        · Prob(UP) <strong>${Math.round((hourlyForecast.probUp || 0.5) * 100)}%</strong>
+        ${Number.isFinite(hourlyForecast.minsToClose) ? `· closes in <strong>${hourlyForecast.minsToClose}m</strong>` : ''}
+      </div>
+    ` : '';
+    const currentSummary = currentBucket
+      ? `<div class="hr-current-summary">In range now: <strong>${formatRangeUsd(currentBucket.low, currentBucket.high)}</strong> · Likelihood <strong>${Math.round((currentBucket.prob || 0) * 100)}%</strong></div>`
+      : '';
+    const targetSummary = hourTarget
+      ? `<div class="hr-target-summary">Hour target: <strong>${hourTargetStr}</strong> · Hit likelihood <strong>${Math.round((hourTarget.prob || 0) * 100)}%</strong></div>`
+      : '';
+    const calibrationSummary = hourlyForecast
+      ? `<div class="hr-current-summary">Expected settle: <strong>$${hourlyForecast.expectedPx.toFixed(2)}</strong> (${toPercentStr(hourlyForecast.expectedMovePct, 2)}) · 10m drift <strong>${toPercentStr(hourlyForecast.trend.momentum10m, 2)}</strong> · 30m drift <strong>${toPercentStr(hourlyForecast.trend.momentum30m, 2)}</strong></div>`
+      : '';
+
+    const levels = filteredRanges.map(r => {
       const probPct = Math.round(r.prob * 100);
       const classification = classifyRange(r.low, r.high, currentPrice);
       
-      const priceStr = r.low >= 1 ? `$${r.low.toFixed(0)}-$${r.high.toFixed(0)}` : 
-                                      `$${r.low.toFixed(4)}-$${r.high.toFixed(4)}`;
+      const priceStr = formatRangeUsd(r.low, r.high);
       
       let badge = '';
       if (classification === 'current' && currentPrice) {
         badge = ` <span class="hr-range-badge">● ${currentPrice.toFixed(2)}</span>`;
       }
       
+      const targetTag = (hourTarget && r.low === hourTarget.low && r.high === hourTarget.high)
+        ? `<span class="hr-target-tag">TARGET</span>`
+        : '';
       return `
         <div class="hr-level hr-level-${classification}" title="${r.ticker}">
           <span class="hr-level-price">${priceStr}</span>
-          <span class="hr-level-prob">${probPct}%</span>
+          <span class="hr-level-prob">${probPct}% hit</span>
+          ${targetTag}
           ${badge}
         </div>
       `;
     });
 
-    return `<div class="hr-ladder">${levels.join('')}</div>`;
+    return `${forecastSummary}${targetSummary}${calibrationSummary}${currentSummary}<div class="hr-ladder">${levels.join('')}</div>`;
   }
 
   // ── Build full panel ─────────────────────────────────────────────
@@ -274,6 +764,7 @@
 
   // ── Render panel ─────────────────────────────────────────────────
   function renderPanel() {
+    if (!isHourlyRangesActive()) return;
     const container = document.getElementById('content');
     if (!container) {
       console.warn('[HR] Content container not found');
@@ -293,13 +784,34 @@
   // ── Auto-load ranges periodically ────────────────────────────────
   async function startAutoLoad(intervalMs = 30000) {
     console.log('[HR] Starting auto-load loop');
-    await loadAllRanges();
+    if (_pollTimer) {
+      clearInterval(_pollTimer);
+      _pollTimer = null;
+    }
+
+    // Render immediately so the tab never appears blank while network calls resolve.
     renderPanel();
-    
-    _pollTimer = setInterval(async () => {
-      console.log('[HR] Polling ranges...');
+
+    const refreshOnce = async () => {
+      if (!isHourlyRangesActive()) return;
       await loadAllRanges();
       renderPanel();
+    };
+
+    await refreshOnce().catch((e) => {
+      console.warn('[HR] Initial refresh failed:', e?.message || e);
+    });
+
+    _pollTimer = setInterval(async () => {
+      if (!isHourlyRangesActive()) {
+        if (_pollTimer) clearInterval(_pollTimer);
+        _pollTimer = null;
+        return;
+      }
+      console.log('[HR] Polling ranges...');
+      await refreshOnce().catch((e) => {
+        console.warn('[HR] Poll refresh failed:', e?.message || e);
+      });
     }, intervalMs);
   }
 
@@ -309,7 +821,10 @@
     load: loadAllRanges,
     startAutoLoad,
     getRanges: (sym) => _cachedRanges[sym] || [],
-    stopAutoLoad: () => { if (_pollTimer) clearInterval(_pollTimer); },
+    stopAutoLoad: () => {
+      if (_pollTimer) clearInterval(_pollTimer);
+      _pollTimer = null;
+    },
   };
 
   console.log('[HourlyRangesPanel] ✓ Ready — call load() then render()');

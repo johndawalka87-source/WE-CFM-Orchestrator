@@ -23,8 +23,9 @@ const DAYS_BACK    = parseInt(getArg('--days') || '30', 10);
 const CANDLES_WANT = DAYS_BACK * 288;   // 288 × 5m = 1 day
 
 // ── Log directory & checkpoint ────────────────────────────────────
-const LOG_DIR    = 'F:\\WECRYP\\backtest-logs';
-const CHECKPOINT = 'F:\\WECRYP\\WECRYPTO_SESSION_CHECKPOINT_20260501.md';
+const ROOT       = path.resolve(__dirname, '..');
+const LOG_DIR    = path.join(ROOT, 'backtest-logs');
+const CHECKPOINT = path.join(ROOT, 'WECRYPTO_SESSION_CHECKPOINT_20260501.md');
 try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch (_) {}
 
 // ── Coins ─────────────────────────────────────────────────────────

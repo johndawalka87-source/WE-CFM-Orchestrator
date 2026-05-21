@@ -13,7 +13,19 @@ let firebaseApp = null;
 let firestore = null;
 let initError = null;
 let initSource = 'uninitialized';
-let projectId = process.env.WECRYPTO_FIREBASE_PROJECT_ID || null;
+function resolveProjectId(...candidates) {
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim();
+    if (value) return value;
+  }
+  return null;
+}
+
+let projectId = resolveProjectId(
+  process.env.WECRYPTO_FIREBASE_PROJECT_ID,
+  process.env.WECRYPTO_GOOGLE_PROJECT_ID,
+  process.env.GOOGLE_CLOUD_PROJECT
+);
 let clientEmailHash = null;
 let firestoreDatabaseId = process.env.WECRYPTO_FIREBASE_DATABASE_ID || '(default)';
 
@@ -104,12 +116,23 @@ async function ensureInitialized() {
     const options = {};
     if (serviceAccount?.credentials) {
       options.credential = firebaseAdmin.credential.cert(serviceAccount.credentials);
-      projectId = process.env.WECRYPTO_FIREBASE_PROJECT_ID || serviceAccount.credentials.project_id || projectId;
+      projectId = resolveProjectId(
+        process.env.WECRYPTO_FIREBASE_PROJECT_ID,
+        process.env.WECRYPTO_GOOGLE_PROJECT_ID,
+        process.env.GOOGLE_CLOUD_PROJECT,
+        serviceAccount.credentials.project_id,
+        projectId
+      );
       clientEmailHash = hashEmail(serviceAccount.credentials.client_email);
       initSource = serviceAccount.source;
     } else {
       options.credential = firebaseAdmin.credential.applicationDefault();
-      projectId = process.env.WECRYPTO_FIREBASE_PROJECT_ID || projectId;
+      projectId = resolveProjectId(
+        process.env.WECRYPTO_FIREBASE_PROJECT_ID,
+        process.env.WECRYPTO_GOOGLE_PROJECT_ID,
+        process.env.GOOGLE_CLOUD_PROJECT,
+        projectId
+      );
       initSource = 'application-default-credentials';
     }
     if (projectId) options.projectId = projectId;
@@ -268,7 +291,12 @@ async function appendInferenceRecord(record = {}) {
     });
     return { success: true, id: ref.id, collection: collectionName() };
   } catch (error) {
-    return { success: false, error: error.message || 'Failed to append inference record' };
+    const msg = error.message || '';
+    if (msg.includes('PERMISSION_DENIED') || msg.includes('403') || msg.includes('Quota') || msg.includes('billing')) {
+      console.warn(`[Firestore] Permission/Quota error appending inference (${msg}). Yielding to graceful local fallback.`);
+      return { success: false, gracefulFallback: true, error: msg };
+    }
+    return { success: false, error: msg || 'Failed to append inference record' };
   }
 }
 
@@ -288,8 +316,17 @@ async function getInferenceRecords(limit = 30) {
   return snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 }
 
+function getFirestore() {
+  if (!firestore) {
+    // Fire-and-forget lazy init for callers that need a sync handle.
+    ensureInitialized().catch(() => { });
+  }
+  return firestore;
+}
+
 module.exports = {
   envFlagEnabled,
+  getFirestore,
   getStatus,
   startupCheck,
   appendInferenceRecord,

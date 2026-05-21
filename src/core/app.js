@@ -1,4 +1,4 @@
-// ================================================================
+﻿// ================================================================
 // WE CFM Orchestrator — Application Shell
 // Benchmark feeds via Crypto.com Exchange API (no key required)
 // Supporting flow and wallet data via Blockscout public API
@@ -38,6 +38,8 @@
   let screenerMetaCache = {};
   let screenerMetaAge = 0;
   let screenerMetaPromise = null;
+  let _screenerMetaBackoffUntil = 0;
+  let _screenerMetaFailureStreak = 0;
   // _lastGeckoSupplementalTs = timestamp of next ALLOWED call (not last call)
   let _lastGeckoSupplementalTs = 0;
   let _lastGeckoSupplementalResult = [];
@@ -57,6 +59,9 @@
   let _predictionEngineRetryAfterTs = 0;
   let _predictionEngineRetryTimer = null;
   let _predictionEngineLastError = '';
+  let _predLastUserScrollTs = 0;
+  let _predDeferredRefreshTimer = null;
+  let _predScrollTrackerBound = false;
   let _asyncRefreshEngineBooted = false;
   let _kalshiIpcWarnTs = 0;
   let _kalshiIpcWasAvailable = null;
@@ -82,6 +87,7 @@
   const LEGACY_TRADE_BELL_STORE = 'beta1_trade_setup_bell';
   const HIGH_CONF_OVERLAY_STORE = 'beta1_high_conf_overlay_v1';
   const PREDICTION_RUN_TIMEOUT_MS = 25_000;
+  const PRED_SCROLL_IDLE_MS = 1000;
 
   function startPredictionRun() {
     if (predictionRunInFlight) return predictionRunInFlight;
@@ -314,6 +320,7 @@
     try {
       if (typeof window.ProxyOrchestrator === 'undefined') {
         console.warn('[ProxyOrchestrator] Not loaded yet — will retry on demand');
+        cleanupPredScrollListener();
         return;
       }
 
@@ -338,6 +345,9 @@
       window._proxyOrchestrator.fallback.registerSource('pyth', {
         endpoint: 'pyth',
       });
+      window._proxyOrchestrator.fallback.registerSource('coingecko', {
+        endpoint: 'coingecko',
+      });
       window._proxyOrchestrator.fallback.registerSource('cache', {
         endpoint: 'cache',
       });
@@ -357,6 +367,7 @@
     try {
       if (typeof window.SignalSchedulerAgent === 'undefined') {
         console.warn('[SignalScheduler] Not loaded yet — skipping initialization');
+        cleanupPredScrollListener();
         return;
       }
 
@@ -608,6 +619,7 @@
         });
         if (ok) {
           delete window._journalPending[sym];
+          cleanupPredScrollListener();
           return;
         }
       }
@@ -1756,6 +1768,9 @@
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       _userInteractedWithNav = true;
+      if (currentView === 'hourly-ranges' && btn.dataset.view !== 'hourly-ranges') {
+        window.HourlyRangesPanel?.stopAutoLoad?.();
+      }
       currentView = btn.dataset.view;
       activateNav(currentView);
       persistUIState();
@@ -1961,7 +1976,8 @@
         () => ctrl.abort(new DOMException(`Timed out after ${timeoutMs}ms — ${url}`, 'TimeoutError')),
         timeoutMs
       );
-      return fetch(url, { ...fetchOptions, signal: ctrl.signal }).finally(() => clearTimeout(tid));
+      const fetchImpl = window.throttledFetch || fetch;
+      return fetchImpl(url, { ...fetchOptions, signal: ctrl.signal }).finally(() => clearTimeout(tid));
     };
 
     const scheduler = window._signalScheduler;
@@ -2052,15 +2068,25 @@
     const ids = Array.from(new Set(targets.map(t => t.geckoId))).join(',');
     let res;
     try {
-      res = await fetchWithTimeout(`${GECKO_BASE}/coins/markets?vs_currency=usd&ids=${ids}&order=market_cap_desc&sparkline=false&price_change_percentage=24h`, 15000);
+      res = await fetchWithTimeout(
+        `${GECKO_BASE}/coins/markets?vs_currency=usd&ids=${ids}&order=market_cap_desc&sparkline=false&price_change_percentage=24h`,
+        9000,
+        { schedulerLane: 'supplemental', schedulerProvider: 'coingecko' }
+      );
     } catch (e) {
-      _lastGeckoSupplementalTs = Date.now() + 45_000; // 45s backoff on network error
-      throw e;
+      const msg = String(e?.message || e || '');
+      const timeoutHit = /timed out|abort|timeout/i.test(msg);
+      _lastGeckoSupplementalTs = Date.now() + (timeoutHit ? 10 * 60_000 : 5 * 60_000);
+      console.warn(`[GeckoSupplemental] ${timeoutHit ? 'timeout' : 'network error'}; backing off ${(Math.round((_lastGeckoSupplementalTs - Date.now()) / 1000))}s`);
+      return _lastGeckoSupplementalResult;
     }
     if (!res.ok) {
-      // 429 = shared Stockholm exit-node IP is throttled → back off 120s
-      _lastGeckoSupplementalTs = Date.now() + (res.status === 429 ? 120_000 : 45_000);
-      throw new Error(`CoinGecko ${res.status}`);
+      // Geckos often hard-throttle shared egress IPs — lock aggressively.
+      if (res.status === 401 || res.status === 403) _lastGeckoSupplementalTs = Date.now() + 60 * 60_000;
+      else if (res.status === 429) _lastGeckoSupplementalTs = Date.now() + 10 * 60_000;
+      else _lastGeckoSupplementalTs = Date.now() + 5 * 60_000;
+      console.warn(`[GeckoSupplemental] HTTP ${res.status}; backing off ${(Math.round((_lastGeckoSupplementalTs - Date.now()) / 1000))}s`);
+      return _lastGeckoSupplementalResult;
     }
     const rows = await res.json();
     const byId = Object.fromEntries(rows.map(row => [row.id, row]));
@@ -2087,7 +2113,7 @@
       })
       .filter(Boolean);
 
-    _lastGeckoSupplementalTs = Date.now() + 60_000;  // next call allowed in 60s
+    _lastGeckoSupplementalTs = Date.now() + 3 * 60_000;  // keep Gecko as sparse fallback
     _lastGeckoSupplementalResult = result;
     return result;
   }
@@ -2106,6 +2132,7 @@
         }
         _kalshiIpcWasAvailable = false;
         window._kalshiSnapshot = null;
+        cleanupPredScrollListener();
         return;
       }
 
@@ -3679,14 +3706,14 @@
 
   window.addEventListener('predictionadvancedready', () => {
     if (currentView !== 'predictions' || !predsLoaded || predictionRunInFlight) return;
-    renderPredictions();
+    refreshActiveView();
   });
 
   // Phase 2 enrichment complete — re-snapshot and re-render predictions with full exchange data
   window.addEventListener('predictionsEnriched', () => {
     snapshotPredictions();
     if (currentView !== 'predictions' || !predsLoaded || predictionRunInFlight) return;
-    renderPredictions();
+    refreshActiveView();
   });
 
   // Inference overlay complete — capture latest LLM context and refresh cards
@@ -5002,14 +5029,21 @@
   async function fetchScreenerMeta(force = false) {
     const fresh = Date.now() - screenerMetaAge < 10 * 60 * 1000;
     if (!force && fresh && Object.keys(screenerMetaCache).length) return screenerMetaCache;
+    if (!force && _screenerMetaBackoffUntil && Date.now() < _screenerMetaBackoffUntil) return screenerMetaCache;
     if (screenerMetaPromise) return screenerMetaPromise;
 
     const ids = Array.from(new Set(Object.values(SCREENER_GECKO_IDS))).join(',');
-    screenerMetaPromise = fetch(`https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${ids}&order=market_cap_desc&sparkline=false&price_change_percentage=24h`)
-      .then(r => {
-        if (!r.ok) throw new Error(`CoinGecko ${r.status}`);
-        return r.json();
-      })
+    const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${ids}&order=market_cap_desc&sparkline=false&price_change_percentage=24h`;
+    
+    let fetchPromise;
+    if (typeof window._proxyOrchestrator !== 'undefined' && window._proxyOrchestrator) {
+      fetchPromise = window._proxyOrchestrator.fetch(url, { endpoint: 'coingecko' });
+    } else {
+      fetchPromise = fetchWithTimeout(url, 9000, { schedulerLane: 'supplemental', schedulerProvider: 'coingecko' })
+        .then(r => { if (!r.ok) throw new Error(`CoinGecko ${r.status}`); return r.json(); });
+    }
+
+    screenerMetaPromise = fetchPromise
       .then(rows => {
         const next = {};
         rows.forEach(row => {
@@ -5025,9 +5059,23 @@
         });
         screenerMetaCache = next;
         screenerMetaAge = Date.now();
+        _screenerMetaFailureStreak = 0;
+        _screenerMetaBackoffUntil = Date.now() + 10 * 60 * 1000;
         return screenerMetaCache;
       })
       .catch(err => {
+        _screenerMetaFailureStreak += 1;
+        const msg = String(err?.message || err || '');
+        const timeoutHit = /timed out|abort|timeout/i.test(msg);
+        const authHit = /401|403/.test(msg);
+        const rateHit = /429/.test(msg);
+        if (authHit) _screenerMetaBackoffUntil = Date.now() + 60 * 60_000;
+        else if (rateHit) _screenerMetaBackoffUntil = Date.now() + 15 * 60_000;
+        else if (timeoutHit) _screenerMetaBackoffUntil = Date.now() + 10 * 60_000;
+        else {
+          const exp = Math.min(15 * 60_000, 60_000 * Math.pow(2, Math.max(0, _screenerMetaFailureStreak - 1)));
+          _screenerMetaBackoffUntil = Date.now() + exp;
+        }
         console.warn('Screener metadata fetch failed:', err.message);
         return screenerMetaCache;
       })
@@ -5036,6 +5084,14 @@
       });
 
     return screenerMetaPromise;
+  }
+
+  function ensurePredictionsScrollTracker() {
+    if (_predScrollTrackerBound || !content) return;
+    content.addEventListener('scroll', () => {
+      if (currentView === 'predictions') _predLastUserScrollTs = Date.now();
+    }, { passive: true });
+    _predScrollTrackerBound = true;
   }
 
   function refreshActiveView(force = false) {
@@ -5047,13 +5103,53 @@
       loadCandles({ showLoader: false, reuseChart: true });
       return;
     }
-    if (currentView === 'cfm') { runPanelRender(view, renderCFM); return; }
-    if (currentView === 'predictions') { runPanelRender(view, renderPredictions); return; }
-    if (currentView === 'screener') { runPanelRender(view, renderScreener); return; }
-    if (currentView === 'universe') { runPanelRender(view, renderUniverse); return; }
-    if (currentView === 'markets5m') { runPanelRender(view, renderMarkets5M); return; }
-    if (currentView === 'debuglog') { runPanelRender(view, renderDebugLog); return; }
-    if (currentView === 'observability') { runPanelRender(view, renderObservability); return; }
+    if (currentView === 'cfm') {
+      if (!force) {
+        const sinceScroll = Date.now() - _cfmLastUserScrollTs;
+        if (sinceScroll < CFM_SCROLL_IDLE_MS) {
+          if (!_cfmDeferredRefreshTimer) {
+            const waitMs = CFM_SCROLL_IDLE_MS - sinceScroll;
+            _cfmDeferredRefreshTimer = setTimeout(() => {
+              _cfmDeferredRefreshTimer = null;
+              if (currentView === 'cfm') requestCFMRender();
+            }, Math.max(120, waitMs));
+          }
+          return;
+        }
+      }
+      if (_cfmDeferredRefreshTimer) {
+        clearTimeout(_cfmDeferredRefreshTimer);
+        _cfmDeferredRefreshTimer = null;
+      }
+      requestCFMRender(force);
+      return;
+    }
+    if (currentView === 'predictions') {
+      if (!force) {
+        const sinceScroll = Date.now() - _predLastUserScrollTs;
+        if (sinceScroll < PRED_SCROLL_IDLE_MS) {
+          if (!_predDeferredRefreshTimer) {
+            const waitMs = PRED_SCROLL_IDLE_MS - sinceScroll;
+            _predDeferredRefreshTimer = setTimeout(() => {
+              _predDeferredRefreshTimer = null;
+              if (currentView === 'predictions') renderPredictions();
+            }, Math.max(120, waitMs));
+          }
+          return;
+        }
+      }
+      if (_predDeferredRefreshTimer) {
+        clearTimeout(_predDeferredRefreshTimer);
+        _predDeferredRefreshTimer = null;
+      }
+      renderPredictions();
+      return;
+    }
+    if (currentView === 'screener') { renderScreener(); return; }
+    if (currentView === 'universe') { renderUniverse(); return; }
+    if (currentView === 'markets5m') { renderMarkets5M(); return; }
+    if (currentView === 'debuglog') { renderDebugLog(); return; }
+    if (currentView === 'observability') { renderObservability(); return; }
     render();
   }
 
@@ -7531,6 +7627,42 @@
 
   let cfmStarted = false;
   let _cfmStarting = false;
+  let _cfmRenderSeq = 0;
+  let _cfmLastUserScrollTs = 0;
+  let _cfmDeferredRefreshTimer = null;
+  let _cfmRenderThrottleTimer = null;
+  let _cfmLastRenderTs = 0;
+  let _cfmScrollTrackerBound = false;
+  const CFM_SCROLL_IDLE_MS = 900;
+  const CFM_MIN_RENDER_GAP_MS = 1200;
+
+  function ensureCFMScrollTracker() {
+    if (_cfmScrollTrackerBound || !content) return;
+    content.addEventListener('scroll', () => {
+      if (currentView === 'cfm') _cfmLastUserScrollTs = Date.now();
+    }, { passive: true });
+    _cfmScrollTrackerBound = true;
+  }
+
+  function requestCFMRender(force = false) {
+    if (currentView !== 'cfm') return;
+    const sinceLast = Date.now() - _cfmLastRenderTs;
+    if (!force && sinceLast < CFM_MIN_RENDER_GAP_MS) {
+      if (!_cfmRenderThrottleTimer) {
+        _cfmRenderThrottleTimer = setTimeout(() => {
+          _cfmRenderThrottleTimer = null;
+          if (currentView === 'cfm') requestCFMRender(true);
+        }, Math.max(120, CFM_MIN_RENDER_GAP_MS - sinceLast));
+      }
+      return;
+    }
+    if (_cfmRenderThrottleTimer) {
+      clearTimeout(_cfmRenderThrottleTimer);
+      _cfmRenderThrottleTimer = null;
+    }
+    _cfmLastRenderTs = Date.now();
+    renderCFM();
+  }
 
   // ================================================================
   // SUBORBITAL PERIODIC TABLE — Element Definitions
@@ -7603,14 +7735,29 @@
   ];
 
   async function renderCFM() {
+    ensureCFMScrollTracker();
     const _myRV = _rv; // capture version — bail after any await if stale
+    const _myCFMSeq = ++_cfmRenderSeq; // invalidate older in-flight CFM async hydration
+    const isStaleCFMRender = () => _rv !== _myRV || _myCFMSeq !== _cfmRenderSeq || currentView !== 'cfm';
+    const scrollTopSnapshot = content?.scrollTop || 0;
+    let latestScrollTop = scrollTopSnapshot;
+    let userScrolledDuringRender = false;
+    const onCFMScroll = () => {
+      if (!content) return;
+      userScrolledDuringRender = true;
+      latestScrollTop = content.scrollTop;
+    };
+    content?.addEventListener('scroll', onCFMScroll, { passive: true });
+    const cleanupCFMScrollListener = () => {
+      try { content?.removeEventListener('scroll', onCFMScroll); } catch (_) { }
+    };
 
     // Start engine in background if not started — DON'T await it blocking the render
     if (!cfmStarted && !_cfmStarting) {
       _cfmStarting = true;
       CFMEngine.start()
-        .then(() => { cfmStarted = true; _cfmStarting = false; if (currentView === 'cfm') render(); })
-        .catch(e => { _cfmStarting = false; console.error('[CFM] engine start failed:', e); if (currentView === 'cfm') render(); });
+        .then(() => { cfmStarted = true; _cfmStarting = false; if (currentView === 'cfm') requestCFMRender(true); })
+        .catch(e => { _cfmStarting = false; console.error('[CFM] engine start failed:', e); if (currentView === 'cfm') requestCFMRender(true); });
       // Also kick off predictions in background
       if (!predsLoaded) {
         startPredictionRun()
@@ -7635,9 +7782,13 @@
       ? `<div style="display:flex;align-items:center;gap:10px;padding:8px 16px;background:rgba(255,193,7,0.1);border:1px solid rgba(255,193,7,0.3);border-radius:6px;margin-bottom:12px;font-size:13px;color:#ffc107"><div style="width:16px;height:16px;border:2px solid rgba(255,193,7,0.3);border-top-color:#ffc107;border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0"></div><span>Assembling CFM benchmarks\u2026</span></div>`
       : '';
 
-    if (_rv !== _myRV) return; // guard: stale render version
+    if (isStaleCFMRender()) {
+      cleanupCFMScrollListener();
+      return; // guard: stale render version or superseded CFM render
+    }
 
     content.innerHTML = `
+      <div class="cfm-view-root">
       ${loadingBanner}
       <div class="engine-hero">
         <div>
@@ -7712,7 +7863,11 @@
           The result is a benchmark-backed decision surface for UP, DOWN, or stand-aside execution.
         </div>
       </div>
+      </div>
     `;
+    requestAnimationFrame(() => {
+      if (currentView === 'cfm' && content) content.scrollTop = scrollTopSnapshot;
+    });
 
     // Hydrate WECRYPTO sentiment panel (scripts in innerHTML don't execute)
     (function () {
@@ -7764,47 +7919,56 @@
     // ── Progressive async fill — opportunities panel then coins one-by-one ──
     // Yields to the browser between each heavy build so the page is responsive immediately.
     (async () => {
-      // 1. Opportunities panel (medium weight)
-      await new Promise(r => setTimeout(r, 0));
-      if (_rv !== _myRV) return;
-      const oppSlot = document.getElementById('cfm-opp-slot');
-      if (oppSlot) {
-        try { oppSlot.outerHTML = buildOpportunitiesPanel(cfmAll, predAll) || '<div id="cfm-opp-slot"></div>'; }
-        catch (e) { console.warn('[CFM] opp panel error:', e); }
-      }
-
-      // 2. Each coin table (heavy — up to 22 suborbitals each)
-      for (const coin of PREDICTION_COINS) {
+      try {
+        // 1. Opportunities panel (medium weight)
         await new Promise(r => setTimeout(r, 0));
-        if (_rv !== _myRV) return;
-        const cfm = cfmAll[coin.sym];
-        const pred = predAll[coin.sym];
-        const slot = document.getElementById(`cfm-coin-slot-${coin.sym}`);
-        if (!slot) continue;
-        if (!cfm || cfm.cfmRate === 0) { slot.remove(); continue; }
-        try {
-          slot.outerHTML = buildCoinPeriodicTable(coin, cfm, pred);
-        } catch (e) {
-          console.warn(`[CFM] coin table error ${coin.sym}:`, e);
-          slot.remove();
+        if (isStaleCFMRender()) return;
+        const oppSlot = document.getElementById('cfm-opp-slot');
+        if (oppSlot) {
+          try { oppSlot.outerHTML = buildOpportunitiesPanel(cfmAll, predAll) || '<div id="cfm-opp-slot"></div>'; }
+          catch (e) { console.warn('[CFM] opp panel error:', e); }
         }
-      }
 
-      // 3. Re-attach toggle listeners after all coins are in DOM
-      if (_rv !== _myRV) return;
-      content.querySelectorAll('[data-cfm-toggle]').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const sym = btn.dataset.cfmToggle;
-          const block = btn.closest('[data-cfm-sym]');
-          if (!block) return;
-          const panel = block.querySelector('.cfm-expand-panel');
-          const icon = block.querySelector('.cfm-expand-icon');
-          const isOpen = panel?.classList.toggle('open');
-          block.classList.toggle('expanded', isOpen);
-          if (icon) icon.textContent = isOpen ? '\u2212' : '+';
-          if (isOpen) cfmExpanded.add(sym); else cfmExpanded.delete(sym);
+        // 2. Each coin table (heavy — up to 22 suborbitals each)
+        for (const coin of PREDICTION_COINS) {
+          await new Promise(r => setTimeout(r, 0));
+          if (isStaleCFMRender()) return;
+          const cfm = cfmAll[coin.sym];
+          const pred = predAll[coin.sym];
+          const slot = document.getElementById(`cfm-coin-slot-${coin.sym}`);
+          if (!slot) continue;
+          if (!cfm || cfm.cfmRate === 0) { slot.remove(); continue; }
+          try {
+            slot.outerHTML = buildCoinPeriodicTable(coin, cfm, pred);
+          } catch (e) {
+            console.warn(`[CFM] coin table error ${coin.sym}:`, e);
+            slot.remove();
+          }
+        }
+
+        // 3. Re-attach toggle listeners after all coins are in DOM
+        if (isStaleCFMRender()) return;
+        content.querySelectorAll('[data-cfm-toggle]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const sym = btn.dataset.cfmToggle;
+            const block = btn.closest('[data-cfm-sym]');
+            if (!block) return;
+            const panel = block.querySelector('.cfm-expand-panel');
+            const icon = block.querySelector('.cfm-expand-icon');
+            const isOpen = panel?.classList.toggle('open');
+            block.classList.toggle('expanded', isOpen);
+            if (icon) icon.textContent = isOpen ? '\u2212' : '+';
+            if (isOpen) cfmExpanded.add(sym); else cfmExpanded.delete(sym);
+          });
         });
-      });
+
+        // Preserve user position if they scrolled while async hydration was still filling slots.
+        if (currentView === 'cfm' && content) {
+          content.scrollTop = userScrolledDuringRender ? latestScrollTop : scrollTopSnapshot;
+        }
+      } finally {
+        cleanupCFMScrollListener();
+      }
     })();
   }
 
@@ -9866,14 +10030,89 @@
     }
   }
 
+  function getPredictionCoinMeta(sym) {
+    const key = String(sym || '').toUpperCase();
+    if (!key) return null;
+    const configured = Array.isArray(window.PREDICTION_COINS)
+      ? window.PREDICTION_COINS
+      : (typeof PREDICTION_COINS !== 'undefined' && Array.isArray(PREDICTION_COINS) ? PREDICTION_COINS : []);
+    const portfolio = typeof PORTFOLIO_HOLDINGS !== 'undefined' && Array.isArray(PORTFOLIO_HOLDINGS)
+      ? PORTFOLIO_HOLDINGS
+      : [];
+    const watchlist = typeof WATCHLIST !== 'undefined' && Array.isArray(WATCHLIST)
+      ? WATCHLIST
+      : [];
+
+    return configured.find(c => c?.sym === key)
+      || portfolio.find(c => c?.sym === key)
+      || watchlist.find(c => c?.sym === key)
+      || null;
+  }
+
+  function normalizePredictionCardData(raw, fallbackSym = '') {
+    const incoming = raw && typeof raw === 'object' ? raw : {};
+    const sym = String(incoming.sym || incoming.symbol || incoming.coin || fallbackSym || '').toUpperCase();
+    if (!sym) return { ...incoming, sym: '' };
+
+    const meta = getPredictionCoinMeta(sym) || {};
+    const color = incoming.color
+      || meta.color
+      || (typeof COIN_COLORS !== 'undefined' ? COIN_COLORS[sym] : null)
+      || '#7880a0';
+    const score = Number(incoming.score);
+    const confidence = Number(incoming.confidence);
+    const price = Number(incoming.price);
+    const hasPayload = Object.keys(incoming).length > 0;
+
+    return {
+      ...incoming,
+      sym,
+      name: incoming.name || meta.name || (typeof COIN_SHORT !== 'undefined' ? COIN_SHORT[sym] : null) || sym,
+      instrument: incoming.instrument || meta.instrument || `${sym}USD`,
+      geckoId: incoming.geckoId || meta.geckoId || null,
+      icon: incoming.icon || meta.icon || sym.slice(0, 2),
+      iconSources: Array.isArray(incoming.iconSources)
+        ? incoming.iconSources
+        : (Array.isArray(meta.iconSources) ? meta.iconSources : []),
+      color,
+      signal: incoming.signal || 'neutral',
+      score: Number.isFinite(score) ? score : 0,
+      confidence: Number.isFinite(confidence) ? confidence : 0,
+      price: Number.isFinite(price) ? price : 0,
+      source: incoming.source || (hasPayload ? 'partial' : 'loading'),
+      candleCount: incoming.candleCount ?? 0,
+      candleCount1m: incoming.candleCount1m ?? 0,
+      updatedAt: incoming.updatedAt || 'pending',
+      indicators: incoming.indicators || {},
+      diagnostics: incoming.diagnostics || {},
+      projections: incoming.projections || {},
+      volatility: incoming.volatility || { label: 'Unknown', atrPct: 0 },
+      scalpSetups: Array.isArray(incoming.scalpSetups) ? incoming.scalpSetups : [],
+    };
+  }
+
   async function renderPredictions() {
+    ensurePredictionsScrollTracker();
     const _myRV = _rv; // capture version — bail after any await if stale
     const nowTs = Date.now();
+    const scrollTopSnapshot = content?.scrollTop || 0;
+    let latestScrollTop = scrollTopSnapshot;
+    let userScrolledDuringRender = false;
+    const onPredScroll = () => {
+      if (!content) return;
+      userScrolledDuringRender = true;
+      latestScrollTop = content.scrollTop;
+    };
+    content?.addEventListener('scroll', onPredScroll, { passive: true });
+    const cleanupPredScrollListener = () => {
+      try { content?.removeEventListener('scroll', onPredScroll); } catch (_) { }
+    };
 
     const engine = window.PredictionEngine;
     const engineReady = !!engine?.getAll && !!engine?.getSession;
     if (!engineReady) {
       content.innerHTML = `<div class="card"><div class="card-body" style="padding:14px;color:var(--color-text-muted)">Prediction engine unavailable. Waiting for module load...</div></div>`;
+      cleanupPredScrollListener();
       return;
     }
 
@@ -9914,10 +10153,11 @@
     } else if (!predsLoaded && nowTs < _predictionEngineRetryAfterTs && currentView === 'predictions') {
       const secLeft = Math.max(1, Math.ceil((_predictionEngineRetryAfterTs - nowTs) / 1000));
       content.innerHTML = `<div class="card"><div class="card-body" style="padding:14px;color:var(--color-text-muted)">Prediction engine retry backoff active (${secLeft}s).<br><small style="opacity:.75">${escapeHtml(_predictionEngineLastError || 'waiting for recovery')}</small></div></div>`;
+      cleanupPredScrollListener();
       return;
     }
 
-    if (_rv !== _myRV) return; // guard: stale render version
+    if (_rv !== _myRV) { cleanupPredScrollListener(); return; } // guard: stale render version
     let preds = {};
     let session = null;
     try {
@@ -9927,10 +10167,22 @@
       const msg = String(err?.message || err || 'unknown render error');
       console.error('[Predictions] getAll/getSession failed:', err);
       content.innerHTML = `<div class="card"><div class="card-body" style="padding:14px;color:var(--color-text-muted)">Prediction render failed: ${escapeHtml(msg)}</div></div>`;
+      cleanupPredScrollListener();
       return;
     }
     const coinOrder = new Map(PREDICTION_COINS.map((coin, index) => [coin.sym, index]));
-    const predArr = Object.values(preds)
+    const predBySym = new Map();
+    PREDICTION_COINS.forEach(coin => {
+      predBySym.set(
+        coin.sym,
+        normalizePredictionCardData({ ...coin, ...(preds?.[coin.sym] || {}), sym: coin.sym }, coin.sym)
+      );
+    });
+    Object.entries(preds || {}).forEach(([key, pred]) => {
+      const normalized = normalizePredictionCardData(pred, key);
+      if (normalized.sym) predBySym.set(normalized.sym, normalized);
+    });
+    const predArr = Array.from(predBySym.values())
       .filter(p => p.sym)
       .sort((a, b) => {
         const ai = coinOrder.has(a.sym) ? coinOrder.get(a.sym) : Number.MAX_SAFE_INTEGER;
@@ -9951,6 +10203,16 @@
     const advancedBacktests = backtests.map(bt => bt.advanced).filter(Boolean);
     const avgAdvancedQuality = avgMetric(advancedBacktests.map(bt => (bt.summary?.reliability || 0.5) * 100));
     const avgAdvancedFit = avgMetric(advancedBacktests.map(bt => (bt.summary?.tradeFit || bt.summary?.reliability || 0.5) * 100));
+    const advancedVolSnapshots = advancedBacktests.map(bt => bt.volatility).filter(Boolean);
+    const avgAdvancedVolPct = avgMetric(advancedVolSnapshots.map(v => Number(v.ewmaVolPct) || 0));
+    const avgAdvancedVolPercentile = avgMetric(advancedVolSnapshots.map(v => Number(v.volPercentile) || 50));
+    const avgAdvancedJumpRisk = avgMetric(advancedVolSnapshots.map(v => (Number(v.jumpRatio) || 0) * 100));
+    const regimeCounts = advancedVolSnapshots.reduce((acc, v) => {
+      const key = String(v.regime || 'UNKNOWN').toUpperCase();
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    const dominantAdvancedRegime = Object.entries(regimeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'N/A';
     const preferredHorizonCounts = PREDICTION_HORIZONS.map(horizonMin => ({
       horizonMin,
       count: backtests.filter(bt => (bt.summary?.preferredHorizon || 5) === horizonMin).length,
@@ -10054,7 +10316,12 @@
             <div class="kpi-card">
               <div class="kpi-label">Advanced Backtest</div>
               <div class="kpi-val ${avgAdvancedQuality >= 58 ? 'green' : avgAdvancedQuality < 42 ? 'red' : 'gold'}">${advancedBacktests.length ? Math.round(avgAdvancedQuality) : '—'}%</div>
-              <div class="kpi-sub">${advancedBacktests.length ? `${Math.round(avgAdvancedFit)}% fit from full-life daily history` : 'loading full-history tests'}</div>
+              <div class="kpi-sub">${advancedBacktests.length ? `${Math.round(avgAdvancedFit)}% fit · ${dominantAdvancedRegime} regime · EWMA ${avgAdvancedVolPct.toFixed(2)}%` : 'loading full-history tests'}</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-label">7d Volatility Regime</div>
+              <div class="kpi-val ${avgAdvancedVolPercentile >= 90 ? 'red' : avgAdvancedVolPercentile >= 75 ? 'gold' : avgAdvancedVolPercentile < 25 ? 'green' : ''}">${advancedVolSnapshots.length ? `${dominantAdvancedRegime} (${avgAdvancedVolPercentile.toFixed(0)}p)` : '—'}</div>
+              <div class="kpi-sub">${advancedVolSnapshots.length ? `Jump risk ${avgAdvancedJumpRisk.toFixed(1)}% across ${advancedVolSnapshots.length} coins` : 'waiting for 7d volatility snapshot'}</div>
             </div>
           </div>
           <div style="font-size:11px;color:var(--color-text-muted);line-height:1.5">
@@ -10165,6 +10432,12 @@
         if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     });
+    requestAnimationFrame(() => {
+      if (currentView === 'predictions' && content) {
+        content.scrollTop = userScrolledDuringRender ? latestScrollTop : scrollTopSnapshot;
+      }
+    });
+    cleanupPredScrollListener();
   }
 
   function predictionCard(p) {
@@ -10374,6 +10647,7 @@
     const reliabilityPct = hasBacktest ? Math.round((p.backtest.summary?.reliability || 0) * 100) : 0;
     const tradeFitPct = hasBacktest ? Math.round(((p.backtest.summary?.tradeFit ?? p.backtest.summary?.reliability ?? 0) * 100)) : 0;
     const advanced = p.backtest?.advanced || null;
+    const advancedVol = advanced?.volatility || null;
     const advancedQualityPct = advanced ? Math.round((advanced.summary?.reliability || 0) * 100) : 0;
     const advancedFitPct = advanced ? Math.round((advanced.summary?.tradeFit || advanced.summary?.reliability || 0) * 100) : 0;
     const agreementPct = Math.round((p.diagnostics?.agreement || 0.5) * 100);
@@ -10414,6 +10688,21 @@
       stats: p.backtest?.[`h${horizonMin}`] || null,
       projection: p.projections?.[`p${horizonMin}`] || null,
     }));
+    const setup15 = (() => {
+      const h15 = p.backtest?.h15 || null;
+      if (!h15 || !h15.activeSignals) {
+        return { label: '15m setup: pending', cls: 'flat', detail: 'waiting for h15 samples' };
+      }
+      const wr = Number(h15.winRate) || 0;
+      const edge = Number(h15.avgSignedReturn) || 0;
+      if (wr >= 55 && edge > 0) {
+        return { label: '15m setup: ready', cls: 'bull', detail: `${wr.toFixed(1)}% hit · ${fmtPct(edge)} edge` };
+      }
+      if (wr < 45 || edge <= 0) {
+        return { label: '15m setup: caution', cls: 'bear', detail: `${wr.toFixed(1)}% hit · ${fmtPct(edge)} edge` };
+      }
+      return { label: '15m setup: mixed', cls: 'flat', detail: `${wr.toFixed(1)}% hit · ${fmtPct(edge)} edge` };
+    })();
     const depthMeta = ind.orderBookImbalance?.meta || null;
     const depth10 = depthMeta?.levels?.level10 || null;
     const depth20 = depthMeta?.levels?.level20 || null;
@@ -10584,6 +10873,7 @@
             <span>${p.confidence}% conf</span>
             ${_edgePpCard != null && _edgePpCard >= 10 ? `<span style="color:${_edgePpCard >= 20 ? 'var(--color-green)' : '#ffd700'};font-weight:800;font-size:9px;padding:1px 5px;border-radius:3px;background:${_edgePpCard >= 20 ? 'rgba(38,212,126,0.12)' : 'rgba(255,215,0,0.12)'}">${_edgePpCard}pp ${_fadeActive ? 'FADE' : 'EDGE'}</span>` : ''}
             ${londonBadge}${calibBadge}${weakBadge}${safetyBadge}${hcBadge}
+            <span style="font-size:9px;padding:2px 6px;border-radius:9999px;background:var(--color-surface-2);color:${setup15.cls === 'bull' ? 'var(--color-green)' : setup15.cls === 'bear' ? 'var(--color-red)' : 'var(--color-text-muted)'};font-weight:700;text-transform:uppercase">${setup15.label}</span>
           </div>
           ${waitRationale ? `<div class="pred-verdict-rationale">${waitRationale}</div>` : ''}
           ${hcRationale ? `<div class="pred-verdict-rationale">${hcRationale}</div>` : ''}
@@ -10955,7 +11245,7 @@
               </span>
             </div>
             <div class="ind-item"><span class="ind-name">Router</span><span class="ind-val ${routeClass(routedAction)}">${routedAction}</span></div>
-            <div class="ind-item"><span class="ind-name">Long-range Context</span><span class="ind-val ${advancedQualityPct >= 58 ? 'bull' : advancedQualityPct < 42 ? 'bear' : 'flat'}">${advanced ? `${advancedQualityPct}% quality · ${advancedFitPct}% fit` : 'Loading full history'}</span></div>
+            <div class="ind-item"><span class="ind-name">Long-range Context</span><span class="ind-val ${advancedQualityPct >= 58 ? 'bull' : advancedQualityPct < 42 ? 'bear' : 'flat'}">${advanced ? `${advancedQualityPct}% quality · ${advancedFitPct}% fit${advancedVol ? ` · ${advancedVol.regime}` : ''}` : 'Loading full history'}</span></div>
           </div>
 
           <div class="ind-grid" style="margin-bottom:12px">
@@ -11007,6 +11297,7 @@
             <div class="cfm-detail-card"><span class="cfm-detail-label">Consensus</span><strong>${p.diagnostics?.consensusLabel || 'Balanced'}</strong><small>${agreementPct}% aligned</small></div>
             <div class="cfm-detail-card"><span class="cfm-detail-label">Raw Score</span><strong>${(p.rawScore ?? p.score).toFixed(3)}</strong><small>pre-calibration</small></div>
             <div class="cfm-detail-card"><span class="cfm-detail-label">Trade Horizon</span><strong>${preferredHorizon}m bias</strong><small>${tradeFitLabel}</small></div>
+            <div class="cfm-detail-card"><span class="cfm-detail-label">15m Window Setup</span><strong>${setup15.label.replace('15m setup: ', '').toUpperCase()}</strong><small>${setup15.detail}</small></div>
             <div class="cfm-detail-card"><span class="cfm-detail-label">Decision Buffer</span><strong>${inBufferZone ? 'Inside buffer' : 'Outside buffer'}</strong><small>${vetoReason || `score ±${((p.diagnostics?.scoreBuffer || 0) * 100).toFixed(0)}bp gate`}</small></div>
             <div class="cfm-detail-card"><span class="cfm-detail-label">Router Verdict</span><strong>${routedAction}</strong><small>${routedRiskFlags.length ? routedRiskFlags.join(', ') : 'clean packet flow'}</small></div>
             <div class="cfm-detail-card"><span class="cfm-detail-label">Funding</span><strong>${p.derivatives ? fmtPct(p.derivatives.funding) : '—'}</strong><small>${p.derivatives?.exchange || 'no perp feed'}</small></div>
@@ -11014,6 +11305,7 @@
             ${horizonRows.map(horizon => `<div class="cfm-detail-card"><span class="cfm-detail-label">${horizon.label} Filter</span><strong>${horizon.stats?.entryThreshold ? horizon.stats.entryThreshold.toFixed(2) : '—'} / ${horizon.stats?.minAgreement ? Math.round(horizon.stats.minAgreement * 100) + '%' : '—'}</strong><small>score / agreement gate</small></div>`).join('')}
             <div class="cfm-detail-card"><span class="cfm-detail-label">Advanced Span</span><strong>${advanced ? `${advanced.startDate} → ${advanced.endDate}` : '—'}</strong><small>${advanced ? `${advanced.candleCount} daily candles` : 'full-history loading'}</small></div>
             <div class="cfm-detail-card"><span class="cfm-detail-label">Advanced 1d / 7d</span><strong>${advanced?.d1?.activeSignals ? `${advanced.d1.winRate.toFixed(0)}%` : '—'} / ${advanced?.d7?.activeSignals ? `${advanced.d7.winRate.toFixed(0)}%` : '—'}</strong><small>${advanced ? `${advancedQualityPct}% quality · ${advancedFitPct}% fit` : 'no data yet'}</small></div>
+            <div class="cfm-detail-card"><span class="cfm-detail-label">Advanced Vol (7d)</span><strong>${advancedVol ? `${advancedVol.regime} · ${Number(advancedVol.volPercentile || 0).toFixed(0)}p` : '—'}</strong><small>${advancedVol ? `EWMA ${Number(advancedVol.ewmaVolPct || 0).toFixed(2)}% · Jump ${((Number(advancedVol.jumpRatio) || 0) * 100).toFixed(1)}%` : 'volatility snapshot pending'}</small></div>
             ${horizonRows.map(horizon => `<div class="cfm-detail-card"><span class="cfm-detail-label">${horizon.label} Strong Bucket</span><strong>${horizon.stats?.buckets?.strong?.trades ?? 0}</strong><small>${horizon.stats?.buckets?.strong ? horizon.stats.buckets.strong.winRate.toFixed(0) + '% win · DD ' + (horizon.stats.equity?.maxDrawdownPct || 0).toFixed(1) + '%' : 'no data'}</small></div>`).join('')}
           </div>
 
@@ -12023,6 +12315,31 @@
     });
   }
 
+  // ── Hourly Ranges Panel render handler ─────────────────────────
+  function renderHourlyRanges() {
+    if (!window.HourlyRangesPanel) {
+      content.innerHTML = `<div class="card"><div class="card-body" style="padding:14px;color:var(--color-text-muted)">Loading hourly ranges panel…</div></div>`;
+      if (!window._hourlyRangesPanelLoading) {
+        window._hourlyRangesPanelLoading = new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = '../src/ui/hourly-ranges-panel.js?v=' + Date.now();
+          script.defer = true;
+          script.onload = resolve;
+          script.onerror = reject;
+          document.head.appendChild(script);
+        }).finally(() => {
+          window._hourlyRangesPanelLoading = null;
+          if (currentView === 'hourly-ranges') renderHourlyRanges();
+        });
+      }
+      return;
+    }
+    // Stop any existing auto-load to prevent interval stacking
+    window.HourlyRangesPanel.stopAutoLoad?.();
+    // Start fresh auto-load (30 second refresh)
+    window.HourlyRangesPanel.startAutoLoad?.(30000);
+  }
+
   // ================================================================
   // RENDER DISPATCH
   // ================================================================
@@ -12051,6 +12368,10 @@
     _rv++; // invalidate any in-flight async renders from previous navigation
     const renderToken = _rv;
     const view = currentView;
+    window.__weCurrentView = currentView;
+    if (currentView !== 'hourly-ranges') {
+      window.HourlyRangesPanel?.stopAutoLoad?.();
+    }
     if (candleChart && currentView !== 'charts') destroyChart();
     // Cancel orbital animation whenever leaving (or re-entering) universe
     if (orbitalAnimationFrame) { cancelAnimationFrame(orbitalAnimationFrame); orbitalAnimationFrame = null; }
@@ -12077,26 +12398,33 @@
 
     updateHeaderSummary();
 
-    switch (view) {
-      case 'markets': runPanelRender(view, renderMarkets, renderToken); break;
-      case 'markets5m': runPanelRender(view, renderMarkets5M, renderToken); break;
-      case 'debuglog': runPanelRender(view, renderDebugLog, renderToken); break;
-      case 'observability': runPanelRender(view, renderObservability, renderToken); break;
-      case 'portfolio': runPanelRender(view, renderPortfolio, renderToken); break;
-      case 'charts': runPanelRender(view, renderCharts, renderToken); break;
-      case 'onchain': runPanelRender(view, renderOnChain, renderToken); break;
-      case 'cfm': runPanelRender(view, renderCFM, renderToken); break;
-      case 'predictions': runPanelRender(view, renderPredictions, renderToken); break;
-      case 'screener': runPanelRender(view, renderScreener, renderToken); break;
-      case 'depth': runPanelRender(view, renderDepth, renderToken); break;
-      case 'universe': runPanelRender(view, renderUniverse, renderToken); break;
-      case 'log':
-        content.innerHTML = renderContractLog();
-        break;
-      default:
-        currentView = 'cfm';
-        activateNav(currentView);
-        runPanelRender(currentView, renderCFM, renderToken);
+    try {
+      switch (view) {
+        case 'markets': runPanelRender(view, renderMarkets, renderToken); break;
+        case 'markets5m': runPanelRender(view, renderMarkets5M, renderToken); break;
+        case 'debuglog': runPanelRender(view, renderDebugLog, renderToken); break;
+        case 'observability': runPanelRender(view, renderObservability, renderToken); break;
+        case 'portfolio': runPanelRender(view, renderPortfolio, renderToken); break;
+        case 'charts': runPanelRender(view, renderCharts, renderToken); break;
+        case 'onchain': runPanelRender(view, renderOnChain, renderToken); break;
+        case 'cfm': runPanelRender(view, renderCFM, renderToken); break;
+        case 'predictions': runPanelRender(view, renderPredictions, renderToken); break;
+        case 'screener': runPanelRender(view, renderScreener, renderToken); break;
+        case 'depth': runPanelRender(view, renderDepth, renderToken); break;
+        case 'universe': runPanelRender(view, renderUniverse, renderToken); break;
+        case 'hourly-ranges': renderHourlyRanges(); break;
+        case 'log':
+          content.innerHTML = renderContractLog();
+          break;
+        default:
+          currentView = 'cfm';
+          activateNav(currentView);
+          runPanelRender(currentView, renderCFM, renderToken);
+      }
+    } catch (e) {
+      console.error('[render] Panel error:', e);
+      content.innerHTML = <div class="error-notice">⚠ Panel error: {e.message}<br><small>{e.stack || ''}</small></div>;
+    }
     }
   }
 
@@ -12105,10 +12433,87 @@
   // close-time snapshots. Data sourced from window._15mResolutionLog and
   // localStorage cache (wc_contract_log) for prior sessions.
   function renderContractLog() {
+    const normalizeContractEntry = (e = {}, source = 'runtime') => {
+      const sym = String(e.sym || e.symbol || e.coin || e.market || 'UNK').toUpperCase();
+      const settledTs = e.settledTs || e.resolved_at || e.resolvedAt || e.timestamp || e.ts || 0;
+      const modelDirRaw = e.modelDir || e.direction || e.prediction || e.predictedDirection || e.side || e.betDirection || null;
+      const modelDir = modelDirRaw != null ? String(modelDirRaw).toUpperCase() : null;
+      const outcomeRaw = e.actualOutcome || e.outcome || e.result || e.kalshiResult || e.settlement || e.authOutcome || null;
+      const outcome = outcomeRaw != null ? String(outcomeRaw).toUpperCase() : null;
+      const orchestratorAction = e.orchestratorAction || e.action || e.orchAction || e.tradeAction || null;
+      const modelCorrect = typeof e.modelCorrect === 'boolean'
+        ? e.modelCorrect
+        : typeof e.correct === 'boolean'
+          ? e.correct
+          : typeof e.isCorrect === 'boolean'
+            ? e.isCorrect
+            : typeof e.hit === 'boolean'
+              ? e.hit
+              : null;
+      const sweetSpot = !!(e.sweetSpot || e.sweet_spot || e.bestEntry || e.best_entry);
+      const crowdFade = !!(e.crowdFade || e.crowd_fade || e.fade || e.fadeSignal);
+      const missedOpportunity = !!(e.missedOpportunity || e.missed_opportunity || e.missedOpportunityScore > 0);
+      const wickedOut = !!(e.wickedOut || e.wickOut || e.wick_out || e._wickStraddle);
+      const entryProb = e.entryProb != null
+        ? e.entryProb
+        : e.modelProbUp != null
+          ? e.modelProbUp
+          : e.modelYesPct != null
+            ? Number(e.modelYesPct) / 100
+            : e.kalshiProb != null
+              ? e.kalshiProb
+              : null;
+      const modelProbUp = e.modelProbUp != null
+        ? e.modelProbUp
+        : e.modelYesPct != null
+          ? Number(e.modelYesPct) / 100
+          : e.modelScore != null
+            ? Math.max(0, Math.min(1, 0.5 + Number(e.modelScore) / 2))
+            : null;
+      const kalshiProb = e.kalshiProb != null
+        ? e.kalshiProb
+        : e.entryProb != null
+          ? e.entryProb
+          : e.kYesPct != null
+            ? Number(e.kYesPct) / 100
+            : null;
+
+      return {
+        ...e,
+        sym,
+        settledTs,
+        ts: e.ts || settledTs,
+        modelDir,
+        actualOutcome: outcome,
+        orchestratorAction: orchestratorAction ? String(orchestratorAction).toLowerCase() : null,
+        modelCorrect,
+        sweetSpot,
+        crowdFade,
+        missedOpportunity,
+        wickedOut,
+        entryProb,
+        modelProbUp,
+        kalshiProb,
+        _source: source,
+      };
+    };
+
     // Pull from ALL sources: runtime log, Kalshi log, multi-drive cache
-    const runtimeLog = (window._15mResolutionLog || []).slice().reverse();
-    const kalshiLog = (window._kalshiLog || []).filter(e => e._settled).slice().reverse();
-    const cacheSettlements = (window.MultiDriveCache?.data?.settlements || []).slice().reverse();
+    const runtimeLog = (window._15mResolutionLog || []).map(e => normalizeContractEntry(e, 'runtime')).slice().reverse();
+    const kalshiLog = (window._kalshiLog || [])
+      .filter(e => e._settled)
+      .map(e => normalizeContractEntry({
+        ...e,
+        actualOutcome: e.actualOutcome || _actualFromYNWithStrike(_normOutcomeYN(e.outcome), _normStrikeDir(e._strikeDir ?? e.strikeDir ?? e.apiStrikeDir ?? e.strikeType)),
+      }, 'kalshi'))
+      .slice().reverse();
+    const cacheSettlements = (window.MultiDriveCache?.data?.settlements || [])
+      .map(e => normalizeContractEntry({
+        ...e,
+        actualOutcome: e.outcome?.toUpperCase(),
+        modelCorrect: typeof e.modelCorrect === 'boolean' ? e.modelCorrect : null,
+      }, 'cache'))
+      .slice().reverse();
 
     const contractId = (e) => {
       const sym = (e.sym || e.symbol || e.coin || 'UNK').toUpperCase();
@@ -12128,7 +12533,7 @@
     runtimeLog.forEach(e => {
       const id = contractId(e);
       if (!seenIds.has(id)) {
-        allContracts.push({ ...e, sym: (e.sym || e.symbol || e.coin || 'UNK').toUpperCase(), _source: 'runtime' });
+        allContracts.push(e);
         seenIds.add(id);
       }
     });
@@ -12137,17 +12542,9 @@
     kalshiLog.forEach(e => {
       const id = contractId(e);
       if (!seenIds.has(id)) {
-        const strikeDir = _normStrikeDir(e._strikeDir ?? e.strikeDir ?? e.apiStrikeDir ?? e.strikeType);
         allContracts.push({
-          sym: (e.sym || e.symbol || e.coin || 'UNK').toUpperCase(),
-          settledTs: e.settledTs || e.ts,
-          ts: e.ts,
-          modelDir: e.modelDir || e.direction,
-          actualOutcome: e.actualOutcome || _actualFromYNWithStrike(_normOutcomeYN(e.outcome), strikeDir),
+          ...normalizeContractEntry(e, 'kalshi'),
           kalshiResult: e._kalshiResult || e.kalshiResult || null,
-          modelCorrect: e.modelCorrect,
-          orchestratorAction: e.orchestratorAction,
-          _source: 'kalshi'
         });
         seenIds.add(id);
       }
@@ -12158,12 +12555,11 @@
       const id = contractId(e);
       if (!seenIds.has(id)) {
         allContracts.push({
-          sym: (e.sym || e.symbol || e.coin || 'UNK').toUpperCase(),
-          settledTs: e.timestamp,
-          ts: e.timestamp,
-          actualOutcome: e.outcome?.toUpperCase(),
-          modelCorrect: e.modelCorrect,
-          _source: 'cache'
+          ...normalizeContractEntry({
+            ...e,
+            settledTs: e.timestamp,
+            actualOutcome: e.outcome?.toUpperCase(),
+          }, 'cache'),
         });
         seenIds.add(id);
       }
@@ -12173,7 +12569,7 @@
     lsLog.forEach(e => {
       const id = contractId(e);
       if (!seenIds.has(id)) {
-        allContracts.push({ ...e, sym: (e.sym || e.symbol || e.coin || 'UNK').toUpperCase(), _source: 'localStorage' });
+        allContracts.push(normalizeContractEntry(e, 'localStorage'));
         seenIds.add(id);
       }
     });
@@ -12183,26 +12579,36 @@
       const bTs = b.settledTs || b.resolved_at || b.ts || 0;
       return bTs - aTs;
     });
+    const resolved = log.filter(e => e.modelCorrect === true || e.modelCorrect === false);
     const traded = log.filter(e => e.orchestratorAction === 'trade');
-    const correct = traded.filter(e => e.modelCorrect === true).length;
-    const wr = traded.length ? Math.round(correct / traded.length * 100) : null;
-    const wickCount = traded.filter(e => e.wickedOut).length;
-    const sweetTrades = traded.filter(e => e.sweetSpot);
-    const sweetWr = sweetTrades.length ? Math.round(sweetTrades.filter(e => e.modelCorrect).length / sweetTrades.length * 100) : null;
-    const fadeTrades = traded.filter(e => e.crowdFade);
-    const fadeWr = fadeTrades.length ? Math.round(fadeTrades.filter(e => e.modelCorrect).length / fadeTrades.length * 100) : null;
+    const correct = resolved.filter(e => e.modelCorrect === true).length;
+    const wr = resolved.length ? Math.round(correct / resolved.length * 100) : null;
+    const tradeCorrect = traded.filter(e => e.modelCorrect === true).length;
+    const tradeWr = traded.length ? Math.round(tradeCorrect / traded.length * 100) : null;
+    const wickCount = log.filter(e => e.wickedOut).length;
+    const sweetTrades = log.filter(e => e.sweetSpot);
+    const sweetWr = sweetTrades.length ? Math.round(sweetTrades.filter(e => e.modelCorrect === true).length / sweetTrades.length * 100) : null;
+    const fadeTrades = log.filter(e => e.crowdFade);
+    const fadeWr = fadeTrades.length ? Math.round(fadeTrades.filter(e => e.modelCorrect === true).length / fadeTrades.length * 100) : null;
     const missed = log.filter(e => e.missedOpportunity).length;
+    const kalshiOnly = log.filter(e => e._source === 'kalshi' && e.modelCorrect != null).length;
+    const cacheOnly = log.filter(e => e._source === 'cache' && e.modelCorrect != null).length;
+    const lsOnly = log.filter(e => e._source === 'localStorage' && e.modelCorrect != null).length;
+    const runtimeOnly = log.filter(e => e._source === 'runtime' && e.modelCorrect != null).length;
 
     const statBar = `
       <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px">
         ${[
         ['Total Contracts', log.length, 'var(--color-text)'],
         ['Overall WR', wr != null ? wr + '%' : '—', wr >= 55 ? 'var(--color-green)' : wr >= 45 ? '#ffd700' : 'var(--color-red)'],
+        ['Trade WR', tradeWr != null ? tradeWr + '%' : '—', tradeWr >= 55 ? 'var(--color-green)' : tradeWr >= 45 ? '#ffd700' : 'var(--color-red)'],
         ['Sweet Spot WR', sweetWr != null ? sweetWr + '%' : '—', sweetWr >= 55 ? 'var(--color-green)' : '#ffd700'],
         ['Fade WR', fadeWr != null ? fadeWr + '%' : '—', fadeWr >= 55 ? 'var(--color-green)' : '#ffd700'],
         ['Wick-outs', wickCount + (traded.length ? '/' + traded.length : ''), wickCount > 2 ? 'var(--color-red)' : 'var(--color-text-muted)'],
         ['Missed Opps', missed, missed > 0 ? '#ff9800' : 'var(--color-text-muted)'],
         ['Trades', traded.length, 'var(--color-text)'],
+        ['Resolved', resolved.length, 'var(--color-text-muted)'],
+        ['By Source', `R${runtimeOnly} K${kalshiOnly} C${cacheOnly} L${lsOnly}`, 'var(--color-text-muted)'],
       ].map(([lbl, val, col]) => `
           <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);border-radius:6px;padding:8px 14px;min-width:90px">
             <div style="font-size:10px;color:var(--color-text-muted);font-weight:600;letter-spacing:.5px;text-transform:uppercase">${lbl}</div>
@@ -12627,7 +13033,7 @@
     // for the next PredictionEngine.runAll() cycle (up to 15s later).
     if (['predictions', 'cfm', 'universe'].includes(currentView) && predsLoaded && !predictionRunInFlight) {
       try {
-        if (currentView === 'predictions') renderPredictions();
+        if (currentView === 'predictions') refreshActiveView();
         else refreshActiveView();
       } catch (_) { }
     }
@@ -12647,7 +13053,7 @@
         : 30000;
       const renderAge = now - (_lastPredRenderTs || 0);
       if (currentView === 'predictions' && _lastPredRenderTs && renderAge > 20000) {
-        renderPredictions();
+        refreshActiveView();
       }
       const runAge = now - (_lastPredictionRunTs || 0);
       if ((predsLoaded && !_lastPredictionRunTs) || (_lastPredictionRunTs && runAge > liveRunCadenceMs)) {
@@ -12656,7 +13062,7 @@
         _lastPredictionRunTs = Date.now();
         predsLoaded = true;
         snapshotPredictions();
-        if (currentView === 'predictions') renderPredictions();
+        if (currentView === 'predictions') refreshActiveView();
         else refreshActiveView();
       }
     } catch (_) { }

@@ -26,12 +26,21 @@ const path  = require('path');
 // ── 2. CLI arg parsing (done in main()) ─────────────────────────
 
 // ── 3. Constants ─────────────────────────────────────────────────
-const SYMBOL_MAP = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT' };
-const DEFAULT_COINS = ['BTC', 'ETH', 'SOL', 'XRP'];
+const SYMBOL_MAP = {
+  BTC: 'BTCUSDT',
+  ETH: 'ETHUSDT',
+  SOL: 'SOLUSDT',
+  XRP: 'XRPUSDT',
+  BNB: 'BNBUSDT',
+  DOGE: 'DOGEUSDT',
+  HYPE: 'HYPEUSDT',
+};
+const DEFAULT_COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'HYPE'];
 const LOOKBACK_BARS     = 200;   // 5m bars fetched before each 15m window
 const LOOKBACK_INTERVAL = '5m';
 const OUTCOME_INTERVAL  = '15m';
 const MIN_CHANGE_PCT    = 0.05;  // ignore FLAT windows (< 0.05% move)
+const WRITE_CHANGE_THRESHOLD_PCT = 1; // write materially changed weights, but avoid tiny noise
 
 // ── 4. Indicator functions — copied VERBATIM from backtest-runner.js ──
 
@@ -832,7 +841,7 @@ function printWeightTable(coin, oldW, newW, winRates, obsCount) {
                   : wr.winRate < 0.50     ? '  ↓ WEAK'
                   : '';
     const deltaStr = `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%`;
-    const changed  = Math.abs(delta) > 5 ? ' ◄' : '';
+    const changed  = Math.abs(delta) > WRITE_CHANGE_THRESHOLD_PCT ? ' ◄' : '';
     return { k, ow, nw, delta, deltaStr, wrStr, nStr, marker, changed };
   }).sort((a, b) => (winRates[b.k]?.winRate ?? 0.5) - (winRates[a.k]?.winRate ?? 0.5));
 
@@ -846,7 +855,8 @@ function printWeightTable(coin, oldW, newW, winRates, obsCount) {
 
 /**
  * Surgically rewrites PER_COIN_INDICATOR_BIAS values in `filePath`
- * for `coin`, only updating keys that changed by > 5%.
+ * for `coin`, only updating keys that changed by more than the configured
+ * write threshold so the live model actually receives the latest retune.
  * Adds an outcome-retuned comment on the coin's opening line.
  *
  * Uses brace-counting to isolate the exact coin block so sibling
@@ -855,15 +865,19 @@ function printWeightTable(coin, oldW, newW, winRates, obsCount) {
 function writeWeightsToPredictions(coin, oldWeights, newWeights, filePath, windowCount, dateStr) {
   let src = fs.readFileSync(filePath, 'utf8');
   let updatedCount = 0;
+  const biasStart = src.indexOf('PER_COIN_INDICATOR_BIAS');
+  const biasBlockStart = biasStart >= 0 ? src.indexOf('{', biasStart) : -1;
+  const coinMatch = biasBlockStart >= 0
+    ? src.slice(biasBlockStart).match(new RegExp(`\\n\\s*${coin}\\s*:\\s*\\{`))
+    : null;
+  const coinBlockStart = coinMatch ? biasBlockStart + coinMatch.index + coinMatch[0].search(/\S/) : -1;
 
   for (const [key, newVal] of Object.entries(newWeights)) {
     const oldVal = oldWeights[key];
     if (oldVal === undefined) continue;
     const changePct = Math.abs((newVal - oldVal) / (Math.abs(oldVal) || 1)) * 100;
-    if (changePct <= 5) continue; // skip noise
+    if (changePct <= WRITE_CHANGE_THRESHOLD_PCT) continue; // skip noise
 
-    // Find the coin's block start (e.g. "    BTC: {")
-    const coinBlockStart = src.indexOf(`${coin}:`);
     if (coinBlockStart === -1) {
       console.log(`  [WARN] ${coin} block not found in ${path.basename(filePath)}`);
       break;
@@ -893,7 +907,6 @@ function writeWeightsToPredictions(coin, oldWeights, newWeights, filePath, windo
 
   if (updatedCount > 0) {
     // Stamp the coin's key line with a retuning comment (idempotent)
-    const coinBlockStart = src.indexOf(`${coin}:`);
     if (coinBlockStart !== -1) {
       const lineEnd     = src.indexOf('\n', coinBlockStart);
       const comment     = ` // outcome-retuned ${dateStr} from ${windowCount} windows`;
@@ -905,7 +918,7 @@ function writeWeightsToPredictions(coin, oldWeights, newWeights, filePath, windo
     fs.writeFileSync(filePath, src, 'utf8');
     console.log(`  [${coin}] Wrote ${updatedCount} updated weights to ${path.basename(filePath)}`);
   } else {
-    console.log(`  [${coin}] No weights changed by >5%, nothing written`);
+    console.log(`  [${coin}] No weights changed by >${WRITE_CHANGE_THRESHOLD_PCT}%, nothing written`);
   }
   return updatedCount;
 }
@@ -960,8 +973,10 @@ async function main() {
   }
 
   const allWindows = generateWindows(days);
-  const useWindows = maxWindows ? allWindows.slice(0, maxWindows) : allWindows;
-  console.log(`Generated ${allWindows.length} windows (${days} days) — using ${useWindows.length}\n`);
+  const useWindows = maxWindows
+    ? allWindows.slice(Math.max(0, allWindows.length - maxWindows))
+    : allWindows;
+  console.log(`Generated ${allWindows.length} windows (${days} days) — using ${useWindows.length}${maxWindows ? ' (most recent windows)' : ''}\n`);
 
   // ── Test mode: verify connectivity and signal computation ──────
   if (testMode) {

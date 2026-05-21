@@ -22,7 +22,8 @@
   function fetchWithTimeout(url, ms = 8000) {
     const ctrl = new AbortController();
     const tid = setTimeout(() => ctrl.abort(), ms);
-    return fetch(url, { signal: ctrl.signal })
+    const fetchImpl = window.throttledFetch || fetch;
+    return fetchImpl(url, { signal: ctrl.signal })
       .then(r => { clearTimeout(tid); return r; })
       .catch(e => { clearTimeout(tid); throw e; });
   }
@@ -43,7 +44,7 @@
   const SRC = {
     CDC: { budget: 80, used: 0, resetAt: 0, label: 'Crypto.com', color: '#1a2c5a' },
     CB: { budget: 60, used: 0, resetAt: 0, label: 'Coinbase', color: '#0052ff' },
-    GKO: { budget: 25, used: 0, resetAt: 0, label: 'CoinGecko', color: '#8dc63f' },
+    GKO: { budget: 18, used: 0, resetAt: 0, label: 'CoinGecko', color: '#8dc63f' },
     DEX: { budget: 20, used: 0, resetAt: 0, label: 'DexScreener', color: '#a259ff' },
     BIN: { budget: 120, used: 0, resetAt: 0, label: 'Binance', color: '#f3ba2f' },
     OKX: { budget: 60, used: 0, resetAt: 0, label: 'OKX', color: '#ffffff' },

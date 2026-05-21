@@ -25,8 +25,9 @@ const STEP_BARS    = parseInt(getArg('--step')  || '50',  10);       // fold ste
 const CANDLES_WANT = DAYS_BACK * 288;   // 288 × 5m = 1 day
 
 // ── Log directory ─────────────────────────────────────────────────
-const LOG_DIR = 'F:\\WECRYP\\backtest-logs';
-const CHECKPOINT = 'F:\\WECRYP\\WECRYPTO_SESSION_CHECKPOINT_20260501.md';
+const ROOT = path.resolve(__dirname, '..');
+const LOG_DIR = path.join(ROOT, 'backtest-logs');
+const CHECKPOINT = path.join(ROOT, 'WECRYPTO_SESSION_CHECKPOINT_20260501.md');
 try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch (_) {}
 
 // ── Coins (4 core Kalshi coins) ──────────────────────────────────
@@ -47,12 +48,12 @@ const COMPOSITE_WEIGHTS = {
 const OUTER_ORBITAL_WEIGHTS = { momentum: 0.05, vwap: 0.05 };
 
 const PER_COIN_INDICATOR_BIAS = {
-  BTC: { stochrsi:1.8, vwma:1.2, volume:1.4, bands:2.5, williamsR:2.0, structure:1.4, fisher:1.3,
-         keltner:1.6, cci:1.2, cmf:1.0, rsi:0.8, macd:0.6, persistence:0.8, ema:0.5,
-         ichimoku:0.3, adx:0.3, vwap:0.2, sma:0.2, momentum:0.25, obv:0.1, hma:0.1, mfi:0.5, supertrend:0.4 },
-  ETH: { rsi:0.5, stochrsi:1.0, williamsR:1.4, bands:2.5, structure:1.4, keltner:1.2, cci:0.9,
-         fisher:0.8, cmf:0.6, volume:0.9, persistence:0.8, obv:0.5, macd:0.4, ema:0.35, sma:0.1,
-         adx:0.25, ichimoku:0.2, vwap:0.15, vwma:0.5, supertrend:0.3, mfi:0.05, momentum:0.20, hma:0.05 },
+  BTC: { stochrsi:1.8, vwma:1.05, volume:1.2, bands:3.0, williamsR:2.4, structure:1.55, fisher:1.3,
+         keltner:1.95, cci:1.25, cmf:0.85, rsi:0.9, macd:0.5, persistence:0.66, ema:0.42,
+         ichimoku:0.24, adx:0.24, vwap:0.15, sma:0.12, momentum:0.16, obv:0.1, hma:0.09, mfi:0.32, supertrend:0.3 },
+  ETH: { rsi:0.35, stochrsi:1.1, williamsR:2.05, bands:3.0, structure:1.6, keltner:1.55, cci:1.0,
+         fisher:1.0, cmf:0.5, volume:0.75, persistence:0.6, obv:0.6, macd:0.32, ema:0.28, sma:0.03,
+         adx:0.17, ichimoku:0.15, vwap:0.11, vwma:0.38, supertrend:0.14, mfi:0.03, momentum:0.24, hma:0.07 },
   SOL: { bands:2.0, fisher:1.5, williamsR:4.0, hma:0.1, structure:1.2, cci:3.5, keltner:0.8,
          obv:0.8, macd:0.3, ichimoku:0.2, adx:0.2, vwma:0.1, volume:0.2, sma:0.0, vwap:0.05,
          rsi:0.05, persistence:0.05, ema:0.05, cmf:0.05, supertrend:0.05, momentum:0.50, mfi:0.05, stochrsi:0.05 },
@@ -63,8 +64,8 @@ const PER_COIN_INDICATOR_BIAS = {
 
 // Filter overrides (baseline reference — calibrated per fold in this script)
 const BACKTEST_FILTER_OVERRIDES = {
-  BTC:  { h1:{entryThreshold:0.36,minAgreement:0.56}, h5:{entryThreshold:0.36,minAgreement:0.56}, h10:{entryThreshold:0.36,minAgreement:0.57}, h15:{entryThreshold:0.36,minAgreement:0.58} },
-  ETH:  { h1:{entryThreshold:0.42,minAgreement:0.56}, h5:{entryThreshold:0.42,minAgreement:0.56}, h10:{entryThreshold:0.40,minAgreement:0.57}, h15:{entryThreshold:0.38,minAgreement:0.58} },
+  BTC:  { h1:{entryThreshold:0.36,minAgreement:0.56}, h5:{entryThreshold:0.36,minAgreement:0.56}, h10:{entryThreshold:0.37,minAgreement:0.58}, h15:{entryThreshold:0.38,minAgreement:0.58} },
+  ETH:  { h1:{entryThreshold:0.38,minAgreement:0.58}, h5:{entryThreshold:0.38,minAgreement:0.58}, h10:{entryThreshold:0.36,minAgreement:0.58}, h15:{entryThreshold:0.35,minAgreement:0.58} },
   XRP:  { h1:{entryThreshold:0.40,minAgreement:0.54}, h5:{entryThreshold:0.40,minAgreement:0.54}, h10:{entryThreshold:0.36,minAgreement:0.56}, h15:{entryThreshold:0.32,minAgreement:0.58} },
   SOL:  { h1:{entryThreshold:0.45,minAgreement:0.66}, h5:{entryThreshold:0.45,minAgreement:0.66}, h10:{entryThreshold:0.40,minAgreement:0.62}, h15:{entryThreshold:0.41,minAgreement:0.64,maxThreshold:0.55} },
 };

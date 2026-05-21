@@ -94,6 +94,9 @@
   const LIVE_BOOK_CLOSE_REPRICE_MIN_MS = 1200;
   const LIVE_BOOK_REPRICE_MIN_ABS_IMBALANCE = 0.18;
   const LIVE_BOOK_REPRICE_DELTA = 0.06;
+  const GECKO_MIN_GAP_MS = 60_000; // hard-backoff: max ~1 req/min
+  const GECKO_RATE_LIMIT_PAUSE_MS = 5 * 60_000;
+  const GECKO_AUTH_PAUSE_MS = 60 * 60_000;
   let inferenceCooldownUntilTs = 0;
   let inferenceCooldownReason = '';
   let tideDisabledUntilTs = 0;
@@ -321,33 +324,35 @@
   // Updated 2026-04-29. Each value = multiplier on COMPOSITE_WEIGHTS for that coin.
   // Best/Worst indicators per coin sourced directly from backtest-runner.js diagnostic output.
   const PER_COIN_INDICATOR_BIAS = {
-    BTC: {
+    BTC: { // outcome-retuned 2026-05-20 from 258 windows
+ // outcome-retuned 2026-05-20 from 106 windows
       // h15 best: stochrsi 64%, vwma 62%, volume 60%
       // h15 worst: momentum 32%, obv 36%, hma 37%
       // ──── TUNED 2026-05-04 HOTFIX2: REGIME-AWARE MOMENTUM (was killed at 0.05, causing DOWN-bias) ──
       // FIX: Restore momentum to 0.25 + let regime multipliers gate it
       //      trending_volatile: 2.0x (catch dumps/rallies), ranging: 0.1x (suppress noise)
       //      This allows early dump detection (May 4 case) while maintaining ranging accuracy
-      stochrsi: 1.8,   // ★ REDUCED FROM 3.5 (64% at h15 but ~40% at h1/h5 - oscillators less reliable short-term)
-      vwma: 1.2,   // ★ REDUCED FROM 2.5 (62% at h15 but less reliable at h1/h5)
-      volume: 1.4,   // ★ REDUCED FROM 2.2 (60% at h15 but noisy at h1/h5)
+      stochrsi: 1.8,   // retained: still >55% in 4-day retune
+      vwma: 1.05,   // reduced: sub-50% in 4-day BTC retune
+      volume: 1.2,   // reduced: sub-50% in 4-day BTC retune
       // Keep proven mean-reversion core — bands/williamsR/keltner boosted 2026-05-05 (Pyth oracle accuracy)
-      bands: 2.8, williamsR: 2.2, structure: 1.4, fisher: 1.3, keltner: 1.8, cci: 1.2,
-      cmf: 1.0, rsi: 0.8, macd: 0.6, persistence: 0.8, ema: 0.5, ichimoku: 0.3, adx: 0.3,
-      vwap: 0.2, sma: 0.185,
+      bands: 3.0, williamsR: 2.4, structure: 1.55, fisher: 1.3, keltner: 1.95, cci: 1.25,
+      cmf: 0.85, rsi: 0.9, macd: 0.5, persistence: 0.66, ema: 0.42, ichimoku: 0.24, adx: 0.24,
+      vwap: 0.15, sma: 0.12,
       // ★ FIX: Restore momentum for trending detection (gated by regime multipliers)
-      momentum: 0.25,  // ★ RESTORED FROM 0.05 (2026-05-04 HOTFIX2) — regime gates amplify/suppress
-      obv: 0.12,  // outcome-retuned 2026-05-08 (180 windows)
-      hma: 0.121, // outcome-retuned 2026-05-08 (180 windows)
-      mfi: 0.5,
-      supertrend: 0.368,
+      momentum: 0.16,  // reduced: <50% in 4-day BTC retune
+      obv: 0.1,  // reduced: <50% in 4-day BTC retune
+      hma: 0.09, // reduced: <50% in 4-day BTC retune
+      mfi: 0.32,
+      supertrend: 0.3,
       // Pyth oracle aggregate prices → F&G strongly correlated with BTC macro moves
       fearGreed: 1.2,
       // ★ BOOST MICROSTRUCTURE FOR h1/h5 RECOVERY ★
-      book: 0.26,  // NEW: Order book imbalance
-      flow: 0.24,  // NEW: Trade flow signal
+      book: 0.267,  // NEW: Order book imbalance
+      flow: 0.247,  // NEW: Trade flow signal
     },
-    ETH: {
+    ETH: { // outcome-retuned 2026-05-20 from 286 windows
+ // outcome-retuned 2026-05-20 from 119 windows
       // h15 best: rsi 82%, stochrsi 56%, williamsR 55%
       // h15 worst: mfi 38%, momentum 43%, hma 45%
       // ──── TUNED 2026-05-04 HOTFIX2: REGIME-AWARE MOMENTUM (was killed at 0.01, causing DOWN-bias) ──
@@ -355,21 +360,22 @@
       //      trending_volatile: 2.0x (catch dumps), ranging: 0.1x (suppress noise)
       // CRITICAL: rsi 82% at h15 but only 37% at h1/h5 (MASSIVE OVERFITTING)
       // Solution: Reduce RSI weight dramatically for short horizons
-      rsi: 0.5,   // ★ REDUCED FROM 5.0 (82% at h15 but 37% at h1 - disable for short horizons)
-      stochrsi: 1.0,   // ★ REDUCED FROM 3.5 (56% at h15 but ~30% at h1/h5 - oscillators less reliable short-term)
-      williamsR: 1.8,  // ★ BOOST 2026-05-05: Pyth oracle prices → more reliable %R levels
-      bands: 2.8,   // ★ BOOST: Pyth oracle prices → cleaner band touches at exact levels
-      structure: 1.4, keltner: 1.4, cci: 0.9, fisher: 0.9, cmf: 0.6,
-      volume: 0.9, persistence: 0.8, obv: 0.5, macd: 0.4,
-      ema: 0.35, sma: 0.079, adx: 0.25, ichimoku: 0.2, vwap: 0.15, vwma: 0.5, supertrend: 0.271,
+      rsi: 0.35,   // reduced: 39% in 4-day ETH retune
+      stochrsi: 1.1,   // mild boost: ~53% in 4-day ETH retune
+      williamsR: 2.05,  // boosted: strongest consistent ETH feature
+      bands: 3.0,   // boosted: strong ETH performer in recent window
+      structure: 1.6, keltner: 1.55, cci: 1.0, fisher: 1.0, cmf: 0.5,
+      volume: 0.75, persistence: 0.6, obv: 0.6, macd: 0.32,
+      ema: 0.28, sma: 0.03, adx: 0.17, ichimoku: 0.15, vwap: 0.11, vwma: 0.38, supertrend: 0.14,
       // ★ FIX: Restore momentum for trending detection (gated by regime multipliers)
-      momentum: 0.20,  // ★ RESTORED FROM 0.01 (2026-05-04 HOTFIX2) — regime gates amplify/suppress
-      mfi: 0.055, // outcome-retuned 2026-05-08 (180 windows)
-      hma: 0.07,  // outcome-retuned 2026-05-08 (180 windows)
+      momentum: 0.24,  // retained mild positive edge in 4-day ETH retune
+      mfi: 0.03, // reduced: weak in 4-day ETH retune
+      hma: 0.07,  // reduced: weak in 4-day ETH retune
       // ETH moderately correlated with F&G (less than BTC)
       fearGreed: 1.1,
     },
-    SOL: {
+    SOL: { // outcome-retuned 2026-05-20 from 299 windows
+ // outcome-retuned 2026-05-20 from 122 windows
       // ── FIXED 2026-05-06: Remove maxScore cap + lower h1/h5 thresholds ──────────────
       // Root cause: maxScore: 0.55 was killing 60-70% of high-confidence h15 mean-reversion signals
       // Solution: Remove maxScore entirely, lower h1/h5 thresholds from 0.43 → 0.30 (match ETH/XRP)
@@ -377,45 +383,46 @@
       fisher: 1.8,    // ← REDUCED FROM 2.8
       williamsR: 2.5,    // ← REDUCED FROM 4.5 (keep strong but prevent 0.65+ scores)
       cci: 2.0,    // ← REDUCED FROM 3.5
-      hma: 0.0,    // 41% WR gate is broken on h1/h5
+      hma: 0.065,    // 41% WR gate is broken on h1/h5
       structure: 2.5,
       keltner: 1.5,    // ← REDUCED FROM 2.8
-      obv: 1.2,    // volume-direction breakout confirmation
-      macd: 0.8, ichimoku: 0.3, adx: 1.5,
-      vwma: 0.1, volume: 0.2, sma: 0.0,
-      vwap: 0.0,
-      rsi: 0.0,   // 29% WR is inversely useful, but engine has no rsiInvert flag
-      persistence: 0.0,
-      ema: 0.0,
-      cmf: 0.0,
-      supertrend: 0.038, // outcome-retuned 2026-05-08 (180 windows)
-      momentum: 0.0,
-      mfi: 0.0,
+      obv: 1.261,    // volume-direction breakout confirmation
+      macd: 0.886, ichimoku: 0.35, adx: 1.5,
+      vwma: 0.146, volume: 0.232, sma: 0.054,
+      vwap: 0.031,
+      rsi: 0.031,   // 29% WR is inversely useful, but engine has no rsiInvert flag
+      persistence: 0.034,
+      ema: 0.054,
+      cmf: 0.044,
+      supertrend: 0.02, // outcome-retuned 2026-05-08 (180 windows)
+      momentum: 0.044,
+      mfi: 0.037,
       stochrsi: 0.0,
-      book: 0.45,
-      flow: 0.42,
+      book: 0.465,
+      flow: 0.439,
       // SOL correlates with broad crypto sentiment; F&G matters
       fearGreed: 1.0,
     },
-    XRP: {
+    XRP: { // outcome-retuned 2026-05-20 from 301 windows
+ // outcome-retuned 2026-05-20 from 123 windows
       // h15 best: structure 72%, volume 66%, vwap 65%, fisher 69-70% (h1/h10)
       // h15 worst: momentum 28%, vwma 31%, hma 31%
       // ──── TUNED 2026-05-04: Reduce h15-specific weights, boost h1/h5 performers ──
-      structure: 1.0,   // ★ REDUCED FROM 5.0 (72% at h15 but meaningless at h1/h5 - needs multiple candles)
+      structure: 1.01,   // ★ REDUCED FROM 5.0 (72% at h15 but meaningless at h1/h5 - needs multiple candles)
       volume: 1.5,   // ★ REDUCED FROM 4.5 (66% at h15 but volume spikes = noise at h1/h5)
       vwap: 3.5,   // ★ REDUCED: Pyth oracle prices less exchange-anchored; keep strong but not dominant
       fisher: 2.8,   // ★ BOOST 2026-05-05: precise oracle prices → cleaner price extremes detection
       rsi: 3.5,   // ★ INCREASED FROM 2.0 (80-100% at h1/h10 - massive underweight!)
       obv: 1.5,   // volume direction confirm
       williamsR: 1.2,   // moderate keep
-      bands: 0.8, supertrend: 0.46, cci: 0.5, cmf: 0.6, keltner: 0.4,
-      macd: 0.3, stochrsi: 0.8, persistence: 0.176, ema: 0.19, adx: 0.2, ichimoku: 0.184,
+      bands: 0.809, supertrend: 0.36, cci: 0.521, cmf: 0.592, keltner: 0.435,
+      macd: 0.347, stochrsi: 0.8, persistence: 0.107, ema: 0.149, adx: 0.166, ichimoku: 0.163,
       sma: 0.0,
-      mfi: 0.105,
+      mfi: 0.122,
       // Kill confirmed worst performers
-      momentum: 0.017,
-      vwma: 0.045,
-      hma: 0.066,
+      momentum: 0.034,
+      vwma: 0.03,
+      hma: 0.09,
       // XRP is news/regulatory driven; F&G less predictive
       fearGreed: 0.7,
     },
@@ -443,7 +450,7 @@
       // HYPE is highly speculative; F&G is a strong macro driver
       fearGreed: 1.8,
     },
-    DOGE: {
+    DOGE: { // outcome-retuned 2026-05-21 from 305 windows
       // h15 best: obv 68%, volume 61%, cmf 60%
       // h15 worst: stochrsi 36%, momentum 42%, vwma 43%
       obv: 4.5,  // ★ 68% best — was 0.3 (massive correction)
@@ -451,17 +458,17 @@
       cmf: 3.0,  // ★ 60% best — was 0.5 (major correction)
       bands: 2.5,  // proven extreme mean-reversion
       mfi: 2.0,  // keep — was proven in original
-      structure: 1.8, fisher: 1.8, keltner: 1.2, cci: 1.0, williamsR: 0.8,
-      rsi: 0.5, persistence: 0.3, ema: 0.3, macd: 0.2, ichimoku: 0.2, adx: 0.1,
-      hma: 0.3, sma: 0.0, supertrend: 0.2, vwap: 0.1,
+      structure: 1.8, fisher: 1.8, keltner: 1.2, cci: 1.0, williamsR: 0.81,
+      rsi: 0.5, persistence: 0.278, ema: 0.289, macd: 0.191, ichimoku: 0.19, adx: 0.103,
+      hma: 0.3, sma: 0.0, supertrend: 0.2, vwap: 0.101,
       // Kill confirmed worst performers
-      stochrsi: 0.05,  // 36% worst — was 1.7
-      momentum: 0.05,  // 42% worst — was 0.25
-      vwma: 0.05,  // 43% worst — was 1.5
+      stochrsi: 0.058,  // 36% worst — was 1.7
+      momentum: 0.051,  // 42% worst — was 0.25
+      vwma: 0.04,  // 43% worst — was 1.5
       // DOGE re-enabled 2026-05-05 via Pyth Lazer ID 10; meme coin = maximum F&G sensitivity
       fearGreed: 2.0,
     },
-    BNB: {
+    BNB: { // outcome-retuned 2026-05-21 from 268 windows
       // h15 best: sma 92%, mfi 91%, ema 86% (NOTE: only 14 signals — high noise)
       // h15 worst: structure 0%, keltner 17%, williamsR 29%
       // Use data cautiously given tiny sample; align with original research where consistent
@@ -473,14 +480,14 @@
       vwma: 2.5,  // 63% from prior research
       volume: 3.5,  // 80% from prior research
       momentum: 2.0, persistence: 2.0, macd: 1.5, ichimoku: 2.0, supertrend: 2.0,
-      cmf: 1.5, obv: 0.5, fisher: 0.8, cci: 0.3, adx: 0.5,
+      cmf: 1.5, obv: 0.5, fisher: 0.81, cci: 0.313, adx: 0.505,
       // Kill confirmed worst (and consistent with prior research)
-      structure: 0.01,  // 0% worst — certain kill
-      keltner: 0.05,  // 17% worst
-      williamsR: 0.05,  // 29% worst — consistent with prior research
-      bands: 0.05,  // prior research: 30-43% — confirmed bad
-      rsi: 0.05,  // prior research: 34-43% — confirmed bad
-      stochrsi: 0.05,  // aligned with kill-mean-reversion theme
+      structure: 0.029,  // 0% worst — certain kill
+      keltner: 0.064,  // 17% worst
+      williamsR: 0.064,  // 29% worst — consistent with prior research
+      bands: 0.064,  // prior research: 30-43% — confirmed bad
+      rsi: 0.057,  // prior research: 34-43% — confirmed bad
+      stochrsi: 0.064,  // aligned with kill-mean-reversion theme
       // BNB ecosystem-driven; F&G less predictive than for BTC/DOGE
       fearGreed: 0.8,
     },
@@ -779,8 +786,8 @@
   const BACKTEST_FILTER_OVERRIDES = {
     // Retuned 2026-05-08 via 60-day walk-forward OOS calibration.
     // These medians reduced overfitting drift and normalized trigger frequency at h15.
-    BTC: { h1: { entryThreshold: 0.30, minAgreement: 0.54 }, h5: { entryThreshold: 0.30, minAgreement: 0.54 }, h10: { entryThreshold: 0.30, minAgreement: 0.54 }, h15: { entryThreshold: 0.35, minAgreement: 0.54 } },
-    ETH: { h1: { entryThreshold: 0.30, minAgreement: 0.54 }, h5: { entryThreshold: 0.30, minAgreement: 0.54 }, h10: { entryThreshold: 0.30, minAgreement: 0.54 }, h15: { entryThreshold: 0.30, minAgreement: 0.54 } },
+    BTC: { h1: { entryThreshold: 0.34, minAgreement: 0.56 }, h5: { entryThreshold: 0.34, minAgreement: 0.56 }, h10: { entryThreshold: 0.35, minAgreement: 0.57 }, h15: { entryThreshold: 0.38, minAgreement: 0.58 } },
+    ETH: { h1: { entryThreshold: 0.36, minAgreement: 0.58 }, h5: { entryThreshold: 0.36, minAgreement: 0.58 }, h10: { entryThreshold: 0.35, minAgreement: 0.58 }, h15: { entryThreshold: 0.34, minAgreement: 0.58 } },
     XRP: { h1: { entryThreshold: 0.30, minAgreement: 0.58 }, h5: { entryThreshold: 0.30, minAgreement: 0.58 }, h10: { entryThreshold: 0.30, minAgreement: 0.54 }, h15: { entryThreshold: 0.35, minAgreement: 0.54 } },
     SOL: { h1: { entryThreshold: 0.35, minAgreement: 0.54 }, h5: { entryThreshold: 0.35, minAgreement: 0.54 }, h10: { entryThreshold: 0.35, minAgreement: 0.54 }, h15: { entryThreshold: 0.35, minAgreement: 0.54 } },
     BNB: { h1: { entryThreshold: 0.50, minAgreement: 0.72 }, h5: { entryThreshold: 0.50, minAgreement: 0.72 }, h10: { entryThreshold: 0.50, minAgreement: 0.72 }, h15: { entryThreshold: 0.50, minAgreement: 0.72 } },
@@ -983,17 +990,24 @@
   let geckoAuthFailureUntil = 0;
   let geckoLastAuthWarnTs = 0;
 
+  function parseRetryAfterMs(headerValue) {
+    if (!headerValue) return 0;
+    const seconds = Number(headerValue);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+    const dateMs = Date.parse(headerValue);
+    return Number.isFinite(dateMs) ? Math.max(0, dateMs - Date.now()) : 0;
+  }
+
   async function fetchGeckoJSON(path, options = {}) {
-    const { minGapMs = 1800, retries = 3 } = options;  // Exponential backoff: 1s, 2s, 4s, 8s
-    const backoffMs = [1000, 2000, 4000, 8000];  // Exponential progression
+    const { minGapMs = GECKO_MIN_GAP_MS, retries = 0, retry429 = false } = options;
+    const backoffMs = [1500, 3500, 8000];
 
     const run = async (attempt = 0) => {
-      // Circuit breaker: if 5+ consecutive 429s, pause for 60s
       const nowCircuit = Date.now();
       if (nowCircuit < geckoAuthFailureUntil) {
         throw new Error(`Gecko auth circuit open (${Math.ceil((geckoAuthFailureUntil - nowCircuit) / 60000)}m remaining)`);
       }
-      if (geckoConsecutive429s >= 5 && nowCircuit < geckoCircuitBreakerUntil) {
+      if (nowCircuit < geckoCircuitBreakerUntil) {
         throw new Error(`Gecko rate-limit circuit open (${Math.ceil((geckoCircuitBreakerUntil - nowCircuit) / 1000)}s remaining)`);
       }
 
@@ -1003,31 +1017,35 @@
       lastGeckoRequestAt = Date.now();
       const res = await fetchWithTimeout(`${GECKO_BASE}${path}`, 4500);
 
-      // Handle 429 with exponential backoff
-      if (res.status === 429 && attempt < retries) {
+      if (res.status === 429) {
         geckoConsecutive429s++;
-        if (geckoConsecutive429s >= 5) {
-          geckoCircuitBreakerUntil = Date.now() + 60000;  // 60s pause
-          console.warn(`[Gecko] Circuit breaker activated after ${geckoConsecutive429s} consecutive 429s`);
+        const retryAfterMs = parseRetryAfterMs(res.headers?.get?.('retry-after'));
+        const pauseMs = Math.max(
+          retryAfterMs,
+          Math.min(15 * 60_000, GECKO_RATE_LIMIT_PAUSE_MS * Math.max(1, geckoConsecutive429s))
+        );
+        geckoCircuitBreakerUntil = Date.now() + pauseMs;
+        console.warn(`[Gecko] 429 rate limit; pausing CoinGecko for ${Math.ceil(pauseMs / 1000)}s (consecutive=${geckoConsecutive429s})`);
+        if (retry429 && attempt < retries) {
+          const backoff = Math.max(pauseMs, backoffMs[Math.min(attempt, backoffMs.length - 1)]);
+          await wait(backoff);
+          return run(attempt + 1);
         }
-        const backoff = backoffMs[Math.min(attempt, backoffMs.length - 1)];
-        console.warn(`[Gecko] 429 rate limit (attempt ${attempt + 1}/${retries + 1}), backoff ${backoff}ms, consecutive=${geckoConsecutive429s}`);
-        await wait(backoff);
-        return run(attempt + 1);
+        throw new Error('Gecko 429 rate limited');
       }
 
       // Success: reset consecutive 429 counter
       if (res.ok) geckoConsecutive429s = 0;
 
       // Handle 401 auth errors
-      if (res.status === 401) {
+      if (res.status === 401 || res.status === 403) {
         geckoConsecutive429s = 0;
-        geckoAuthFailureUntil = Date.now() + 15 * 60_000;
+        geckoAuthFailureUntil = Date.now() + GECKO_AUTH_PAUSE_MS;
         if ((Date.now() - geckoLastAuthWarnTs) > 60_000) {
           geckoLastAuthWarnTs = Date.now();
-          console.warn('[Gecko] 401 Unauthorized; pausing CoinGecko fallback for 15m (API key expired)');
+          console.warn(`[Gecko] ${res.status} auth/API rejection; pausing CoinGecko fallback for ${Math.round(GECKO_AUTH_PAUSE_MS / 60000)}m`);
         }
-        throw new Error('Gecko auth circuit open (API key expired)');
+        throw new Error(`Gecko auth circuit open (HTTP ${res.status})`);
       }
 
       if (!res.ok) throw new Error(`Gecko ${res.status}`);
@@ -1446,7 +1464,7 @@
 
   async function fetchGeckoMaxHistory(geckoId) {
     try {
-      const json = await fetchGeckoJSON(`/coins/${geckoId}/market_chart?vs_currency=usd&days=max`, { minGapMs: 1400, retries: 3 });
+      const json = await fetchGeckoJSON(`/coins/${geckoId}/market_chart?vs_currency=usd&days=max`);
       const prices = Array.isArray(json.prices) ? json.prices : [];
       const volumes = Array.isArray(json.total_volumes) ? json.total_volumes : [];
       return bucketGeckoSeries(prices, volumes, 24 * 60 * 60 * 1000);
@@ -1657,7 +1675,7 @@
       const hasLongHistory = Array.isArray(existing.longHistory) && existing.longHistory.length >= 90 && (Date.now() - (existing.longHistoryTs || 0) < 12 * 60 * 60 * 1000);
 
       if (GECKO_ONLY.has(coin.sym)) {
-        // HYPE / BNB: Gecko market data + Coinbase + Binance
+        // HYPE / BNB: prioritize Coinbase + Binance, keep Gecko as low-rate fallback.
         const [market, bin1m, bin5m, bin15m, cb1m, cb5m, cb15m, cbBook, longHistory] = await Promise.all([
           fetchGeckoJSON(`/coins/${coin.geckoId}/market_chart?vs_currency=usd&days=1`).catch(() => null),
           fetchBINCandles(coin.sym, '1m', 180).catch(() => []),
@@ -1675,8 +1693,8 @@
         const gecko15m = bucketGeckoSeries(prices, volumes, geckoBucketMs('15m'));
         const ws15m = window.CandleWS ? window.CandleWS.getClosedBuckets15m(coin.sym) : [];
         const ws1m = window.CandleWS ? window.CandleWS.getClosedBuckets1m(coin.sym) : [];
-        const candles = anchoredPoolCandles(cb5m, gecko5m, bin5m);
-        const candles15m = anchoredPoolCandles(ws15m, cb15m, gecko15m, bin15m);
+        const candles = anchoredPoolCandles(cb5m, bin5m, gecko5m);
+        const candles15m = anchoredPoolCandles(ws15m, cb15m, bin15m, gecko15m);
         const candles1m = anchoredPoolCandles(ws1m, cb1m, bin1m);
         if (!candles.length && Array.isArray(existing.candles) && existing.candles.length) {
           candleCache[coin.sym] = existing;
@@ -1690,9 +1708,11 @@
           : candles.reduce((s, c) => s + Number(c.v || 0), 0);
         const ticker = { usd: latestPrice, usd_24h_change: firstPrice > 0 ? ((latestPrice - firstPrice) / firstPrice) * 100 : 0, usd_24h_vol: totalVolume };
         const book = cbBook?.bids?.length ? cbBook : null;
-        const sourceParts = ['coingecko'];
-        if (cb5m.length || cb1m.length) sourceParts.unshift('coinbase');
+        const sourceParts = [];
+        if (cb5m.length || cb1m.length) sourceParts.push('coinbase');
         if (bin5m.length || bin1m.length) sourceParts.push('binance');
+        if (window.BlockchainScan?.get?.(coin.sym)) sourceParts.push('blockchain');
+        sourceParts.push('coingecko');
         candleCache[coin.sym] = {
           candles, candles15m, candles1m, ticker, book, trades: [],
           source: sourceParts.filter(Boolean).join(' + '),
@@ -4372,11 +4392,12 @@
       // Silently fall back to mom if CFM access fails — don't crash
     }
 
-    const bullishSignal = rawComposite > 0.05;  // Model says UP
-    const bearishMomentum = liveRealtimeMomentum < -0.02;  // But momentum is falling
-    const bearishDivergence = bullishSignal && bearishMomentum;
-
-    const divergenceSuppression = bearishDivergence ? 0.15 : 1.0;  // Kill 85% of signal if divergence detected
+    const modelCompositeDir = rawComposite > 0.05 ? 1 : rawComposite < -0.05 ? -1 : 0;
+    const liveMomentumDir = liveRealtimeMomentum > 0.02 ? 1 : liveRealtimeMomentum < -0.02 ? -1 : 0;
+    const liveMomentumDivergence = modelCompositeDir !== 0 && liveMomentumDir !== 0 && modelCompositeDir !== liveMomentumDir;
+    const divergenceSuppression = liveMomentumDivergence
+      ? (options.sym?.toUpperCase() === 'SOL' ? 0.42 : 0.58)
+      : 1.0;
 
     // ★ NEW (2026-05-15): Microstructure Consensus Logic
     // FINDING: Momentum alone shows 47% directional accuracy (worse than random)
@@ -4404,11 +4425,16 @@
     }
     // else: consensusDirection = 0 (conflict, no consensus)
 
-    // Apply consensus override: if microstructure consensus exists AND momentum disagrees, use consensus
-    let consensusAdjustment = 1.0;
-    if (consensusDirection !== 0 && Math.sign(momSig) !== Math.sign(consensusDirection) && Math.abs(consensusConfidence) > 0.5) {
-      // Microstructure consensus overrides weak/disagreeing momentum
-      consensusAdjustment = 1 + consensusDirection * consensusConfidence * 0.25;  // Max ±25% adjustment
+    // Apply consensus override as a directional blend. The previous multiplier
+    // could amplify the wrong sign when consensus and raw composite disagreed.
+    let consensusComposite = rawComposite;
+    let consensusAdjustment = 0;
+    if (consensusDirection !== 0 && consensusConfidence > 0.5) {
+      const consensusTarget = consensusDirection * clamp(consensusConfidence * 0.44, 0.18, 0.44);
+      const compositeConflicts = Math.sign(rawComposite) !== 0 && Math.sign(rawComposite) !== consensusDirection;
+      const blend = compositeConflicts ? 0.68 : 0.24;
+      consensusComposite = clamp(rawComposite * (1 - blend) + consensusTarget * blend, -1, 1);
+      consensusAdjustment = consensusComposite - rawComposite;
     }
 
     // Log consensus (only if meaningful)
@@ -4416,7 +4442,7 @@
       predictionDebugLog(`consensus:${options.sym}`, 'log', () => `[CONSENSUS] ${options.sym}: direction=${consensusDirection > 0 ? 'BULL' : 'BEAR'} conf=${(consensusConfidence*100).toFixed(0)}% (${bullCount+bearCount} signals), mom=${momSig.toFixed(2)}`, 10000);
     }
 
-    const score = clamp(rawComposite * 1.6 * adxGate * divergenceSuppression * consensusAdjustment * (ENABLE_MDT_SCORE_MULT ? mdtScoreMult : 1) * _sessMult * (tapeVelocity.scoreBoostMult || 1), -1, 1);
+    const score = clamp(consensusComposite * 1.6 * adxGate * divergenceSuppression * (ENABLE_MDT_SCORE_MULT ? mdtScoreMult : 1) * _sessMult * (tapeVelocity.scoreBoostMult || 1), -1, 1);
     const agreement = summarizeAgreement(Object.fromEntries(modelActiveKeys.map(key => [key, signalVector[key]])));
     const coreAgreement = summarizeAgreement(Object.fromEntries(CORE_SIGNAL_KEYS.map(key => [key, signalVector[key]])));
 
@@ -4512,6 +4538,8 @@
         direction: consensusDirection,  // -1/0/+1
         confidence: consensusConfidence,  // 0-1 scale
         signalCount: bullCount + bearCount,  // How many signals agreed
+        adjustedComposite: consensusComposite,
+        adjustment: consensusAdjustment,
         label: consensusDirection > 0
           ? `Consensus BULL (${(consensusConfidence*100).toFixed(0)}% confidence)`
           : consensusDirection < 0
@@ -4694,6 +4722,10 @@
         components: signalVector,
         coreScore: clamp(coreComposite, -1, 1),
         microScore: clamp(microComposite, -1, 1),
+        consensusComposite,
+        consensusAdjustment,
+        liveMomentumDivergence,
+        liveRealtimeMomentum,
         coreAgreement: coreAgreement.agreement,
         persistenceScore: persistence.signal,
         structureBias: structure.signal,
@@ -4935,10 +4967,110 @@
     return weighted.weight ? weighted.score / weighted.weight : 0.5;
   }
 
+  const ADVANCED_BACKTEST_VERSION = 'adv-v2-vol7d';
+  const ADV_VOL_LOOKBACK_BARS = 7 * 288; // last week of 5m bars
+
+  function percentileRank(series, value) {
+    if (!Array.isArray(series) || !series.length || !Number.isFinite(value)) return 50;
+    const belowOrEqual = series.reduce((count, item) => {
+      return count + ((Number.isFinite(item) && item <= value) ? 1 : 0);
+    }, 0);
+    return (belowOrEqual / series.length) * 100;
+  }
+
+  function computeEwmaVolSeries(logReturns, lambda = 0.94) {
+    if (!Array.isArray(logReturns) || !logReturns.length) return [];
+    const out = new Array(logReturns.length);
+    const warmup = Math.min(30, logReturns.length);
+    let sigma2 = 0;
+    for (let i = 0; i < warmup; i++) sigma2 += (logReturns[i] || 0) ** 2;
+    sigma2 /= Math.max(1, warmup);
+    out[0] = Math.sqrt(Math.max(0, sigma2));
+    for (let i = 1; i < logReturns.length; i++) {
+      sigma2 = lambda * sigma2 + (1 - lambda) * ((logReturns[i - 1] || 0) ** 2);
+      out[i] = Math.sqrt(Math.max(0, sigma2));
+    }
+    return out;
+  }
+
+  function computeJumpRatio(logReturns) {
+    if (!Array.isArray(logReturns) || logReturns.length < 3) return 0;
+    let rv = 0;
+    let bvSum = 0;
+    for (let i = 0; i < logReturns.length; i++) {
+      const r = Number(logReturns[i]) || 0;
+      rv += r * r;
+      if (i > 0) bvSum += Math.abs(r) * Math.abs(Number(logReturns[i - 1]) || 0);
+    }
+    if (rv <= 0) return 0;
+    const n = logReturns.length;
+    const bv = (Math.PI / 2) * (n / (n - 1)) * bvSum;
+    return clamp((rv - bv) / rv, 0, 1);
+  }
+
+  function computeVarianceRatio(logReturns, q = 5) {
+    if (!Array.isArray(logReturns) || logReturns.length < q * 3) return { vr: 1, signal: 'random_walk' };
+    const n = logReturns.length;
+    const mu = average(logReturns);
+    const var1 = logReturns.reduce((sum, r) => sum + (r - mu) ** 2, 0) / Math.max(1, n - 1);
+    if (!Number.isFinite(var1) || var1 <= 0) return { vr: 1, signal: 'random_walk' };
+    let varQRaw = 0;
+    for (let i = q; i < n; i++) {
+      let qRet = 0;
+      for (let j = 0; j < q; j++) qRet += logReturns[i - j];
+      varQRaw += (qRet - q * mu) ** 2;
+    }
+    const denom = q * (n - q) * (1 - q / n);
+    const varQ = denom > 0 ? varQRaw / denom : var1 * q;
+    const vr = varQ / (var1 * q);
+    const signal = vr > 1.2 ? 'trending' : vr < 0.8 ? 'mean_reverting' : 'random_walk';
+    return { vr: Number.isFinite(vr) ? vr : 1, signal };
+  }
+
+  function buildAdvancedVolatilitySnapshot(cache) {
+    const series = Array.isArray(cache?.candles) ? cache.candles : [];
+    if (series.length < 80) return null;
+    const recent = series.slice(-Math.min(ADV_VOL_LOOKBACK_BARS, series.length));
+    const closes = recent.map(c => Number(c?.c)).filter(v => Number.isFinite(v) && v > 0);
+    if (closes.length < 40) return null;
+    const logReturns = [];
+    for (let i = 1; i < closes.length; i++) {
+      logReturns.push(Math.log(closes[i] / closes[i - 1]));
+    }
+    if (!logReturns.length) return null;
+    const ewmaSeries = computeEwmaVolSeries(logReturns);
+    const ewmaNow = ewmaSeries[ewmaSeries.length - 1] || 0;
+    const ewmaPct = ewmaNow * 100;
+    const volPercentile = percentileRank(ewmaSeries.slice(0, -1), ewmaNow);
+    const regime = volPercentile < 25 ? 'CALM'
+      : volPercentile < 75 ? 'NORMAL'
+        : volPercentile < 90 ? 'ELEVATED'
+          : 'CRISIS';
+    const jumpRatio = computeJumpRatio(logReturns.slice(-20));
+    const vrData = computeVarianceRatio(logReturns.slice(-80), 5);
+    return {
+      lookbackDays: Number((recent.length / 288).toFixed(2)),
+      sampleBars: recent.length,
+      ewmaVolPct: Number(ewmaPct.toFixed(4)),
+      volPercentile: Number(volPercentile.toFixed(1)),
+      regime,
+      jumpRatio: Number(jumpRatio.toFixed(4)),
+      varianceRatio: Number((vrData.vr || 1).toFixed(4)),
+      varianceSignal: vrData.signal,
+    };
+  }
+
   function advancedBacktestKey(cache) {
     const candles = cache?.longHistory || [];
     if (!candles.length || candles.length < 120) return '';
-    return `${candles.length}:${candles[candles.length - 1]?.t || 0}`;
+    const bars5m = cache?.candles || [];
+    return [
+      ADVANCED_BACKTEST_VERSION,
+      candles.length,
+      candles[candles.length - 1]?.t || 0,
+      bars5m.length,
+      bars5m[bars5m.length - 1]?.t || 0,
+    ].join(':');
   }
 
   function getCachedAdvancedBacktest(cache) {
@@ -5571,6 +5703,7 @@
       endDate: candles[candles.length - 1]?.t ? new Date(candles[candles.length - 1].t).toISOString().slice(0, 10) : '',
       d1: results.d1,
       d7: results.d7,
+      volatility: buildAdvancedVolatilitySnapshot(cache),
       summary: {
         reliability,
         tradeFit,
@@ -5886,6 +6019,98 @@
           ? `${model.diagnostics?.driverSummary || 'No dominant driver cluster'} · ${fastTiming.label}`
           : (model.diagnostics?.driverSummary || 'No dominant driver cluster'),
       },
+    };
+  }
+
+  function normalizePythPrice(entry) {
+    if (!entry) return null;
+    let price = Number(typeof entry === 'object' ? entry.price : entry);
+    const expo = Number(typeof entry === 'object' ? entry.expo : 0);
+    if (!Number.isFinite(price) || price <= 0) return null;
+    if (Number.isFinite(expo) && expo !== 0 && price > 100000) {
+      price *= Math.pow(10, expo);
+    }
+    return Number.isFinite(price) && price > 0 ? price : null;
+  }
+
+  function getFreshLivePriceSnapshot(sym, coin) {
+    const now = Date.now();
+    const samples = [];
+    const push = (source, price, ts, maxAgeMs, weight = 1) => {
+      const px = Number(price);
+      const sampleTs = Number(ts || now);
+      if (!Number.isFinite(px) || px <= 0 || !Number.isFinite(sampleTs)) return;
+      const ageMs = Math.max(0, now - sampleTs);
+      if (ageMs > maxAgeMs) return;
+      samples.push({ source, price: px, ts: sampleTs, ageMs, weight });
+    };
+
+    const rti = window._rtiPrices?.[sym];
+    push('rti', rti?.price, rti?.ts, 15_000, 1.0);
+
+    const ticker = coin?.instrument ? window._appTickers?.[coin.instrument] : null;
+    push('ticker', ticker?.last, ticker?.timestamp || ticker?.ts, 15_000, 0.9);
+
+    const pythEntry = window._pythPrices?.[sym];
+    const pythPrice = normalizePythPrice(pythEntry);
+    const pythTs = pythEntry?.publishTime ? Number(pythEntry.publishTime) * 1000 : null;
+    push('pyth', pythPrice, pythTs, 20_000, 0.75);
+
+    if (!samples.length) return null;
+    const totalWeight = samples.reduce((sum, sample) => sum + sample.weight, 0) || 1;
+    const price = samples.reduce((sum, sample) => sum + sample.price * sample.weight, 0) / totalWeight;
+    return { price, ts: now, samples };
+  }
+
+  function buildLiveTimingGuard(coin, cache, modelScore, fastTiming) {
+    const sym = coin?.sym;
+    const candles1m = cache?.candles1m || [];
+    if (!sym || candles1m.length < 4) return null;
+
+    const live = getFreshLivePriceSnapshot(sym, coin);
+    const latestClosed = candles1m[candles1m.length - 1];
+    const livePrice = live?.price || Number(latestClosed?.c);
+    const prev1 = Number(candles1m[candles1m.length - 2]?.c);
+    const prev3 = Number(candles1m[candles1m.length - 4]?.c);
+    if (!Number.isFinite(livePrice) || !Number.isFinite(prev1) || !Number.isFinite(prev3) || prev1 <= 0 || prev3 <= 0) {
+      return null;
+    }
+
+    const drift1mPct = ((livePrice - prev1) / prev1) * 100;
+    const drift3mPct = ((livePrice - prev3) / prev3) * 100;
+    const sol = sym === 'SOL';
+    const oneMinThreshold = sol ? 0.035 : 0.050;
+    const threeMinThreshold = sol ? 0.085 : 0.120;
+    const liveDir = drift1mPct <= -oneMinThreshold || drift3mPct <= -threeMinThreshold
+      ? -1
+      : drift1mPct >= oneMinThreshold || drift3mPct >= threeMinThreshold
+        ? 1
+        : 0;
+    const modelDir = modelScore > 0.12 ? 1 : modelScore < -0.12 ? -1 : 0;
+    const fastDir = fastTiming?.diagnostics?.driftDir || 0;
+    const fastScore = Number(fastTiming?.score || 0);
+    const fastConflict = modelDir !== 0 && fastDir !== 0 && fastDir !== modelDir && Math.abs(fastScore) >= (sol ? 0.12 : 0.18);
+    const liveConflict = modelDir !== 0 && liveDir !== 0 && liveDir !== modelDir;
+    const conflict = liveConflict || fastConflict;
+    const hard = conflict && (
+      Math.abs(drift1mPct) >= (sol ? 0.060 : 0.085)
+      || Math.abs(drift3mPct) >= (sol ? 0.140 : 0.180)
+      || Math.abs(fastScore) >= (sol ? 0.22 : 0.28)
+    );
+
+    return {
+      conflict,
+      hard,
+      modelDir,
+      liveDir,
+      fastDir,
+      livePrice,
+      liveSource: live?.samples?.map(sample => sample.source).join('+') || 'closed-1m',
+      drift1mPct,
+      drift3mPct,
+      fastScore,
+      scoreMultiplier: conflict ? (hard ? 0.28 : 0.55) : 1,
+      confidenceMultiplier: conflict ? (hard ? 0.48 : 0.70) : 1,
     };
   }
 
@@ -6508,6 +6733,14 @@
       normalizedScore = clamp(normalizedScore * 0.45, -1, 1);
       normalizedConfidence = Math.round(clamp(normalizedConfidence * 0.62, 0, 95));
     }
+    const liveTimingGuard = buildLiveTimingGuard(coin, effectiveCache, normalizedScore, fastTiming);
+    if (liveTimingGuard?.conflict && resolvedRouterAction !== 'invalidated') {
+      if (liveTimingGuard.hard || resolvedRouterAction === 'trade') {
+        resolvedRouterAction = 'stand-aside';
+      }
+      normalizedScore = clamp(normalizedScore * liveTimingGuard.scoreMultiplier, -1, 1);
+      normalizedConfidence = Math.round(clamp(normalizedConfidence * liveTimingGuard.confidenceMultiplier, 0, 95));
+    }
     const normalizedSignal = resolvedRouterAction === 'invalidated'
       ? 'neutral'
       : signalFromScore(normalizedScore);
@@ -6517,7 +6750,7 @@
       name: coin.name,
       color: coin.color,
       icon: coin.icon,
-      price: timed.price,
+      price: liveTimingGuard?.livePrice || timed.price,
       signal: normalizedSignal,
       score: normalizedScore,
       rawScore: timed.rawScore,
@@ -6538,6 +6771,7 @@
         routedSummary: routed.summaryText,
         quantRegime: routerContext.quantRegime,
         executionGuard,
+        liveTimingGuard,
         liveBook: effectiveBook ? {
           source: effectiveBook.source || null,
           ageMs: liveBookAgeMs,
@@ -6602,6 +6836,25 @@
       },
     };
 
+    // PATCH (orbital): WECRYPTO cross-chain orbital engine — additive diagnostics.
+    // Never veto; contributes OEQ + s/p/d/f + counter-trade intent for the card layer.
+    try {
+      const orbitalApi = window.OrbitalEngine;
+      if (orbitalApi && typeof orbitalApi.isEnabled === 'function' && orbitalApi.isEnabled()) {
+        const orbital = orbitalApi.processInterval(coin.sym, cache.candles15m);
+        if (orbital) {
+          result.orbital = orbital;
+          result.diagnostics.orbital = orbital;
+          // Stream classified payload → Firebase/TIDE (non-blocking, rate-limited).
+          if (window._orbitalBroadcaster && typeof window._orbitalBroadcaster.push === 'function') {
+            window._orbitalBroadcaster.push(orbital);
+          }
+        }
+      }
+    } catch (orbitalErr) {
+      console.warn('[predictions] orbital engine error for', coin.sym, orbitalErr && orbitalErr.message);
+    }
+
     // PATCH6: Attach entry delay based on volatility
     if (window._adaptiveTuner) {
       const entryDelayInfo = window._adaptiveTuner.getEntryDelay(coin.sym);
@@ -6644,7 +6897,7 @@
   async function fetchDerivatives() {
     if (Date.now() - derivAge < 120000) return; // cache 2 min (CoinGecko rate limit)
     try {
-      const data = await fetchGeckoJSON('/derivatives?include_tickers=unexpired', { minGapMs: 1800, retries: 4 }).catch(() => null);
+      const data = await fetchGeckoJSON('/derivatives?include_tickers=unexpired').catch(() => null);
       if (!Array.isArray(data)) return;
       const symMap = { BTCUSDT: 'BTC', ETHUSDT: 'ETH', SOLUSDT: 'SOL', XRPUSDT: 'XRP', DOGEUSDT: 'DOGE', BNBUSDT: 'BNB' };
       data.forEach(d => {
@@ -6733,7 +6986,7 @@
       // Unstick a hung predictionRunPromise so the next runAll() starts fresh.
       predictionRunPromise = null;
       geckoRequestQueue = Promise.resolve();  // abandon backed-up serial gecko chain
-      lastGeckoRequestAt = 0;
+      // Preserve lastGeckoRequestAt so manual refreshes cannot bypass CoinGecko pacing.
       window.throttledFetchReset?.();          // drain stale throttle waitQueue
     },
     applyOnlineWeightUpdate(sym, updates = {}, opts = {}) {
@@ -6806,7 +7059,7 @@
       // Reset gecko serial queue and throttle waiters so stale calls from prior
       // runs (e.g. after Refresh clicks) don't block this fresh run.
       geckoRequestQueue = Promise.resolve();
-      lastGeckoRequestAt = 0;
+      // Preserve lastGeckoRequestAt so rapid refreshes keep the provider gap.
       window.throttledFetchReset?.();
       predictionRunPromise = (async () => {
         // Per-coin 20s hard cap — inner fetches have up to 12s individual timeouts;

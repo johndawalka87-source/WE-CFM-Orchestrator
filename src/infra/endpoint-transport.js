@@ -1078,6 +1078,16 @@
     }
   }
 
+  function effectiveBusIntervalMs(cfg, row) {
+    const base = Number(cfg.intervalMs || 30000);
+    const failures = Math.max(0, Number(row?.failures || 0));
+    if (!failures) return base;
+    const lastError = String(row?.lastError || '').toLowerCase();
+    const authOrReject = /401|403|unauthorized|forbidden/.test(lastError);
+    const maxBackoff = authOrReject ? 15 * 60_000 : 5 * 60_000;
+    return Math.min(maxBackoff, base * Math.pow(2, Math.min(5, failures)));
+  }
+
   function ensureIngestionBus() {
     if (busPollTimer) return;
     busPollTimer = setInterval(() => {
@@ -1085,7 +1095,7 @@
         const row = busState.endpoints[cfg.id];
         const now = Date.now();
         const lastTs = Math.max(row.lastOk || 0, row.lastFail || 0);
-        if (!lastTs || now - lastTs >= cfg.intervalMs) {
+        if (!lastTs || now - lastTs >= effectiveBusIntervalMs(cfg, row)) {
           pollBusEndpoint(cfg);
         }
       }

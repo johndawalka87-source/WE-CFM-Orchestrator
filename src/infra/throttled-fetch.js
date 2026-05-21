@@ -21,9 +21,54 @@
   const MAX_CONCURRENT  = 20;     // allows 7-coin parallel fetch without queue build-up
   const FETCH_TIMEOUT_MS = 10000; // hard deadline per request (10 s) — proxy sources need room
   const SLOT_GAP_MS      = 30;    // breathing room between slot releases
+  const API_TIMEOUT_MS = {
+    coingecko: 12000,
+    coinbase: 9000,
+    okx: 9000,
+    okc: 9000,
+    bitstamp: 9000,
+    binance: 8000,
+    bybit: 8500,
+    kraken: 9000,
+    kucoin: 9000,
+    mexc: 9000,
+    bitfinex: 9000,
+    cryptocom: 9000,
+    kalshi: 10000,
+    polymarket: 10000,
+    blockchainraw: 10000,
+    default: FETCH_TIMEOUT_MS,
+  };
 
   let activeFetches = 0;
   const waitQueue = [];
+
+  function inferApiName(url) {
+    try {
+      const host = new URL(String(url), window.location.href).hostname.toLowerCase();
+      if (host.includes('coingecko')) return 'coingecko';
+      if (host.includes('coinbase')) return 'coinbase';
+      if (host.includes('okx.com') || host.includes('okcoin.com')) return 'okx';
+      if (host.includes('bitstamp')) return 'bitstamp';
+      if (host.includes('coinmarketcap')) return 'coinmarketcap';
+      if (host.includes('binance')) return 'binance';
+      if (host.includes('bybit')) return 'bybit';
+      if (host.includes('kraken')) return 'kraken';
+      if (host.includes('kucoin')) return 'kucoin';
+      if (host.includes('mexc')) return 'mexc';
+      if (host.includes('bitfinex')) return 'bitfinex';
+      if (host.includes('crypto.com')) return 'cryptocom';
+      if (host.includes('kalshi')) return 'kalshi';
+      if (host.includes('polymarket')) return 'polymarket';
+      if (host.includes('mempool.space') || host.includes('blockchair.com') || host.includes('etherscan.io') || host.includes('blockscout.com')) return 'blockchainraw';
+      if (host.includes('blockcypher')) return 'blockcypher';
+      if (host.includes('blockscout')) return 'blockscout';
+      if (host.includes('chain.so')) return 'chainso';
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
 
   async function throttledFetch(url, options = {}) {
     if (activeFetches >= MAX_CONCURRENT) {
@@ -35,10 +80,20 @@
     // the AbortController signal.  The underlying fetch may keep running
     // in the background but it won't hold a throttle slot.
     const hardTimeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('[throttle] timeout')), FETCH_TIMEOUT_MS)
+      setTimeout(() => reject(new Error('[throttle] timeout')), (() => {
+        const apiName = inferApiName(url) || 'default';
+        const limiter = apiName && window.ApiRateLimiter ? window.ApiRateLimiter.getLimiter(apiName) : null;
+        const queuePenaltyMs = limiter ? Math.min(4000, limiter.getQueueLength() * 120) : 0;
+        const baseTimeout = API_TIMEOUT_MS[apiName] || API_TIMEOUT_MS.default;
+        return baseTimeout + queuePenaltyMs;
+      })())
     );
 
     try {
+      const apiName = inferApiName(url);
+      if (apiName && window.ApiRateLimiter) {
+        await window.ApiRateLimiter.acquireToken(apiName);
+      }
       const res = await Promise.race([fetch(url, options), hardTimeout]);
       return res;   // ← return raw Response; callers use .ok / .json() themselves
     } catch (err) {

@@ -103,3 +103,63 @@
 - Days: 14  Train: 400  Test: 100  Step: 50
 - Coins: BTC, ETH, SOL, XRP
 - Log: F:\WECRYP\backtest-logs\wf-2026-05-06.log
+
+## Advanced Backtest — 2026-05-19T20:07:43.642Z
+- Days: 2  Candles: 576
+- Coins analyzed: BTC
+- Log: G:\WECRYP\backtest-logs\advanced-2026-05-19.log
+
+## Walk-Forward Backtest — 2026-05-19T20:07:45.263Z
+- Days: 3  Train: 120  Test: 40  Step: 20
+- Coins: BTC
+- Log: G:\WECRYP\backtest-logs\wf-2026-05-19.log
+
+## Advanced Backtest — 2026-05-20T08:33:13.820Z
+- Days: 30  Candles: 8640
+- Coins analyzed: BTC
+- Log: G:\WECRYP\backtest-logs\advanced-2026-05-20.log
+
+## Advanced Backtest — 2026-05-20T08:33:15.770Z
+- Days: 30  Candles: 8640
+- Coins analyzed: ETH
+- Log: G:\WECRYP\backtest-logs\advanced-2026-05-20.log
+
+## Advanced Backtest — 2026-05-20T08:33:17.516Z
+- Days: 30  Candles: 8640
+- Coins analyzed: SOL
+- Log: G:\WECRYP\backtest-logs\advanced-2026-05-20.log
+
+## Advanced Backtest — 2026-05-20T08:33:19.253Z
+- Days: 30  Candles: 8640
+- Coins analyzed: XRP
+- Log: G:\WECRYP\backtest-logs\advanced-2026-05-20.log
+
+## Walk-Forward Backtest — 2026-05-20T08:33:20.997Z
+- Days: 30  Train: 400  Test: 100  Step: 50
+- Coins: BTC
+- Log: G:\WECRYP\backtest-logs\wf-2026-05-20.log
+
+## Walk-Forward Backtest — 2026-05-20T08:33:22.711Z
+- Days: 30  Train: 400  Test: 100  Step: 50
+- Coins: ETH
+- Log: G:\WECRYP\backtest-logs\wf-2026-05-20.log
+
+## Walk-Forward Backtest — 2026-05-20T08:33:24.412Z
+- Days: 30  Train: 400  Test: 100  Step: 50
+- Coins: SOL
+- Log: G:\WECRYP\backtest-logs\wf-2026-05-20.log
+
+## Walk-Forward Backtest — 2026-05-20T08:33:26.198Z
+- Days: 30  Train: 400  Test: 100  Step: 50
+- Coins: XRP
+- Log: G:\WECRYP\backtest-logs\wf-2026-05-20.log
+
+## Walk-Forward Backtest — 2026-05-21T06:01:28.122Z
+- Days: 14  Train: 400  Test: 100  Step: 50
+- Coins: BTC
+- Log: G:\WECRYP\backtest-logs\wf-2026-05-21.log
+
+## Walk-Forward Backtest — 2026-05-21T06:01:29.615Z
+- Days: 14  Train: 400  Test: 100  Step: 50
+- Coins: ETH
+- Log: G:\WECRYP\backtest-logs\wf-2026-05-21.log

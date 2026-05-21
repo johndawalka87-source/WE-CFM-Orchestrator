@@ -1020,16 +1020,78 @@
     }
   }
 
+  function toFiniteDecimal(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function clamp01(value) {
+    if (!Number.isFinite(value)) return null;
+    return Math.max(0, Math.min(1, value));
+  }
+
+  function normalizeL2Levels(levels) {
+    if (!Array.isArray(levels)) return [];
+    const out = [];
+    for (const level of levels) {
+      let priceRaw = null;
+      let sizeRaw = null;
+      if (Array.isArray(level)) {
+        priceRaw = level[0];
+        sizeRaw = level[1];
+      } else if (level && typeof level === 'object') {
+        priceRaw = level.price_dollars ?? level.price ?? level.yes_price ?? level.no_price;
+        sizeRaw = level.count_fp ?? level.size ?? level.quantity_fp ?? level.count;
+      }
+      const price = clamp01(toFiniteDecimal(priceRaw));
+      const size = toFiniteDecimal(sizeRaw);
+      if (price == null || size == null) continue;
+      out.push([price, size]);
+    }
+    return out;
+  }
+
+  function synthesizeAsksFromOpposingBids(opposingBids) {
+    return (Array.isArray(opposingBids) ? opposingBids : [])
+      .map(([price, size]) => {
+        const p = clamp01(1 - Number(price));
+        const s = toFiniteDecimal(size);
+        return (p == null || s == null) ? null : [p, s];
+      })
+      .filter(Boolean)
+      .sort((a, b) => a[0] - b[0]);
+  }
+
+  function deriveYesAsk(yesAskRaw, noBidRaw) {
+    const yesAsk = clamp01(toFiniteDecimal(yesAskRaw));
+    if (yesAsk != null) return yesAsk;
+    const noBid = clamp01(toFiniteDecimal(noBidRaw));
+    return noBid != null ? clamp01(1 - noBid) : null;
+  }
+
+  function deriveNoAsk(noAskRaw, yesBidRaw) {
+    const noAsk = clamp01(toFiniteDecimal(noAskRaw));
+    if (noAsk != null) return noAsk;
+    const yesBid = clamp01(toFiniteDecimal(yesBidRaw));
+    return yesBid != null ? clamp01(1 - yesBid) : null;
+  }
+
   function handleTicker(payload) {
     const { market_ticker, yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_traded_price } = payload;
     if (!market_ticker) return;
 
+    const yesBid = clamp01(toFiniteDecimal(yes_bid_dollars ?? payload?.yes_bid));
+    const noBid = clamp01(toFiniteDecimal(no_bid_dollars ?? payload?.no_bid));
+    const yesAsk = deriveYesAsk(yes_ask_dollars ?? payload?.yes_ask, noBid);
+    const noAsk = deriveNoAsk(no_ask_dollars ?? payload?.no_ask, yesBid);
+    const lastTraded = clamp01(toFiniteDecimal(last_traded_price ?? payload?.last_traded_price_dollars ?? payload?.last_traded));
+
     store.tickers[market_ticker] = {
-      yes_bid: yes_bid_dollars,
-      yes_ask: yes_ask_dollars,
-      no_bid: no_bid_dollars,
-      no_ask: no_ask_dollars,
-      last_traded: last_traded_price,
+      yes_bid: yesBid,
+      yes_ask: yesAsk,
+      no_bid: noBid,
+      no_ask: noAsk,
+      last_traded: lastTraded,
       ts: Date.now(),
     };
 
@@ -1039,35 +1101,70 @@
         new CustomEvent('kalshi:ticker', {
           detail: {
             market_ticker,
-            yes_bid: yes_bid_dollars,
-            yes_ask: yes_ask_dollars,
-            no_bid: no_bid_dollars,
-            no_ask: no_ask_dollars,
-            last_traded: last_traded_price,
+            yes_bid: yesBid,
+            yes_ask: yesAsk,
+            no_bid: noBid,
+            no_ask: noAsk,
+            last_traded: lastTraded,
             ts: Date.now(),
           },
         })
       );
+      try {
+        if (window._orbitalBroadcaster && typeof window._orbitalBroadcaster.pushTick === 'function') {
+          window._orbitalBroadcaster.pushTick({
+            market_id: market_ticker,
+            market_ticker,
+            price: lastTraded != null ? lastTraded : yesBid,
+            vol: payload?.volume != null ? Number(payload.volume) : null,
+            yes_bid: yesBid,
+            yes_ask: yesAsk,
+            no_bid: noBid,
+            no_ask: noAsk,
+            ts: Date.now(),
+            stream_status: 'active',
+            source: 'kalshi-ws',
+          });
+        }
+      } catch (_) {}
     }
   }
 
   function handleOrderbookSnapshot(payload) {
-    const { market_ticker, yes_bid_levels, yes_ask_levels, no_bid_levels, no_ask_levels } = payload;
+    const {
+      market_ticker,
+      yes_bid_levels, yes_ask_levels, no_bid_levels, no_ask_levels,
+      yes_dollars, no_dollars
+    } = payload;
     if (!market_ticker) return;
 
+    const yesBids = normalizeL2Levels(yes_bid_levels || yes_dollars);
+    const noBids = normalizeL2Levels(no_bid_levels || no_dollars);
+    let yesAsks = normalizeL2Levels(yes_ask_levels);
+    let noAsks = normalizeL2Levels(no_ask_levels);
+    if (!yesAsks.length && noBids.length) yesAsks = synthesizeAsksFromOpposingBids(noBids);
+    if (!noAsks.length && yesBids.length) noAsks = synthesizeAsksFromOpposingBids(yesBids);
+
     store.orderbooks[market_ticker] = {
-      yes_bids: yes_bid_levels || [],
-      yes_asks: yes_ask_levels || [],
-      no_bids: no_bid_levels || [],
-      no_asks: no_ask_levels || [],
+      yes_bids: yesBids,
+      yes_asks: yesAsks,
+      no_bids: noBids,
+      no_asks: noAsks,
       ts: Date.now(),
     };
 
     _logThrottled(`orderbook-snapshot:${market_ticker}`, 'debug', `[KalshiWS] Orderbook snapshot for ${market_ticker}`);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('kalshi:orderbook', { detail: { market_ticker, ...store.orderbooks[market_ticker] } }));
+    }
   }
 
   function handleOrderbookDelta(payload) {
-    const { market_ticker, client_order_id, yes_bid_levels, yes_ask_levels, no_bid_levels, no_ask_levels } = payload;
+    const {
+      market_ticker, client_order_id,
+      yes_bid_levels, yes_ask_levels, no_bid_levels, no_ask_levels,
+      yes_dollars, no_dollars
+    } = payload;
     if (!market_ticker) return;
 
     // Merge delta price levels into existing snapshot
@@ -1078,7 +1175,10 @@
       function applyDelta(existing, delta) {
         if (!Array.isArray(delta)) return existing;
         const map = new Map(existing.map(l => [l[0], l]));
-        for (const [price, size] of delta) {
+        for (const [priceRaw, sizeRaw] of normalizeL2Levels(delta)) {
+          const price = clamp01(toFiniteDecimal(priceRaw));
+          const size = toFiniteDecimal(sizeRaw);
+          if (price == null || size == null) continue;
           if (size === 0) {
             map.delete(price);
           } else {
@@ -1088,10 +1188,12 @@
         return Array.from(map.values());
       }
 
-      if (yes_bid_levels) ob.yes_bids = applyDelta(ob.yes_bids, yes_bid_levels);
+      if (yes_bid_levels || yes_dollars) ob.yes_bids = applyDelta(ob.yes_bids, yes_bid_levels || yes_dollars);
       if (yes_ask_levels) ob.yes_asks = applyDelta(ob.yes_asks, yes_ask_levels);
-      if (no_bid_levels)  ob.no_bids  = applyDelta(ob.no_bids,  no_bid_levels);
+      if (no_bid_levels || no_dollars)  ob.no_bids  = applyDelta(ob.no_bids,  no_bid_levels || no_dollars);
       if (no_ask_levels)  ob.no_asks  = applyDelta(ob.no_asks,  no_ask_levels);
+      if (!ob.yes_asks.length && ob.no_bids.length) ob.yes_asks = synthesizeAsksFromOpposingBids(ob.no_bids);
+      if (!ob.no_asks.length && ob.yes_bids.length) ob.no_asks = synthesizeAsksFromOpposingBids(ob.yes_bids);
       ob.ts = Date.now();
     }
 
@@ -1100,6 +1202,9 @@
     }
 
     if (typeof window !== 'undefined') {
+      if (store.orderbooks[market_ticker]) {
+        window.dispatchEvent(new CustomEvent('kalshi:orderbook', { detail: { market_ticker, ...store.orderbooks[market_ticker] } }));
+      }
       window.dispatchEvent(
         new CustomEvent('kalshi:orderbook_delta', {
           detail: {

@@ -197,6 +197,13 @@
           </svg>
           Wallet Intel
         </button>
+        <button class="nav-btn" data-view="hourly-ranges" data-testid="nav-hourly-ranges">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline>
+            <polyline points="17 6 23 6 23 12"></polyline>
+          </svg>
+          Hourly Ranges
+        </button>
         <button class="nav-btn" data-view="portfolio" data-testid="nav-portfolio">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="2" y="7" width="20" height="14" rx="2" />
@@ -295,6 +302,8 @@
   <script src="../src/feeds/rti-feed.js"></script>
   <script src="../src/orbital/shell-router.js"></script>
   <script src="../src/orbital/signal-router-cfm.js"></script>
+  <script src="../src/orbital/orbital-engine.js"></script>
+  <script src="../src/orbital/kalshi-v2-mapper.js"></script>
   <script src="../src/kalshi/kalshi-renderer-bridge.js"></script>
   <script src="../src/kalshi/kalshi-prediction-enhancements.js"></script>
   <script src="../src/kalshi/kalshi-ws.js"></script>
@@ -332,6 +341,7 @@
   <script src="../src/core/predictions.js" defer></script>
   <script src="../src/core/validator-15m.js" defer></script>
   <script src="../src/feeds/orderbook.js" defer></script>
+  <script src="../src/ui/hourly-ranges-panel.js" defer></script>
   <script src="../src/ui/hourly-kalshi-tracker.js" defer></script>
 
   <script src="../src/orbital/pyth-momentum-exit.js" defer></script>

@@ -16,10 +16,12 @@
   const ERRORS = {};   // sym → last error message
   let _timer = null;
 
-  const POLL_MS = 30000;  // 30s polling interval
+  const POLL_MS = 60000;  // 60s polling interval; failing handlers back off independently
   const TIMEOUT = 12000;  // 12s — extra headroom for Tailscale/IPv6 routing
   const ERROR_LOG_COOLDOWN_MS = 60000;
   const ERROR_LOG_STATE = {}; // sym -> { msg, ts }
+  const ROUTE_HANDLER_HEALTH = {}; // sym:index -> { failures, nextAt }
+  let _fetchInFlight = null;
 
   function shouldLogRouteError(sym, msg) {
     const now = Date.now();
@@ -59,6 +61,32 @@
       }
     }
     throw lastErr || new Error('all endpoints failed');
+  }
+
+  function handlerKey(sym, index) {
+    return `${sym}:${index}`;
+  }
+
+  function isHandlerBackedOff(sym, index) {
+    const state = ROUTE_HANDLER_HEALTH[handlerKey(sym, index)];
+    return !!(state && state.nextAt && Date.now() < state.nextAt);
+  }
+
+  function markHandlerSuccess(sym, index) {
+    ROUTE_HANDLER_HEALTH[handlerKey(sym, index)] = { failures: 0, nextAt: 0 };
+  }
+
+  function markHandlerFailure(sym, index, err) {
+    const key = handlerKey(sym, index);
+    const state = ROUTE_HANDLER_HEALTH[key] || { failures: 0, nextAt: 0 };
+    const failures = state.failures + 1;
+    const msg = String(err?.message || err || '').toLowerCase();
+    const transient = /abort|timeout|429|5\d\d|network|fetch|econnreset|socket/.test(msg);
+    const baseMs = transient ? 60_000 : 5 * 60_000;
+    ROUTE_HANDLER_HEALTH[key] = {
+      failures,
+      nextAt: Date.now() + Math.min(15 * 60_000, baseMs * Math.pow(2, Math.min(4, failures - 1))),
+    };
   }
 
   function fmtCompact(n) {
@@ -657,13 +685,20 @@
 
   async function runRoute(route) {
     let lastErr = null;
+    let skipped = 0;
 
-    for (const handler of route.handlers) {
+    for (let i = 0; i < route.handlers.length; i++) {
+      const handler = route.handlers[i];
+      if (isHandlerBackedOff(route.sym, i)) {
+        skipped++;
+        continue;
+      }
       try {
         const result = await handler();
 
         if (result?.sym) {
           ERRORS[route.sym] = null;
+          markHandlerSuccess(route.sym, i);
           const prev = CACHE[route.sym];
           if (prev?.raw && prev.ts && (result.ts - prev.ts) < 180000) {
             result.velocity = computeVelocity(route.sym, result.raw, prev.raw);
@@ -681,16 +716,19 @@
         }
       } catch (e) {
         lastErr = e;
+        markHandlerFailure(route.sym, i, e);
         // Per-handler failures are expected during transient endpoint outages.
         // Aggregate failure logging is handled in fetchAll() with cooldown.
       }
     }
-    throw lastErr || new Error(`All handlers failed for ${route.sym}`);
+    throw lastErr || new Error(`All handlers backed off for ${route.sym} (${skipped}/${route.handlers.length})`);
   }
 
   // ── Fetch all routes in parallel ────────────────────────────────
 
   async function fetchAll() {
+    if (_fetchInFlight) return _fetchInFlight;
+    _fetchInFlight = (async () => {
     const results = await Promise.allSettled(ROUTES.map(r => runRoute(r)));
     ROUTES.forEach(({ sym }, i) => {
       const r = results[i];
@@ -721,6 +759,12 @@
     window.dispatchEvent(new CustomEvent('chain-router-update', { detail }));
     window.dispatchEvent(new CustomEvent('blockchain-scan-update', { detail })); // compat
     return { ...CACHE };
+    })();
+    try {
+      return await _fetchInFlight;
+    } finally {
+      _fetchInFlight = null;
+    }
   }
 
   // ── Public API ───────────────────────────────────────────────────
@@ -730,6 +774,7 @@
     get(sym) { return CACHE[sym] || null; },
     getAll() { return { ...CACHE }; },
     getErrors() { return { ...ERRORS }; },
+    getRouteHealth() { return { ...ROUTE_HANDLER_HEALTH }; },
     fmtCompact,
     fmtHashrate,
     fetchAll,

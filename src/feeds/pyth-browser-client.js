@@ -30,6 +30,14 @@
   window._pythPrices = window._pythPrices || {};
   window._pythPythMetadata = window._pythPythMetadata || {};
 
+  function scalePythPrice(rawPrice, expo) {
+    const price = parseFloat(rawPrice);
+    const exponent = Number(expo || 0);
+    if (!Number.isFinite(price) || price <= 0) return null;
+    const scaled = Number.isFinite(exponent) ? price * Math.pow(10, exponent) : price;
+    return Number.isFinite(scaled) && scaled > 0 ? scaled : null;
+  }
+
   async function fetchPythPrices() {
     try {
       const ctrl = new AbortController();
@@ -58,8 +66,8 @@
         for (const [coin, expectedId] of Object.entries(PYTH_FEEDS)) {
           if (sym.id.toLowerCase().includes(expectedId.toLowerCase()) || 
               sym.id.toLowerCase() === expectedId.toLowerCase()) {
-            const price = parseFloat(sym.price.price);
-            if (!isNaN(price) && price > 0) {
+            const price = scalePythPrice(sym.price.price, sym.price.expo);
+            if (price != null) {
               updated[coin] = {
                 price,
                 expo: sym.price.expo || 0,
