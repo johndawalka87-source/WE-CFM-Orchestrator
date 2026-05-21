@@ -10,7 +10,7 @@ Project page: [View on GitHub](https://github.com/JohnDaWalka/WE-CFM-Orchestrato
 - Run: `npm start`
 - Build (portable): `npm run build:portable`
 - Build (installer): `npm run build:installer`
-- Production/release builds (with preflight checks): `npm run build:portable:release` and `npm run build:installer:release`
+- Production/release builds (with preflight checks): `npm run build:portable:release` or `npm run build:installer:release`
 
 ## Documentation
 - [Architecture](./docs/ARCHITECTURE.md)
