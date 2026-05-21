@@ -6,9 +6,11 @@ Project page: [View on GitHub](https://github.com/JohnDaWalka/WE-CFM-Orchestrato
 
 ## Quick Start
 - Install: `npm install`
+- Configure credentials/environment: see [Configuration](./docs/CONFIGURATION.md) and [Getting Started](./docs/GETTING-STARTED.md)
 - Run: `npm start`
 - Build (portable): `npm run build:portable`
 - Build (installer): `npm run build:installer`
+- Production/release builds (with preflight checks): `npm run build:portable:release` and `npm run build:installer:release`
 
 ## Documentation
 - [Architecture](./docs/ARCHITECTURE.md)
