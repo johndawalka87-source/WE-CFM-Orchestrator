@@ -2086,7 +2086,7 @@ app.whenReady().then(async () => {
     if (headers['Referer'] && headers['Referer'].startsWith('file://')) {
       delete headers['Referer'];
     }
-    callback({ requestHeaders: headers });
+    callback({ cancel: false, requestHeaders: headers });
   });
 
   await startProxy();
