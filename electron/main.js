@@ -5,6 +5,40 @@ const fsp = fs.promises;
 const { spawn } = require('child_process');
 const { loadKalshiCredentials, buildKalshiWsAuthHeaders } = require('./kalshi-credentials.js');
 
+// --- AMD AOCL & BLAS Optimizations for Downstream C++/Python Binaries ---
+// Force NumPy, PyTorch, and Custom C++ to prioritize AMD AOCL (BLIS/libflame) and avoid Intel MKL throttling on Ryzen.
+process.env.MKL_DEBUG_CPU_TYPE = '5'; // Force MKL to not cripple AMD CPUs if inadvertently loaded
+process.env.MKL_ENABLE_INSTRUCTIONS = 'AVX2';
+process.env.DISABLE_MKL = '1';
+process.env.BLIS_ARCH = 'zen'; // Target Zen architecture for AOCL/BLIS
+process.env.AOCL_ENABLE = '1';
+process.env.OMP_DYNAMIC = 'FALSE'; // Better thread binding for AOCL
+
+// Try to load the ultra-fast C++ native math N-API addon (DEPRECATED - Replaced by WASM SIMD)
+// let quantMathAddon = null;
+// try {
+//   quantMathAddon = require('../native-math/build/Release/quant_math.node');
+// } catch (e) { }
+
+// --- CPU Core Affinity Binding (AMD Ryzen Quant Box Optimization) ---
+// Since native C++ modules fail to compile locally, we launch PowerShell to hard-bind
+// the Node process to a specific CPU core mask to prevent L3 cache thrashing across CCX boundaries.
+const { exec } = require('child_process');
+try {
+  // Bind to cores 0-7 (Bitmask 255 = 11111111) as an example baseline for CCX0
+  const affinityMask = 255; 
+  console.log(`[Startup] Launching PowerShell to lock CPU Affinity to mask ${affinityMask}...`);
+  exec(`powershell -Command "$Process = Get-Process -Id ${process.pid}; $Process.ProcessorAffinity = ${affinityMask}"`, (err, stdout, stderr) => {
+    if (err) {
+      console.warn(`[Startup] Failed to set Process Affinity via PowerShell: ${err.message}`);
+    } else {
+      console.log(`[Startup] Process Affinity successfully locked for PID ${process.pid}.`);
+    }
+  });
+} catch (err) {
+  console.warn('[Startup] Affinity binding error:', err);
+}
+
 // Prevent startup crashes when stdout/stderr pipes are unavailable (EPIPE)
 function _isBrokenPipe(err) {
   return err && (err.code === 'EPIPE' || /broken pipe/i.test(String(err.message || '')));
@@ -158,6 +192,11 @@ function configureCachePaths() {
     app.setPath('sessionData', sessionPath);
     app.commandLine.appendSwitch('disk-cache-dir', diskCacheDir);
     app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+    
+    // V8 Optimizations for AMD Ryzen + Windows 11 Huge Pages (Fake Quant Box configuration) + WASM SIMD
+    app.commandLine.appendSwitch('js-flags', '--use-largepages=on --max-old-space-size=8192 --no-lazy --turbo-fast-api-calls --experimental-wasm-simd');
+    app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
+    
     console.log(`[Startup] Cache paths configured: userData=${userDataPath} session=${sessionPath} disk=${diskCacheDir}`);
   } catch (e) {
     console.warn('[Startup] Cache path configuration skipped:', e.message);
@@ -395,7 +434,7 @@ let proxyRestartTimer = null;
 let proxyRestartAttempts = 0;
 let proxyManualStop = false;
 
-const PROXY_PORT_CASCADE = [3010, 3011, 3012, 3013, 3014];
+const PROXY_PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020];
 
 // Find the first port in the cascade that isn't already occupied
 function findFreePort(ports) {
@@ -555,10 +594,17 @@ function waitForProxy(maxMs = 5000, pollMs = 150) {
     function tryPort() {
       const port = PROXY_PORT_CASCADE[portIdx] || PROXY_PORT_CASCADE[0];
       const req = http.get(`http://127.0.0.1:${port}/health`, res => {
-        res.resume();
-        proxyPort = port;           // lock in the responsive port
-        proxyHealthy = true;
-        resolve();
+        let body = '';
+        res.on('data', chunk => body += chunk);
+        res.on('end', () => {
+          if (res.statusCode === 200 && body.trim() === 'OK') {
+            proxyPort = port;           // lock in the responsive port
+            proxyHealthy = true;
+            resolve();
+          } else {
+            req.emit('error', new Error('Invalid proxy response'));
+          }
+        });
       });
       req.on('error', () => {
         if (Date.now() >= deadline) {
@@ -655,6 +701,69 @@ ipcMain.handle('kalshi:wsAuthHeaders', async () => {
     console.warn(`[Kalshi] WSS auth header signing failed: ${result.error}`);
   }
   return result;
+});
+
+// ── IPC: Coinbase Authentication ───────────────────────────────────────────
+ipcMain.handle('coinbase:generate-jwt', async (_, options = {}) => {
+  try {
+    const crypto = require('crypto');
+    const path = require('path');
+    const fs = require('fs');
+    const candidates = [
+      path.join(app.getAppPath(), '..', '..', 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'),
+      path.join(app.getAppPath(), 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'),
+      'F:\\WECRYP\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json',
+      'G:\\WECRYP\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json',
+      'g:\\WECRYP\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json',
+    ];
+    let keyPath = null;
+    for (const p of candidates) {
+      if (fs.existsSync(p)) { keyPath = p; break; }
+    }
+    if (!keyPath) {
+      console.error('[Coinbase] CDP API Key not found in candidates:', candidates);
+      return { success: false, error: 'CDP API Key not found in secrets directory' };
+    }
+
+    const keyData = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
+    if (!keyData.name || !keyData.privateKey) return { success: false, error: 'Invalid CDP key format' };
+
+    const header = {
+      alg: 'ES256',
+      kid: keyData.name,
+      nonce: crypto.randomBytes(16).toString('hex'),
+      typ: 'JWT'
+    };
+    
+    const payload = {
+      iss: 'cdp',
+      nbf: Math.floor(Date.now() / 1000) - 30, // subtract 30s to prevent 401s if system clock is fast
+      exp: Math.floor(Date.now() / 1000) + 120,
+      sub: keyData.name
+    };
+    
+    if (options.requestMethod && options.requestPath) {
+      payload.uri = options.requestMethod + ' ' + options.requestPath;
+    }
+    
+    const b64u = (str) => Buffer.from(str).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+    
+    const encodedHeader = b64u(JSON.stringify(header));
+    const encodedPayload = b64u(JSON.stringify(payload));
+    const token = `${encodedHeader}.${encodedPayload}`;
+    
+    const sign = crypto.createSign('SHA256');
+    sign.update(token);
+    sign.end();
+    
+    const signatureRaw = sign.sign({ key: keyData.privateKey, dsaEncoding: 'ieee-p1363' });
+    const encodedSignature = signatureRaw.toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+    
+    return { success: true, jwt: `${token}.${encodedSignature}` };
+  } catch (e) {
+    console.error('[Coinbase] JWT Generation failed:', e);
+    return { success: false, error: e.message };
+  }
 });
 
 // ── IPC: File system helpers for DataLogger ────────────────────────────────
@@ -1908,6 +2017,24 @@ function createWindow() {
     if (process.env.WECRYPTO_OPEN_DEVTOOLS === '1') {
       win.webContents.openDevTools({ mode: 'detach' });
     }
+
+    // --- CPU Core Affinity Binding for Renderer ---
+    // The Floating Orchestrator and WASM SIMD Tensor Math loops run here.
+    // Pinning this process to the same CCX block ensures L3 cache hits.
+    try {
+      const rendererPid = win.webContents.getOSProcessId();
+      if (rendererPid) {
+        const affinityMask = 255; 
+        console.log(`[Startup] Launching PowerShell to lock Renderer (Floating Orchestrator) Affinity (PID ${rendererPid}) to mask ${affinityMask}...`);
+        const { exec } = require('child_process');
+        exec(`powershell -Command "$Process = Get-Process -Id ${rendererPid}; $Process.ProcessorAffinity = ${affinityMask}"`, (err) => {
+          if (err) console.warn(`[Startup] Failed to set Renderer Affinity: ${err.message}`);
+          else console.log(`[Startup] Renderer Affinity successfully locked for PID ${rendererPid}.`);
+        });
+      }
+    } catch(err) {
+      console.warn('[Startup] Could not determine Renderer PID for affinity binding:', err);
+    }
   });
 
   win.on('unresponsive', () => {
@@ -1936,6 +2063,11 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, '../public/index.html'));
 
+  win.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    const levelName = ['DEBUG', 'INFO', 'WARN', 'ERROR'][level] || 'LOG';
+    console.log(`[RENDERER ${levelName}] ${message} (${sourceId}:${line})`);
+  });
+
   // Inject the live proxy port so proxy-fetch.js can correct itself if it
   // started on the wrong guess before discovery completed.
   win.webContents.on('did-finish-load', () => {
@@ -1944,6 +2076,19 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  // Strip 'file://' Origins to prevent 400/502 API rejections in production builds
+  const { session } = require('electron');
+  session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    let headers = { ...details.requestHeaders };
+    if (headers['Origin'] && headers['Origin'].startsWith('file://')) {
+      delete headers['Origin'];
+    }
+    if (headers['Referer'] && headers['Referer'].startsWith('file://')) {
+      delete headers['Referer'];
+    }
+    callback({ requestHeaders: headers });
+  });
+
   await startProxy();
   await startKalshiWorker({ bootTimeoutMs: 12000, pollMs: 150 });  // Start Kalshi worker with explicit readiness budget
   Menu.setApplicationMenu(null);

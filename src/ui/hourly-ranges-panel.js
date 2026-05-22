@@ -17,19 +17,19 @@
     BTC: '#f7931a', ETH: '#627eea', SOL: '#00d4aa', XRP: '#23292f',
     DOGE: '#c2a633', BNB: '#f3ba2f', HYPE: '#00dcff',
   };
-  // Route through local IPC worker that has the authenticated SDK credentials loaded
-  const KALSHI_BASE = 'http://127.0.0.1:3050';
+  // Fetch directly from Kalshi public REST API via proxy orchestrator instead of local websocket worker
+  const KALSHI_PUBLIC_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
   const COINBASE_BASE = 'https://api.coinbase.com/api/v3/brokerage';
   const KRAKEN_BASE = 'https://api.kraken.com/0/public';
   const COINGECKO_BASE = 'https://api.coingecko.com/api/v3';
   
   // Crypto price ladder series on Kalshi (includes initialized ladders before trading opens).
   const HOURLY_RANGE_SERIES = {
-    BTC:  'KXBTCD',
-    ETH:  'KXETHD',
-    SOL:  'KXSOLD',
-    XRP:  'KXXRPD',
-    DOGE: 'KXDOGED',
+    BTC:  'KXBTC',
+    ETH:  'KXETH',
+    SOL:  'KXSOLE',
+    XRP:  'KXXRP',
+    DOGE: 'KXDOGE',
     BNB:  'KXBNB',
     HYPE: 'KXHYPE',
   };
@@ -56,11 +56,11 @@
   let _cachedPrices = {}; // { 'BTC': 45000, ... }
   let _priceHistory = {}; // { 'BTC': [{ ts, price }], ... }
   let _pollTimer = null;
-  const REQUEST_TIMEOUT_MS = 10000;
+  const REQUEST_TIMEOUT_MS = 30000;
   const ACTIVE_VIEW_KEY = '__weCurrentView';
-  const TARGET_BUCKET_MIN = 11;
-  const TARGET_BUCKET_MAX = 11;
-  const TARGET_BUCKET_DEFAULT = 11;
+  const TARGET_BUCKET_MIN = 15;
+  const TARGET_BUCKET_MAX = 15;
+  const TARGET_BUCKET_DEFAULT = 15;
   const PRICE_HISTORY_WINDOW_MS = 2 * 60 * 60 * 1000;
   const MIN_TARGET_CLOSE_LEAD_MS = 6 * 60 * 1000;
   const MAX_MARKET_PAGES = 6;
@@ -81,19 +81,6 @@
 
   // ── Route through Tauri suppFetch for CORS bypass ───────────────
   async function proxyFetch(url) {
-    if (typeof window._proxyOrchestrator !== 'undefined' && window._proxyOrchestrator) {
-      try {
-        const host = new URL(String(url), window.location.href).hostname.toLowerCase();
-        let endpoint = null;
-        if (host.includes('coingecko')) endpoint = 'coingecko';
-        else if (String(url).includes(KALSHI_BASE)) endpoint = 'kalshi';
-        return await window._proxyOrchestrator.fetch(url, { endpoint });
-      } catch (e) {
-        console.warn('[HR] ProxyOrchestrator error:', url, e.message);
-        return null;
-      }
-    }
-
     try {
       const host = new URL(String(url), window.location.href).hostname.toLowerCase();
       const apiName = host.includes('coingecko') ? 'coingecko'
@@ -103,8 +90,11 @@
     } catch (_) { }
     if (typeof window.suppFetch === 'function') {
       try {
-        const txt = await withTimeout(window.suppFetch(url));
-        return typeof txt === 'string' ? JSON.parse(txt) : txt;
+        const res = await withTimeout(window.suppFetch(url));
+        if (res && typeof res.json === 'function') {
+          return await withTimeout(res.json());
+        }
+        return typeof res === 'string' ? JSON.parse(res) : res;
       } catch (e) {
         console.warn('[HR] suppFetch error:', url, e.message);
       }
@@ -467,12 +457,30 @@
     if (!series) return [];
 
     try {
-      // Make a single call since hourly ranges fit within the 200 limit
+      // Make a single call using the REST API to bypass the overloaded local websocket worker
       const fetchSeriesMarkets = async (seriesTicker) => {
-        const url = `${KALSHI_BASE}/markets?series_ticker=${seriesTicker}&limit=200`;
-        const data = await proxyFetch(url);
-        const payload = (data && data.success && data.data) ? data.data : data;
-        return Array.isArray(payload?.markets) ? payload.markets : [];
+        const now = Date.now();
+        if (window._hourlyContractCache?.[seriesTicker] && (now - window._hourlyContractCache[seriesTicker].ts < 10 * 60 * 1000)) {
+          return window._hourlyContractCache[seriesTicker].markets;
+        }
+        
+        try {
+          let markets = [];
+          const url = `${KALSHI_PUBLIC_BASE}/markets?series_ticker=${seriesTicker}&status=open&limit=1000`;
+          const data = await proxyFetch(url);
+          let payload = (data && data.success && data.data) ? data.data : data;
+          markets = Array.isArray(payload?.markets) ? payload.markets : [];
+          
+          if (markets.length > 0) {
+            window._hourlyContractCache = window._hourlyContractCache || {};
+            window._hourlyContractCache[seriesTicker] = { ts: now, markets };
+            return markets;
+          }
+          return [];
+        } catch (e) {
+          console.warn(`[HR] fetchSeriesMarkets error for ${seriesTicker}:`, e.message);
+          return [];
+        }
       };
 
       console.log(`[HR] Fetching ${sym} ranges (paged): ${series}`);
@@ -527,10 +535,9 @@
         // Stagger per-symbol calls to avoid Kalshi burst 429s.
         await new Promise(r => setTimeout(r, 220));
         // Fetch ranges and live price in parallel
-        const [ranges, price] = await withTimeout(Promise.all([
-          fetchHourlyRangesForCoin(sym),
-          getLivePrice(sym),
-        ]), REQUEST_TIMEOUT_MS + 2000);
+        // Fetch ranges and live price sequentially to avoid bursts
+        const ranges = await fetchHourlyRangesForCoin(sym);
+        const price = await getLivePrice(sym);
         
         if (Array.isArray(ranges) && ranges.length > 0) {
           _cachedRanges[sym] = ranges;
@@ -596,9 +603,9 @@
       currentIndex = asc.indexOf(best);
     }
     
-    // Grab exactly 5 below and 5 above (11 total)
-    const startIdx = Math.max(0, currentIndex - 5);
-    const endIdx = Math.min(asc.length - 1, currentIndex + 5);
+    // Grab exactly 7 below and 7 above (15 total)
+    const startIdx = Math.max(0, currentIndex - 7);
+    const endIdx = Math.min(asc.length - 1, currentIndex + 7);
     
     const selected = asc.slice(startIdx, endIdx + 1);
     
@@ -785,7 +792,7 @@
   async function startAutoLoad(intervalMs = 30000) {
     console.log('[HR] Starting auto-load loop');
     if (_pollTimer) {
-      clearInterval(_pollTimer);
+      clearTimeout(_pollTimer);
       _pollTimer = null;
     }
 
@@ -802,17 +809,30 @@
       console.warn('[HR] Initial refresh failed:', e?.message || e);
     });
 
-    _pollTimer = setInterval(async () => {
+    const scheduleNext = () => {
       if (!isHourlyRangesActive()) {
-        if (_pollTimer) clearInterval(_pollTimer);
         _pollTimer = null;
         return;
       }
-      console.log('[HR] Polling ranges...');
-      await refreshOnce().catch((e) => {
-        console.warn('[HR] Poll refresh failed:', e?.message || e);
-      });
-    }, intervalMs);
+      
+      const now = Date.now();
+      // Align to exact interval boundaries (e.g., 00, 30 seconds)
+      // Add a 250ms offset to give the exchange servers time to publish their new data
+      const offset = 250;
+      const next = Math.ceil((now - offset) / intervalMs) * intervalMs + offset;
+      const waitMs = next - now;
+      
+      _pollTimer = setTimeout(async () => {
+        if (!isHourlyRangesActive()) return;
+        console.log(`[HR] Polling ranges... (aligned)`);
+        await refreshOnce().catch((e) => {
+          console.warn('[HR] Poll refresh failed:', e?.message || e);
+        });
+        scheduleNext();
+      }, waitMs);
+    };
+
+    scheduleNext();
   }
 
   // ── Public API ───────────────────────────────────────────────────
@@ -822,7 +842,7 @@
     startAutoLoad,
     getRanges: (sym) => _cachedRanges[sym] || [],
     stopAutoLoad: () => {
-      if (_pollTimer) clearInterval(_pollTimer);
+      if (_pollTimer) clearTimeout(_pollTimer);
       _pollTimer = null;
     },
   };

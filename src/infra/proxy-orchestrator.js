@@ -57,8 +57,8 @@ if (
   const RATE_LIMITS = {
     kalshi: { reqs_per_min: 100, burst: 0, backoff_start: 2000, backoff_max: 32000 },
     cmc: { credits_per_month: 10000, per_request: 1, burst: 0, backoff_start: 5000 },
-    polymarket: { reqs_per_second: 50, reqs_per_minute: 1000, burst: 1000, backoff_start: 1000 },
-    coinbase: { reqs_per_second: 15, burst: 100, backoff_start: 1000 },
+    
+    coinbase: { reqs_per_second: 4, burst: 15, backoff_start: 3000, backoff_max: 20000 },
     okx: { reqs_per_second: 12, reqs_per_minute: 700, burst: 30, backoff_start: 1000, backoff_max: 25000 },
     okc: { reqs_per_second: 12, reqs_per_minute: 700, burst: 30, backoff_start: 1000, backoff_max: 25000 },
     bitstamp: { reqs_per_second: 8, reqs_per_minute: 400, burst: 25, backoff_start: 1200, backoff_max: 30000 },
@@ -69,9 +69,9 @@ if (
     mexc: { reqs_per_second: 10, reqs_per_minute: 600, burst: 30, backoff_start: 1500, backoff_max: 25000 },
     bitfinex: { reqs_per_second: 10, reqs_per_minute: 600, burst: 25, backoff_start: 1500, backoff_max: 25000 },
     cryptocom: { reqs_per_second: 10, reqs_per_minute: 600, burst: 25, backoff_start: 1400, backoff_max: 25000 },
-    pyth: { reqs_per_second: Infinity, burst: Infinity, backoff_start: 0 },
+    pyth: { reqs_per_second: 20, burst: 50, backoff_start: 1000, backoff_max: 10000 },
     coingecko: { reqs_per_minute: 1, burst: 0, backoff_start: 30000, backoff_max: 900000 },
-    blockchainraw: { reqs_per_second: 4, reqs_per_minute: 200, burst: 10, backoff_start: 1500, backoff_max: 30000 },
+    blockchainraw: { reqs_per_second: 10, reqs_per_minute: 500, burst: 20, backoff_start: 1000, backoff_max: 20000 },
     default: { reqs_per_second: 5, reqs_per_minute: 240, burst: 10, backoff_start: 1500, backoff_max: 30000 },
   };
 
@@ -80,112 +80,106 @@ if (
     coingecko: {
       hostPatterns: ['coingecko.com'],
       minRpm: 1, maxRpm: 2,
-      minTimeoutMs: 6000, maxTimeoutMs: 20000,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
       minIntervalMs: 30000, maxIntervalMs: 120000,
       maxPayloadBytes: 550000,
     },
     coinbase: {
       hostPatterns: ['exchange.coinbase.com', 'coinbase.com'],
       minRps: 4, maxRps: 15,
-      minTimeoutMs: 3000, maxTimeoutMs: 12000,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
       minIntervalMs: 70, maxIntervalMs: 1500,
       maxPayloadBytes: 650000,
     },
     okx: {
       hostPatterns: ['okx.com', 'okcoin.com'],
       minRps: 5, maxRps: 12,
-      minTimeoutMs: 2800, maxTimeoutMs: 12000,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
       minIntervalMs: 80, maxIntervalMs: 1500,
       maxPayloadBytes: 700000,
     },
     okc: {
       hostPatterns: ['okx.com', 'okcoin.com'],
       minRps: 5, maxRps: 12,
-      minTimeoutMs: 2800, maxTimeoutMs: 12000,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
       minIntervalMs: 80, maxIntervalMs: 1500,
       maxPayloadBytes: 700000,
     },
     bitstamp: {
       hostPatterns: ['bitstamp.net'],
       minRps: 3, maxRps: 8,
-      minTimeoutMs: 3200, maxTimeoutMs: 12000,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
       minIntervalMs: 120, maxIntervalMs: 1800,
       maxPayloadBytes: 600000,
     },
     binance: {
       hostPatterns: ['binance.com', 'binance.vision'],
       minRps: 8, maxRps: 20,
-      minTimeoutMs: 2400, maxTimeoutMs: 10000,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
       minIntervalMs: 45, maxIntervalMs: 1000,
       maxPayloadBytes: 800000,
     },
     bybit: {
       hostPatterns: ['bybit.com'],
       minRps: 8, maxRps: 20,
-      minTimeoutMs: 2600, maxTimeoutMs: 11000,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
       minIntervalMs: 50, maxIntervalMs: 1200,
       maxPayloadBytes: 800000,
     },
     kraken: {
       hostPatterns: ['kraken.com'],
       minRps: 5, maxRps: 15,
-      minTimeoutMs: 3000, maxTimeoutMs: 12000,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
       minIntervalMs: 80, maxIntervalMs: 1400,
       maxPayloadBytes: 700000,
     },
     kucoin: {
       hostPatterns: ['kucoin.com'],
       minRps: 5, maxRps: 12,
-      minTimeoutMs: 3000, maxTimeoutMs: 12000,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
       minIntervalMs: 80, maxIntervalMs: 1600,
       maxPayloadBytes: 700000,
     },
     mexc: {
       hostPatterns: ['mexc.com'],
       minRps: 4, maxRps: 10,
-      minTimeoutMs: 3200, maxTimeoutMs: 12500,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
       minIntervalMs: 100, maxIntervalMs: 1800,
       maxPayloadBytes: 700000,
     },
     bitfinex: {
       hostPatterns: ['bitfinex.com'],
       minRps: 4, maxRps: 10,
-      minTimeoutMs: 3200, maxTimeoutMs: 12000,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
       minIntervalMs: 100, maxIntervalMs: 1800,
       maxPayloadBytes: 700000,
     },
     cryptocom: {
       hostPatterns: ['crypto.com'],
       minRps: 4, maxRps: 10,
-      minTimeoutMs: 3200, maxTimeoutMs: 12000,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
       minIntervalMs: 100, maxIntervalMs: 1800,
       maxPayloadBytes: 700000,
     },
     kalshi: {
       hostPatterns: ['kalshi.com', 'elections.kalshi.com'],
       minRps: 3, maxRps: 12,
-      minTimeoutMs: 3200, maxTimeoutMs: 13000,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
       minIntervalMs: 120, maxIntervalMs: 2500,
       maxPayloadBytes: 900000,
     },
-    polymarket: {
-      hostPatterns: ['polymarket.com'],
-      minRps: 8, maxRps: 30,
-      minTimeoutMs: 2600, maxTimeoutMs: 12000,
-      minIntervalMs: 40, maxIntervalMs: 1200,
-      maxPayloadBytes: 900000,
-    },
+    
     blockchainraw: {
       hostPatterns: ['mempool.space', 'blockchair.com', 'etherscan.io', 'blockscout.com', 'xrplcluster.com', 'solana.com'],
       minRps: 2, maxRps: 6,
-      minTimeoutMs: 3500, maxTimeoutMs: 14000,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
       minIntervalMs: 160, maxIntervalMs: 2500,
       maxPayloadBytes: 600000,
     },
     default: {
       hostPatterns: [],
       minRps: 2, maxRps: 8,
-      minTimeoutMs: 3500, maxTimeoutMs: 12000,
+      minTimeoutMs: 15000, maxTimeoutMs: 45000,
       minIntervalMs: 125, maxIntervalMs: 3000,
       maxPayloadBytes: 500000,
     },
@@ -193,11 +187,11 @@ if (
 
   // ── FALLBACK CHAINS ─────────────────────────────────────────────
   const FALLBACK_CHAINS = {
-    'kalshi-markets': ['kalshi', 'polymarket', 'cache'],
-    'kalshi-markets-legacy': ['kalshi', 'polymarket', 'cache'],
+    'kalshi-markets': ['kalshi', 'cache'],
+    'kalshi-markets-legacy': ['kalshi', 'cache'],
     'cmc-quotes': ['cmc', 'coinbase', 'binance', 'blockchainraw', 'cache'],
-    'kalshi-settlement': ['kalshi', 'polymarket', 'cache'],
-    'polymarket-markets': ['polymarket', 'kalshi', 'cache'],
+    'kalshi-settlement': ['kalshi', 'cache'],
+    'polymarket-markets': ['kalshi', 'cache'],
     'market-data': ['coinbase', 'okx', 'binance', 'blockchainraw', 'coingecko', 'cache'],
   };
 
@@ -432,10 +426,10 @@ if (
       const level = Math.max(0, Math.min(6, s.cascadeLevel));
       const adaptiveInterval = Math.min(maxInterval, minInterval + (Math.pow(1.7, level) * minInterval * 0.35));
 
-      const minTimeout = Number.isFinite(policy.minTimeoutMs) ? policy.minTimeoutMs : 3500;
-      const maxTimeout = Number.isFinite(policy.maxTimeoutMs) ? policy.maxTimeoutMs : 12000;
-      const latencyFactor = s.avgLatencyMs > 0 ? Math.min(1.8, Math.max(0.7, s.avgLatencyMs / Math.max(1, minTimeout))) : 1;
-      const adaptiveTimeout = Math.max(minTimeout, Math.min(maxTimeout, Math.round(minTimeout * (1 + level * 0.2) * latencyFactor)));
+      const minTimeout = Number.isFinite(policy.minTimeoutMs) ? policy.minTimeoutMs : 12000;
+      const maxTimeout = Number.isFinite(policy.maxTimeoutMs) ? policy.maxTimeoutMs : 30000;
+      const latencyFactor = s.avgLatencyMs > 0 ? Math.min(2.5, Math.max(0.8, s.avgLatencyMs / Math.max(1, minTimeout))) : 1;
+      const adaptiveTimeout = Math.max(minTimeout, Math.min(maxTimeout, Math.round(minTimeout * (1 + level * 0.3) * latencyFactor)));
 
       return {
         endpoint,

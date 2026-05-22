@@ -1,4 +1,4 @@
-﻿// floating-orchestrator.js v2.0 — EV Engine
+// floating-orchestrator.js v2.0 — EV Engine
 // Model-primary. Kalshi = house odds. Edge = modelProbUp vs kalshiYesPrice.
 // Divergence = OPPORTUNITY. Entry price = context + risk flags, never a gate.
 // Near-close trades: minimum gate is 5 seconds.
@@ -141,6 +141,46 @@
   // }
   var _fadeCandidates = {};
 
+  // --- SHARED ARRAY BUFFER (High-Frequency Memory-Mapped WebSocket Feeds) ---
+  let sabFloatView = null;
+  const SAB_SYMBOL_MAP = {
+    'BTC': 0,
+    'ETH': 1,
+    'SOL': 2,
+    'XRP': 3,
+    'DOGE': 4,
+    'BNB': 5
+  };
+
+  if (typeof window !== 'undefined' && window.electron && window.electron.sab) {
+    window.electron.sab.onInit((sharedBuffer) => {
+      console.log('[FloatingOrchestrator] SharedArrayBuffer attached to UI thread!');
+      sabFloatView = new Float64Array(sharedBuffer);
+    });
+  }
+
+  // Get instantly updated physical memory price (0ms deserialization overhead)
+  function getSABPrice(symbol) {
+    if (!sabFloatView) return null;
+    const idx = SAB_SYMBOL_MAP[symbol];
+    if (idx === undefined) return null;
+    const val = sabFloatView[idx];
+    return val > 0 ? val : null;
+  }
+
+  // Zero-cost polling loop (20Hz)
+  setInterval(() => {
+    if (sabFloatView) {
+      const btc = getSABPrice('BTC');
+      const eth = getSABPrice('ETH');
+      if (btc && eth) {
+        // Expose zero-latency prices globally for any UI component to read
+        window._SAB_PRICES = { BTC: btc, ETH: eth };
+      }
+    }
+  }, 50);
+  // --------------------------------------------------------------------------
+
   function crowdFadeDir(kalshiYesPrice, dirs, modelDir) {
     if (!Number.isFinite(kalshiYesPrice)) return null;
     if (!dirs || !modelDir) return null;
@@ -222,103 +262,74 @@
       side: context && context.currentSide ? context.currentSide : null,
     };
   }
-  function rolloutRewardForAction(state, action, rng, depth) {
-    var bias = ((state.modelProbUp - 0.5) * 1.9) + (state.momentum * 0.5) + (state.trendDir * 0.3);
-    var path = 0;
-    var steps = Math.max(2, depth);
-    for (var i = 0; i < steps; i += 1) {
-      var shockScale = 0.12 + (state.volatility * 0.22) + (state.regime === 'chop' ? 0.08 : 0);
-      if (state.regime === 'volatile') shockScale += 0.05;
-      var shock = (rng() - 0.5) * 2 * shockScale;
-      path += (bias * 0.38) + shock;
-    }
-    var dirEdge = path / Math.max(1, steps);
-    var lateRisk = state.secsLeft != null ? clamp((90 - state.secsLeft) / 90, 0, 1) : 0.4;
-    var slippage = clamp((state.volatility * 0.4) + (state.liquidity < 1400 ? 0.25 : 0), 0, 1.3);
-    if (action === 'WAIT') {
-      var waitSafety = (0.35 * lateRisk) + (0.22 * slippage) + (state.regime === 'volatile' ? 0.18 : 0);
-      var waitOpportunityCost = Math.abs(dirEdge) * (0.45 + (state.confidence * 0.55));
-      return clamp(waitSafety - waitOpportunityCost, -1.5, 1.5);
-    }
-    var sign = action === 'UP' ? 1 : -1;
-    var directionalFit = sign * dirEdge;
-    var confidenceBoost = state.confidence * (0.30 + state.modelStrength * 0.20);
-    var mispricingBoost = state.mispricing * 1.3;
-    var wrongWayPenalty = (sign === 1 ? (0.5 - state.modelProbUp) : (state.modelProbUp - 0.5));
-    var regimePenalty = (state.regime === 'volatile' ? 0.14 : (state.regime === 'chop' ? 0.07 : 0));
-    var riskPenalty = (lateRisk * 0.28) + (slippage * 0.20) + regimePenalty + Math.max(0, wrongWayPenalty);
-    return clamp((directionalFit * 1.2) + confidenceBoost + mispricingBoost - riskPenalty, -1.5, 1.5);
-  }
+
+  // --- DELEGATED TO WEBASSEMBLY SIMD ENGINE (tensor_math.wasm) ---
   function runVanillaMcts(state, cfg) {
-    if (!state) {
-      return { ran: false, reason: 'missing-state' };
+    if (!state || typeof window === 'undefined' || !window.TensorEngine) {
+      return { ran: false, reason: 'missing-state-or-wasm' };
     }
+    
     var sims = Math.max(8, Number(cfg && cfg.simulations) || MCTS_SIMULATIONS);
     var depth = Math.max(2, Number(cfg && cfg.depth) || MCTS_DEPTH);
     var c = Number.isFinite(Number(cfg && cfg.exploration)) ? Number(cfg.exploration) : MCTS_EXPLORATION;
-    var seed = hash32([
-      state.sym,
-      state.modelProbUp.toFixed(5),
-      state.confidence.toFixed(4),
-      state.momentum.toFixed(4),
-      state.volatility.toFixed(4),
-      state.mispricing.toFixed(4),
-      state.secsLeft == null ? 'na' : String(Math.round(state.secsLeft)),
-      state.regime
-    ].join('|'));
-    var rng = seededRng(seed);
-    var children = {
-      UP: { action: 'UP', visits: 0, total: 0 },
-      DOWN: { action: 'DOWN', visits: 0, total: 0 },
-      WAIT: { action: 'WAIT', visits: 0, total: 0 },
-    };
-    var totalVisits = 0;
-    var actions = ['UP', 'DOWN', 'WAIT'];
-    for (var i = 0; i < sims; i += 1) {
-      var picked = null;
-      var bestUcb = -Infinity;
-      for (var j = 0; j < actions.length; j += 1) {
-        var child = children[actions[j]];
-        var ucb = child.visits === 0
-          ? Infinity
-          : (child.total / child.visits) + c * Math.sqrt(Math.log(totalVisits + 1) / child.visits);
-        if (ucb > bestUcb) {
-          bestUcb = ucb;
-          picked = child;
-        }
-      }
-      var reward = rolloutRewardForAction(state, picked.action, rng, depth);
-      picked.visits += 1;
-      picked.total += reward;
-      totalVisits += 1;
+    
+    var scores = window.TensorEngine.runMcts(state, sims, depth, c);
+    
+    if (!scores || scores.length < 3) return { ran: false };
+    
+    // INJECT JS INTERCEPTOR HERE TO RE-TUNE WAIT BIAS
+    if (state.mispricing && state.mispricing >= 0.12 && state.modelStrength >= 0.05) {
+      scores[2] -= (state.mispricing * 1.5);
     }
-    function avg(action) {
-      var node = children[action];
-      return node.visits > 0 ? (node.total / node.visits) : 0;
-    }
-    var upScore = avg('UP');
-    var downScore = avg('DOWN');
-    var waitScore = avg('WAIT');
+    
+    var upScore = scores[0];
+    var downScore = scores[1];
+    var waitScore = scores[2];
+    
     var ordered = [
       { action: 'UP', score: upScore },
       { action: 'DOWN', score: downScore },
       { action: 'WAIT', score: waitScore },
     ].sort(function (a, b) { return b.score - a.score; });
+    
     var best = ordered[0];
     var second = ordered[1];
-    var directionalGap = upScore - downScore;
-    var voteStrength = Math.abs(best.score - second.score);
+    
+    try {
+      if (typeof persistPrediction === 'function') {
+        persistPrediction({
+          market_id: state.sym,
+          coin: state.sym,
+          timestamp: new Date().toISOString(),
+          voteAction: best.action,
+          voteStrength: parseFloat(Math.abs(best.score - second.score).toFixed(4)),
+          sessionId: (window.SESSION_ID || null)
+        });
+      }
+    } catch(e) {}
+
     return {
       ran: true,
-      seed: seed,
+      seed: 0,
       simulations: sims,
       depth: depth,
       exploration: c,
-      voteAction: best.action,\n      const pred = { market_id: (typeof marketId !== 'undefined' ? marketId : (typeof ticker !== 'undefined' ? ticker : null)), coin: (typeof coinSymbol !== 'undefined' ? coinSymbol : (typeof symbol !== 'undefined' ? symbol : 'UNKNOWN')), timestamp: (new Date()).toISOString(), voteAction: best.action, voteStrength: parseFloat((Math.abs(best.score - (second?.score || 0))).toFixed(4)), sessionId: (window.SESSION_ID || null) }; persistPrediction(pred),
+      voteAction: best.action,
+      voteStrength: Math.abs(best.score - second.score),
+      directionalGap: upScore - downScore,
+      waitScore: waitScore,
+      upScore: upScore,
+      downScore: downScore
+    };
+  }
 
-
-
-
+  function crowdFadeFlowScore(modelDir, pred, cfm) {
+    var score = 0;
+    var isUp = modelDir === 'UP';
+    var trend = pred && pred.trendDir > 0 ? 'rising' : (pred && pred.trendDir < 0 ? 'falling' : 'flat');
+    var bookImbalance = cfm && cfm.bookImbalance;
+    var buyRatio = cfm && cfm.buyRatio;
+    var volRatio = cfm && cfm.volRatio;
 
     if ((isUp && trend === 'rising') || (!isUp && trend === 'falling')) score += 1;
     else if ((isUp && trend === 'falling') || (!isUp && trend === 'rising')) score -= 1;
@@ -1127,7 +1138,7 @@
       && mctsVoteDirection !== direction
       && mctsResult.voteStrength >= MCTS_DIRECTION_OVERRIDE_MIN_GAP
       && !modelHardVeto
-      && alignment !== 'KALSHI_ONLY'
+      && (alignment !== 'KALSHI_ONLY' || mctsResult.voteStrength >= (MCTS_DIRECTION_OVERRIDE_MIN_GAP * 1.5))
       && alignment !== 'EARLY_EXIT'
     ) {
       direction = mctsVoteDirection;
@@ -1142,9 +1153,9 @@
     var eBoost = entry ? clamp(Math.abs(entry.edgeCents) / 60, 0, 0.25) : 0;
     var mctsDirectionalBias = 0;
     if (mctsResult && mctsResult.ran) {
-      if (direction === 'UP') mctsDirectionalBias = mctsResult.scores.up - Math.max(mctsResult.scores.down, mctsResult.scores.wait);
-      else if (direction === 'DOWN') mctsDirectionalBias = mctsResult.scores.down - Math.max(mctsResult.scores.up, mctsResult.scores.wait);
-      else mctsDirectionalBias = mctsResult.scores.wait - Math.max(mctsResult.scores.up, mctsResult.scores.down);
+      if (direction === 'UP') mctsDirectionalBias = mctsResult.upScore - Math.max(mctsResult.downScore, mctsResult.waitScore);
+      else if (direction === 'DOWN') mctsDirectionalBias = mctsResult.downScore - Math.max(mctsResult.upScore, mctsResult.waitScore);
+      else mctsDirectionalBias = mctsResult.waitScore - Math.max(mctsResult.upScore, mctsResult.downScore);
     }
     var mctsConfidenceModifier = Math.round(clamp(mctsDirectionalBias * MCTS_CONFIDENCE_MOD_MAX, -MCTS_CONFIDENCE_MOD_MAX, MCTS_CONFIDENCE_MOD_MAX));
     var baseConfidence = Math.round(clamp((mStr + eBoost) * 75, 0, 99));
@@ -1322,7 +1333,7 @@
       tunedRecovery: stageDiagnostics.tunedRecovery,
     }, filteredTimingBlocks.slice(0, 4));
     if (action === 'skip')
-      return withStageDiagnostics(_skip(sym, 'Negative EV — edge ' + (entry ? entry.edgeCents : 0) + 'c (need >=' + EDGE_MIN_CENTS + 'c)'));
+      return withStageDiagnostics(_skip(sym, 'Negative EV — edge ' + (entry ? entry.edgeCents : 0) + 'c (need >=' + EDGE_MIN_CENTS + 'c)', { side: side, direction: direction, alignment: alignment, edgeCents: entry ? entry.edgeCents : null }));
 
     // Tier 1: Sweet spot window (3–6 min left, payout >= 1.65x)
     var payout = entry ? entry.payoutMult : null;
@@ -1481,7 +1492,7 @@
         voteAction: mctsResult.voteAction,
         voteStrength: mctsResult.voteStrength,
         directionalGap: mctsResult.directionalGap,
-        scores: mctsResult.scores,
+        scores: { up: mctsResult.upScore, down: mctsResult.downScore, wait: mctsResult.waitScore },
         confidenceModifier: mctsConfidenceModifier,
         simulations: mctsResult.simulations,
         depth: mctsResult.depth,
@@ -1654,8 +1665,15 @@
     return result;
   }
 
-  function _skip(sym, reason) {
-    return { sym: sym, action: 'skip', side: null, direction: null, reason: reason, alignment: null, confidence: 0 };
+  function _skip(sym, reason, extra) {
+    var res = { sym: sym, action: 'skip', side: null, direction: null, reason: reason, alignment: null, confidence: 0 };
+    if (extra) {
+      if (extra.side !== undefined) res.side = extra.side;
+      if (extra.direction !== undefined) res.direction = extra.direction;
+      if (extra.alignment !== undefined) res.alignment = extra.alignment;
+      if (extra.edgeCents !== undefined && Number.isFinite(extra.edgeCents)) res.edgeCents = extra.edgeCents;
+    }
+    return res;
   }
   function _earlyExit(sym, k15, msLeft, secsLeft, minsLeft, lastCall, reason) {
     return {

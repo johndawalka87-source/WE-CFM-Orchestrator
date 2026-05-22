@@ -337,19 +337,19 @@
       volume: 1.2,   // reduced: sub-50% in 4-day BTC retune
       // Keep proven mean-reversion core — bands/williamsR/keltner boosted 2026-05-05 (Pyth oracle accuracy)
       bands: 3.0, williamsR: 2.4, structure: 1.55, fisher: 1.3, keltner: 1.95, cci: 1.25,
-      cmf: 0.85, rsi: 0.9, macd: 0.5, persistence: 0.66, ema: 0.42, ichimoku: 0.24, adx: 0.24,
-      vwap: 0.15, sma: 0.12,
+      cmf: 0.85, rsi: 0.9, macd: 0.523, persistence: 0.638, ema: 0.42, ichimoku: 0.25, adx: 0.243,
+      vwap: 0.158, sma: 0.12,
       // ★ FIX: Restore momentum for trending detection (gated by regime multipliers)
-      momentum: 0.16,  // reduced: <50% in 4-day BTC retune
-      obv: 0.1,  // reduced: <50% in 4-day BTC retune
-      hma: 0.09, // reduced: <50% in 4-day BTC retune
-      mfi: 0.32,
-      supertrend: 0.3,
+      momentum: 0.172,  // reduced: <50% in 4-day BTC retune
+      obv: 0.12,  // reduced: <50% in 4-day BTC retune
+      hma: 0.116, // reduced: <50% in 4-day BTC retune
+      mfi: 0.328,
+      supertrend: 0.294,
       // Pyth oracle aggregate prices → F&G strongly correlated with BTC macro moves
       fearGreed: 1.2,
       // ★ BOOST MICROSTRUCTURE FOR h1/h5 RECOVERY ★
-      book: 0.267,  // NEW: Order book imbalance
-      flow: 0.247,  // NEW: Trade flow signal
+      book: 0.275,  // NEW: Order book imbalance
+      flow: 0.255,  // NEW: Trade flow signal
     },
     ETH: { // outcome-retuned 2026-05-20 from 286 windows
  // outcome-retuned 2026-05-20 from 119 windows
@@ -360,17 +360,17 @@
       //      trending_volatile: 2.0x (catch dumps), ranging: 0.1x (suppress noise)
       // CRITICAL: rsi 82% at h15 but only 37% at h1/h5 (MASSIVE OVERFITTING)
       // Solution: Reduce RSI weight dramatically for short horizons
-      rsi: 0.35,   // reduced: 39% in 4-day ETH retune
+      rsi: 0.36,   // reduced: 39% in 4-day ETH retune
       stochrsi: 1.1,   // mild boost: ~53% in 4-day ETH retune
       williamsR: 2.05,  // boosted: strongest consistent ETH feature
       bands: 3.0,   // boosted: strong ETH performer in recent window
-      structure: 1.6, keltner: 1.55, cci: 1.0, fisher: 1.0, cmf: 0.5,
-      volume: 0.75, persistence: 0.6, obv: 0.6, macd: 0.32,
-      ema: 0.28, sma: 0.03, adx: 0.17, ichimoku: 0.15, vwap: 0.11, vwma: 0.38, supertrend: 0.14,
+      structure: 1.6, keltner: 1.55, cci: 1.0, fisher: 1.0, cmf: 0.517,
+      volume: 0.766, persistence: 0.576, obv: 0.637, macd: 0.346,
+      ema: 0.283, sma: 0.022, adx: 0.168, ichimoku: 0.163, vwap: 0.119, vwma: 0.385, supertrend: 0.123,
       // ★ FIX: Restore momentum for trending detection (gated by regime multipliers)
-      momentum: 0.24,  // retained mild positive edge in 4-day ETH retune
-      mfi: 0.03, // reduced: weak in 4-day ETH retune
-      hma: 0.07,  // reduced: weak in 4-day ETH retune
+      momentum: 0.259,  // retained mild positive edge in 4-day ETH retune
+      mfi: 0.04, // reduced: weak in 4-day ETH retune
+      hma: 0.098,  // reduced: weak in 4-day ETH retune
       // ETH moderately correlated with F&G (less than BTC)
       fearGreed: 1.1,
     },
@@ -383,23 +383,23 @@
       fisher: 1.8,    // ← REDUCED FROM 2.8
       williamsR: 2.5,    // ← REDUCED FROM 4.5 (keep strong but prevent 0.65+ scores)
       cci: 2.0,    // ← REDUCED FROM 3.5
-      hma: 0.065,    // 41% WR gate is broken on h1/h5
+      hma: 0.088,    // 41% WR gate is broken on h1/h5
       structure: 2.5,
       keltner: 1.5,    // ← REDUCED FROM 2.8
       obv: 1.261,    // volume-direction breakout confirmation
-      macd: 0.886, ichimoku: 0.35, adx: 1.5,
-      vwma: 0.146, volume: 0.232, sma: 0.054,
-      vwap: 0.031,
-      rsi: 0.031,   // 29% WR is inversely useful, but engine has no rsiInvert flag
-      persistence: 0.034,
-      ema: 0.054,
-      cmf: 0.044,
-      supertrend: 0.02, // outcome-retuned 2026-05-08 (180 windows)
-      momentum: 0.044,
-      mfi: 0.037,
+      macd: 0.914, ichimoku: 0.367, adx: 1.5,
+      vwma: 0.16, volume: 0.249, sma: 0.062,
+      vwap: 0.04,
+      rsi: 0.041,   // 29% WR is inversely useful, but engine has no rsiInvert flag
+      persistence: 0.028,
+      ema: 0.067,
+      cmf: 0.055,
+      supertrend: 0.01, // outcome-retuned 2026-05-08 (180 windows)
+      momentum: 0.059,
+      mfi: 0.048,
       stochrsi: 0.0,
-      book: 0.465,
-      flow: 0.439,
+      book: 0.47,
+      flow: 0.449,
       // SOL correlates with broad crypto sentiment; F&G matters
       fearGreed: 1.0,
     },
@@ -415,14 +415,14 @@
       rsi: 3.5,   // ★ INCREASED FROM 2.0 (80-100% at h1/h10 - massive underweight!)
       obv: 1.5,   // volume direction confirm
       williamsR: 1.2,   // moderate keep
-      bands: 0.809, supertrend: 0.36, cci: 0.521, cmf: 0.592, keltner: 0.435,
-      macd: 0.347, stochrsi: 0.8, persistence: 0.107, ema: 0.149, adx: 0.166, ichimoku: 0.163,
+      bands: 0.809, supertrend: 0.313, cci: 0.535, cmf: 0.592, keltner: 0.452,
+      macd: 0.358, stochrsi: 0.8, persistence: 0.074, ema: 0.127, adx: 0.159, ichimoku: 0.154,
       sma: 0.0,
-      mfi: 0.122,
+      mfi: 0.131,
       // Kill confirmed worst performers
-      momentum: 0.034,
-      vwma: 0.03,
-      hma: 0.09,
+      momentum: 0.04,
+      vwma: 0.02,
+      hma: 0.097,
       // XRP is news/regulatory driven; F&G less predictive
       fearGreed: 0.7,
     },
@@ -458,13 +458,13 @@
       cmf: 3.0,  // ★ 60% best — was 0.5 (major correction)
       bands: 2.5,  // proven extreme mean-reversion
       mfi: 2.0,  // keep — was proven in original
-      structure: 1.8, fisher: 1.8, keltner: 1.2, cci: 1.0, williamsR: 0.81,
-      rsi: 0.5, persistence: 0.278, ema: 0.289, macd: 0.191, ichimoku: 0.19, adx: 0.103,
-      hma: 0.3, sma: 0.0, supertrend: 0.2, vwap: 0.101,
+      structure: 1.8, fisher: 1.8, keltner: 1.212, cci: 1.012, williamsR: 0.824,
+      rsi: 0.5, persistence: 0.252, ema: 0.277, macd: 0.181, ichimoku: 0.177, adx: 0.105,
+      hma: 0.296, sma: 0.0, supertrend: 0.197, vwap: 0.102,
       // Kill confirmed worst performers
-      stochrsi: 0.058,  // 36% worst — was 1.7
-      momentum: 0.051,  // 42% worst — was 0.25
-      vwma: 0.04,  // 43% worst — was 1.5
+      stochrsi: 0.068,  // 36% worst — was 1.7
+      momentum: 0.052,  // 42% worst — was 0.25
+      vwma: 0.029,  // 43% worst — was 1.5
       // DOGE re-enabled 2026-05-05 via Pyth Lazer ID 10; meme coin = maximum F&G sensitivity
       fearGreed: 2.0,
     },
@@ -480,14 +480,14 @@
       vwma: 2.5,  // 63% from prior research
       volume: 3.5,  // 80% from prior research
       momentum: 2.0, persistence: 2.0, macd: 1.5, ichimoku: 2.0, supertrend: 2.0,
-      cmf: 1.5, obv: 0.5, fisher: 0.81, cci: 0.313, adx: 0.505,
+      cmf: 1.5, obv: 0.5, fisher: 0.831, cci: 0.34, adx: 0.505,
       // Kill confirmed worst (and consistent with prior research)
-      structure: 0.029,  // 0% worst — certain kill
-      keltner: 0.064,  // 17% worst
-      williamsR: 0.064,  // 29% worst — consistent with prior research
-      bands: 0.064,  // prior research: 30-43% — confirmed bad
-      rsi: 0.057,  // prior research: 34-43% — confirmed bad
-      stochrsi: 0.064,  // aligned with kill-mean-reversion theme
+      structure: 0.065,  // 0% worst — certain kill
+      keltner: 0.093,  // 17% worst
+      williamsR: 0.089,  // 29% worst — consistent with prior research
+      bands: 0.093,  // prior research: 30-43% — confirmed bad
+      rsi: 0.071,  // prior research: 34-43% — confirmed bad
+      stochrsi: 0.089,  // aligned with kill-mean-reversion theme
       // BNB ecosystem-driven; F&G less predictive than for BTC/DOGE
       fearGreed: 0.8,
     },
@@ -6897,7 +6897,7 @@
   async function fetchDerivatives() {
     if (Date.now() - derivAge < 120000) return; // cache 2 min (CoinGecko rate limit)
     try {
-      const data = await fetchGeckoJSON('/derivatives?include_tickers=unexpired').catch(() => null);
+      const data = await fetchGeckoJSON('/derivatives').catch(() => null);
       if (!Array.isArray(data)) return;
       const symMap = { BTCUSDT: 'BTC', ETHUSDT: 'ETH', SOLUSDT: 'SOL', XRPUSDT: 'XRP', DOGEUSDT: 'DOGE', BNBUSDT: 'BNB' };
       data.forEach(d => {

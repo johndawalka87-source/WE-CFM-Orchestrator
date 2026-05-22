@@ -244,14 +244,36 @@ wss.on('connection', (ws, req) => {
   proxy.handleClientConnection(ws, service);
 });
 
-// Start listening
-server.listen(PORT, () => {
-  log(`🟢 WE-CRYPTO WebSocket Proxy running`, 'STARTUP');
-  log(`   HTTP Endpoint: http://localhost:${PORT}`, 'INFO');
-  log(`   WebSocket: ws://localhost:${PORT}?service=<service>`, 'INFO');
-  log(`   Available services: ${Object.keys(UPSTREAM).join(', ')}`, 'INFO');
-  console.log();
+// Start listening with Port Cascading (3030 - 3035)
+let currentPort = 3030;
+const maxPort = 3035;
+
+function startServer(port) {
+  server.listen(port, () => {
+    log(`🟢 WE-CRYPTO WebSocket Proxy running`, 'STARTUP');
+    log(`   HTTP Endpoint: http://localhost:${port}`, 'INFO');
+    log(`   WebSocket: ws://localhost:${port}?service=<service>`, 'INFO');
+    log(`   Available services: ${Object.keys(UPSTREAM).join(', ')}`, 'INFO');
+    console.log();
+  });
+}
+
+server.on('error', (e) => {
+  if (e.code === 'EADDRINUSE') {
+    log(`Port ${currentPort} is in use, trying next port...`, 'WARN');
+    currentPort++;
+    if (currentPort <= maxPort) {
+      setTimeout(() => startServer(currentPort), 100);
+    } else {
+      log(`Could not find an open port between 3030 and ${maxPort}`, 'ERROR');
+      process.exit(1);
+    }
+  } else {
+    log(`Server error: ${e.message}`, 'ERROR');
+  }
 });
+
+startServer(currentPort);
 
 // Pre-connect to all upstream services
 Object.keys(UPSTREAM).forEach(service => {

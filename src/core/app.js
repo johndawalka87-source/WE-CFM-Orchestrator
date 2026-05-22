@@ -1,4 +1,4 @@
-﻿// ================================================================
+// ================================================================
 // WE CFM Orchestrator — Application Shell
 // Benchmark feeds via Crypto.com Exchange API (no key required)
 // Supporting flow and wallet data via Blockscout public API
@@ -336,14 +336,14 @@
       window._proxyOrchestrator.fallback.registerSource('kalshi', {
         endpoint: 'kalshi',
       });
-      window._proxyOrchestrator.fallback.registerSource('polymarket', {
-        endpoint: 'polymarket',
-      });
       window._proxyOrchestrator.fallback.registerSource('cmc', {
         endpoint: 'cmc',
       });
       window._proxyOrchestrator.fallback.registerSource('pyth', {
         endpoint: 'pyth',
+      });
+      window._proxyOrchestrator.fallback.registerSource('coingecko', {
+        endpoint: 'coingecko',
       });
       window._proxyOrchestrator.fallback.registerSource('coingecko', {
         endpoint: 'coingecko',
@@ -381,10 +381,9 @@
         },
         providers: {
           kalshi: { cooldownMs: 250, cooldownMaxMs: 3000, circuitThreshold: 10, circuitMs: 12000 },
-          polymarket: { cooldownMs: 350, cooldownMaxMs: 4500, circuitThreshold: 8, circuitMs: 15000 },
           gecko: { cooldownMs: 3500, cooldownMaxMs: 120000, circuitThreshold: 5, circuitMs: 180000 },
           llm: { cooldownMs: 15000, cooldownMaxMs: 300000, circuitThreshold: 2, circuitMs: 300000 },
-          'pyth-lazer': { cooldownMs: 750, cooldownMaxMs: 8000, circuitThreshold: 3, circuitMs: 12000 },
+          'pyth-lazer': { cooldownMs: 1200, cooldownMaxMs: 8000, circuitThreshold: 3, circuitMs: 12000 },
           cdc: { cooldownMs: 1500, cooldownMaxMs: 45000, circuitThreshold: 4, circuitMs: 60000 },
         },
       });
@@ -2068,11 +2067,13 @@
     const ids = Array.from(new Set(targets.map(t => t.geckoId))).join(',');
     let res;
     try {
-      res = await fetchWithTimeout(
-        `${GECKO_BASE}/coins/markets?vs_currency=usd&ids=${ids}&order=market_cap_desc&sparkline=false&price_change_percentage=24h`,
-        9000,
-        { schedulerLane: 'supplemental', schedulerProvider: 'coingecko' }
-      );
+      const url = `${GECKO_BASE}/coins/markets?vs_currency=usd&ids=${ids}&order=market_cap_desc&sparkline=false&price_change_percentage=24h`;
+      if (typeof window._proxyOrchestrator !== 'undefined' && window._proxyOrchestrator) {
+        const data = await window._proxyOrchestrator.fetch(url, { endpoint: 'coingecko' });
+        res = { ok: true, json: async () => data };
+      } else {
+        res = await fetchWithTimeout(url, 15000, { schedulerLane: 'supplemental', schedulerProvider: 'coingecko' });
+      }
     } catch (e) {
       const msg = String(e?.message || e || '');
       const timeoutHit = /timed out|abort|timeout/i.test(msg);
@@ -2324,7 +2325,7 @@
     return result;
   }
 
-  // ---- Live fallback #3: Coinbase Exchange /products/{id}/stats (direct, parallel) ----
+  // ---- Live fallback #3: Coinbase Advanced Trade /products/{id} (direct, parallel) ----
   async function fetchCoinbaseTickers() {
     const wsRows = getWSTickerRows(
       'COINBASE',
@@ -2335,31 +2336,52 @@
 
     const entries = Object.entries(COINBASE_PRODUCTS);
     const settled = await Promise.allSettled(
-      entries.map(([product, instrument]) => {
-        const url = `${CB_BASE}/products/${product}/stats`;
-        // Use resilientFetch if available (adds retry + fallback), otherwise fetchWithTimeout
+      entries.map(async ([product, instrument]) => {
+        let jwtHeader = {};
+        try {
+          if (window.desktopApp && window.desktopApp.generateCoinbaseJWT) {
+            const res = await window.desktopApp.generateCoinbaseJWT({
+              requestMethod: 'GET',
+              requestPath: `api.coinbase.com/api/v3/brokerage/products/${product}`
+            });
+            if (res && res.success) jwtHeader = { 'Authorization': `Bearer ${res.jwt}` };
+          }
+        } catch (e) { }
+
+        const url = `https://api.coinbase.com/api/v3/brokerage/products/${product}`;
+        
+        console.log(`[APP DEBUG] Coinbase Fallback URL: ${url}`);
+        console.log(`[APP DEBUG] Coinbase Fallback Headers:`, jwtHeader);
+        
         const promise = window.resilientFetch
-          ? window.resilientFetch(url)
-          : fetchWithTimeout(url, 5000);
+          ? window.resilientFetch(url, { headers: jwtHeader })
+          : fetchWithTimeout(url, 5000, { headers: jwtHeader });
 
         return promise
-          .then(r => r.ok ? r.json() : Promise.reject(new Error(`CB ${r.status}`)))
+          .then(async r => {
+            if (!r.ok) {
+              const text = await r.text().catch(() => '');
+              console.error(`[APP DEBUG] Coinbase Fallback 401 Body: ${text}`);
+              throw new Error(`CB ${r.status}`);
+            }
+            return r.json();
+          })
           .then(data => {
-            const last = parseFloat(data.last);
-            const open = parseFloat(data.open);
+            const last = parseFloat(data.price);
             if (!last) return null;
+            const pctChange = parseFloat(data.price_percentage_change_24h) / 100;
             return {
               instrument_name: instrument,
               last,
-              high: parseFloat(data.high),
-              low: parseFloat(data.low),
-              change: open > 0 ? (last - open) / open : 0,
+              high: 0,
+              low: 0,
+              change: pctChange || 0,
               best_bid: null,
               best_ask: null,
               best_bid_size: '',
               best_ask_size: '',
-              volume: parseFloat(data.volume),
-              volume_value: parseFloat(data.volume) * last,
+              volume: parseFloat(data.volume_24h) || 0,
+              volume_value: (parseFloat(data.volume_24h) || 0) * last,
               timestamp: Date.now(),
               source: 'coinbase',
             };
@@ -5039,7 +5061,7 @@
     if (typeof window._proxyOrchestrator !== 'undefined' && window._proxyOrchestrator) {
       fetchPromise = window._proxyOrchestrator.fetch(url, { endpoint: 'coingecko' });
     } else {
-      fetchPromise = fetchWithTimeout(url, 9000, { schedulerLane: 'supplemental', schedulerProvider: 'coingecko' })
+      fetchPromise = fetchWithTimeout(url, 15000, { schedulerLane: 'supplemental', schedulerProvider: 'coingecko' })
         .then(r => { if (!r.ok) throw new Error(`CoinGecko ${r.status}`); return r.json(); });
     }
 
@@ -5462,35 +5484,7 @@
             `;
         })()}
 
-          <!-- Polymarket markets list -->
-          <div style="margin-top:10px;">
-            <div style="font-size:10px;color:var(--color-text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">
-              Polymarket · ${p5?._noShortTerm ? 'long-term sentiment' : 'active markets'} · ${coin.polyCount || 0} total
-            </div>
-            ${displayPolyMkts.length ? `
-              <div style="display:flex;flex-direction:column;gap:4px;">
-                ${displayPolyMkts.map(m => {
-          const yes = m.yes;
-          const col = yes >= 0.6 ? 'var(--color-green)' : yes <= 0.4 ? 'var(--color-red)' : 'var(--color-text-muted)';
-          const endLabel = m.endDate ? (() => {
-            const ms = new Date(m.endDate).getTime() - Date.now();
-            if (ms <= 0) return 'closing';
-            const h = Math.floor(ms / 3_600_000);
-            const d = Math.floor(h / 24);
-            return d > 0 ? `${d}d` : `${h}h`;
-          })() : '';
-          return `<div style="background:var(--color-surface-2);border-radius:5px;padding:7px 10px;display:flex;justify-content:space-between;align-items:center;gap:8px;">
-                    <span style="font-size:11px;color:var(--color-text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${m.question || ''}">${m.question || '—'}</span>
-                    <span style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
-                      <span style="font-size:13px;font-weight:700;color:${col}">${yes != null ? Math.round(yes * 100) + '¢' : '—'}</span>
-                      ${endLabel ? `<span style="font-size:10px;color:var(--color-text-faint)">${endLabel}</span>` : ''}
-                      ${m.vol24h > 0 ? `<span style="font-size:10px;color:var(--color-text-faint)">${_fmtVol(m.vol24h)}</span>` : ''}
-                    </span>
-                  </div>`;
-        }).join('')}
-              </div>
-            ` : `<div style="color:var(--color-text-faint);font-size:11px;padding:4px 0">Fetching Polymarket data…</div>`}
-          </div>
+
 
         </div>
       `;
@@ -7726,12 +7720,6 @@
     // ---- Shell 4f: Deep Microstructure (HEAVY only) ----
     { num: 25, sym: 'DXV', name: 'DEX Vol', shell: '4f', key: '_dexVol', fmt: 'compactUsd', desc: 'On-chain DEX 24h volume', weight: 'heavy' },
     { num: 26, sym: 'DXL', name: 'DEX Liq', shell: '4f', key: '_dexLiq', fmt: 'compactUsd', desc: 'On-chain DEX liquidity depth', weight: 'heavy' },
-
-    // ---- Shell 5s: Market Consensus (ALL coins, requires PredictionMarkets) ----
-    { num: 27, sym: 'MKT', name: 'Mkt Consensus', shell: '5s', key: '_mktConsensus', fmt: 'prob1', desc: 'Kalshi + Polymarket implied UP probability', weight: 'all' },
-
-    // ---- Shell 5p: Social Sentiment (ALL coins, requires x.ai API key) ----
-    { num: 28, sym: 'SNT', name: 'X Sentiment', shell: '5p', key: '_xSentiment', fmt: 'sentiment', desc: 'X.com real-time crowd sentiment via Grok AI (-100 to +100)', weight: 'all' },
   ];
 
   async function renderCFM() {
@@ -7764,7 +7752,6 @@
           .then(() => { predsLoaded = true; _lastPredictionRunTs = Date.now(); snapshotPredictions(); })
           .catch(() => { });
       }
-      if (window.PredictionMarkets && !window._mktStarted) { window.PredictionMarkets.start(); window._mktStarted = true; }
     }
     // Start 15M market resolver
     if (window.MarketResolver && !window._resolverStarted) {
@@ -7832,8 +7819,6 @@
         <span><span class="cfm-shell d" style="position:static">3d</span> Arb</span>
         <span><span class="cfm-shell s" style="position:static">4s</span> CB Prem</span>
         <span><span class="cfm-shell f" style="position:static">4f</span> DEX Deep</span>
-        <span><span class="cfm-shell s" style="position:static">5s</span> Mkt Consensus</span>
-        <span><span class="cfm-shell p" style="position:static">5p</span> X Sentiment</span>
         <span style="border-left:1px solid var(--color-border);padding-left:8px;margin-left:4px">
           <span style="color:var(--color-gold)">\u25cf</span> Heavy (22)
           <span style="color:var(--color-primary)">\u25cf</span> Mid (18)
@@ -7841,9 +7826,6 @@
         </span>
         <span style="margin-left:auto;font-size:9px"><span style="color:#1a6eff">\u25cf</span> CDC <span style="color:#0052ff">\u25cf</span> CB <span style="color:#8dc63f">\u25cf</span> GKO <span style="color:#a259ff">\u25cf</span> DEX</span>
       </div>
-
-      <!-- WECRYPTO x.ai Sentiment Login -->
-      <div id="xai-sentiment-panel" style="margin-bottom:12px"></div>
 
       <!-- Opportunities Panel placeholder — filled async below -->
       <div id="cfm-opp-slot"></div>
@@ -7868,53 +7850,6 @@
     requestAnimationFrame(() => {
       if (currentView === 'cfm' && content) content.scrollTop = scrollTopSnapshot;
     });
-
-    // Hydrate WECRYPTO sentiment panel (scripts in innerHTML don't execute)
-    (function () {
-      const panel = document.getElementById('xai-sentiment-panel');
-      if (!panel) return;
-      try {
-        const connected = window.SocialSentiment && window.SocialSentiment.hasKey();
-        if (connected) {
-          panel.innerHTML = '<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:rgba(38,212,126,0.07);border:1px solid rgba(38,212,126,0.25);border-left:3px solid #a855f7;border-radius:var(--radius-md)">' +
-            '<span style="font-size:18px">\uD835\uDD4F</span>' +
-            '<div style="flex:1"><div style="font-size:11px;font-weight:700;color:var(--color-green)">\u25cf WECRYPTO Connected \u2014 Shell 5p Live</div>' +
-            '<div style="font-size:10px;color:var(--color-text-muted);margin-top:2px">X.com tweets fetched at :00 :15 :30 :45</div></div>' +
-            '<button onclick="if(window.SocialSentiment){window.SocialSentiment.disconnect();location.reload();}" ' +
-            'style="font-size:10px;padding:4px 10px;background:var(--color-surface-3);border:1px solid var(--color-border);border-radius:var(--radius-sm);color:var(--color-text-muted);cursor:pointer">Disconnect</button></div>';
-        } else {
-          panel.innerHTML = '<div id="xai-login-wrap" style="padding:14px 16px;background:var(--color-surface-2);border:1px solid var(--color-border);border-left:3px solid #a855f7;border-radius:var(--radius-md)">' +
-            '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><span style="font-size:20px">\uD835\uDD4F</span>' +
-            '<div><div style="font-size:13px;font-weight:800;color:var(--color-text)">WECRYPTO \u2014 X.com Sentiment</div>' +
-            '<div style="font-size:10px;color:var(--color-text-muted);margin-top:1px">Shell 5p \u00b7 Twitter API v2 \u00b7 Live crowd mood</div></div></div>' +
-            '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">' +
-            '<div style="display:flex;flex-direction:column;gap:5px;flex:1;min-width:150px">' +
-            '<label style="font-size:10px;font-weight:700;color:var(--color-text-muted);text-transform:uppercase">Client ID</label>' +
-            '<input id="xai-clientid" type="text" placeholder="Z-hx--\u2026" autocomplete="off" ' +
-            'style="padding:8px 10px;background:var(--color-surface-3);border:1px solid var(--color-border);border-radius:var(--radius-sm);font-size:11px;font-family:var(--font-mono);color:var(--color-text);outline:none" /></div>' +
-            '<div style="display:flex;flex-direction:column;gap:5px;flex:2;min-width:200px">' +
-            '<label style="font-size:10px;font-weight:700;color:var(--color-text-muted);text-transform:uppercase">Client Secret</label>' +
-            '<input id="xai-clientsecret" type="password" placeholder="OAuth 2.0 Client Secret" spellcheck="false" ' +
-            'style="padding:8px 10px;background:var(--color-surface-3);border:1px solid var(--color-border);border-radius:var(--radius-sm);font-size:11px;font-family:var(--font-mono);color:var(--color-text);outline:none" /></div>' +
-            '<button onclick="(function(){' +
-            'var id=document.getElementById(\'xai-clientid\').value.trim();' +
-            'var sec=document.getElementById(\'xai-clientsecret\').value.trim();' +
-            'if(!id||!sec)return;' +
-            'var w=document.getElementById(\'xai-login-wrap\');' +
-            'if(w)w.innerHTML=\'<div style=\\\'padding:10px;font-size:11px;color:var(--color-gold)\\\'>\u23F3 Connecting\u2026</div>\';' +
-            'if(window.SocialSentiment){window.SocialSentiment.setCredentials(id,sec).then(function(ok){' +
-            'var p=document.getElementById(\'xai-sentiment-panel\');' +
-            'if(!p)return;' +
-            'if(ok){p.innerHTML=\'<div style=\\\'padding:10px 14px;background:rgba(38,212,126,0.07);border:1px solid rgba(38,212,126,0.25);border-left:3px solid #a855f7;border-radius:var(--radius-md);font-size:11px;font-weight:700;color:var(--color-green)\\\'>\u25cf WECRYPTO Connected \u2014 fetching sentiment\u2026</div>\';' +
-            'window.SocialSentiment.fetchAll().catch(function(){});}' +
-            'else{p.innerHTML=\'<div style=\\\'padding:10px 14px;border:1px solid var(--color-red);border-radius:var(--radius-md);font-size:11px;color:var(--color-red)\\\'>\u2717 Connection failed \u2014 check credentials</div>\';}' +
-            '});}' +
-            '})()" ' +
-            'style="padding:9px 20px;background:#a855f7;border:none;border-radius:var(--radius-sm);font-size:12px;font-weight:800;color:#fff;cursor:pointer;flex-shrink:0">Connect</button></div>' +
-            '<div style="font-size:9px;color:var(--color-text-faint);margin-top:8px">Credentials from <a href="https://developer.twitter.com" target="_blank" style="color:#a855f7">developer.twitter.com</a> \u2192 Your App \u2192 Keys &amp; Tokens \u2192 OAuth 2.0. Stored locally only.</div></div>';
-        }
-      } catch (e) { console.warn('[WECRYPTO panel]', e); }
-    })();
 
     // ── Progressive async fill — opportunities panel then coins one-by-one ──
     // Yields to the browser between each heavy build so the page is responsive immediately.
@@ -8177,11 +8112,6 @@
   }
 
   // ---- Volatility edge calculator: is the underlying moving enough for a confident binary? ----
-  // Kalshi binary contracts have near-zero platform fees (~$0.01/contract, negligible).
-  // The only real friction cost is the underlying bid-ask spread — which affects where
-  // spot sits vs the strike at expiry. FEE_PCT = 0 intentionally.
-  // NOTE: low-priced contracts (e.g. YES at $0.10) carry implicit leverage — a thin edge
-  // at that price point can still wipe a position. Wider gap = safer entry.
   const FEE_PCT = 0;
 
   function calcEdge(coin, cfm, pred) {
@@ -8193,43 +8123,32 @@
     const bidAsk = cfm.bidAsk || 0;
     const xSpread = cfm.spread || 0;
 
-    // Expected move in next 15 min (ATR on 5-min candles * sqrt(3) for 15 min)
     const expected15m = atrPct * Math.sqrt(3);
-    // Expected move in next 60 min
     const expected60m = atrPct * Math.sqrt(12);
 
-    // Real friction cost for Kalshi binary contracts: only the underlying bid-ask spread
-    // matters (affects where spot sits vs the strike at expiry). No platform fee.
-    const totalCostPct = bidAsk + 0.02; // 0.02% underlying slippage, zero platform fee
+    const totalCostPct = bidAsk + 0.02;
 
-    // Edge = expected move - cost
     const edge15 = expected15m - totalCostPct;
     const edge60 = expected60m - totalCostPct;
 
-    // Dollar values per $100 deployed (for reference)
     const dollarEdgePer100_15 = (edge15 / 100) * 100;
     const dollarEdgePer100_60 = (edge60 / 100) * 100;
 
-    // How many confirming signals does this coin have?
     const signalCount = countConfirmingSignals(coin, cfm, pred);
 
-    // Kalshi contract price — detects tail-risk (too expensive) and leverage (too cheap)
     const pm = window.PredictionMarkets?.getCoin?.(coin?.sym);
     const kalshiYesPrice = pm?.kalshi15m?.probability ?? null;
-    const entryIsTailRisk = kalshiYesPrice !== null && kalshiYesPrice >= 0.85; // paying 85¢+ to win ≤15¢
-    const entryIsLeveraged = kalshiYesPrice !== null && kalshiYesPrice <= 0.15; // paying ≤15¢, high variance
+    const entryIsTailRisk = kalshiYesPrice !== null && kalshiYesPrice >= 0.85; 
+    const entryIsLeveraged = kalshiYesPrice !== null && kalshiYesPrice <= 0.15; 
     const lossErasesWins = entryIsTailRisk
-      ? Math.round(kalshiYesPrice / (1 - kalshiYesPrice))   // 1 loss wipes N wins
+      ? Math.round(kalshiYesPrice / (1 - kalshiYesPrice))   
       : null;
 
-    // Conviction tier
     let tier, tierColor, tierDesc;
 
-    // Tail-risk override: contract priced so high that one loss destroys many wins
     if (entryIsTailRisk) {
       tier = 'TAIL RISK'; tierColor = 'var(--color-red)';
       tierDesc = `YES at ${Math.round(kalshiYesPrice * 100)}¢ — 1 loss erases ${lossErasesWins} wins. Need overwhelming edge to justify.`;
-      // Leveraged-entry override: tiny YES price = high variance, wide gap required
     } else if (entryIsLeveraged) {
       tier = edge15 > 0.25 && signalCount >= 3 ? 'HIGH CONVICTION' : 'LEVERAGED';
       tierColor = edge15 > 0.25 && signalCount >= 3 ? 'var(--color-green)' : 'var(--color-orange)';
@@ -8248,25 +8167,23 @@
       tierDesc = `Edge ~0 — market flat, no directional conviction yet`;
     }
 
-    // Reliability gate: downgrade HIGH CONVICTION if backtest quality is too low
     if (tier === 'HIGH CONVICTION' && (pred?.backtest?.summary?.reliability ?? 1) < 0.55) {
       tier = 'MARGINAL'; tierColor = 'var(--color-orange)';
       tierDesc = `Signals align but backtest reliability ${Math.round((pred.backtest.summary.reliability || 0) * 100)}% < 55% gate \u2014 wait for confirmation`;
     }
 
-    // Entry/exit zones
     const dirBias = predictionDirection(pred, (cfm.momentum || 0) >= 0 ? 1 : -1);
     const dir = dirBias >= 0 ? 'up' : 'down';
     const entryPrice = dir === 'up'
-      ? price * (1 - atrPct / 200) // buy on pullback to half-ATR below
-      : price * (1 + atrPct / 200); // sell on bounce to half-ATR above
+      ? price * (1 - atrPct / 200) 
+      : price * (1 + atrPct / 200); 
     const stopLoss = dir === 'up'
-      ? price * (1 - atrPct * 1.5 / 100) // 1.5x ATR stop
+      ? price * (1 - atrPct * 1.5 / 100) 
       : price * (1 + atrPct * 1.5 / 100);
     const takeProfit = dir === 'up'
-      ? price * (1 + atrPct * 2 / 100) // 2x ATR target (2:1 R/R)
+      ? price * (1 + atrPct * 2 / 100) 
       : price * (1 - atrPct * 2 / 100);
-    const riskReward = atrPct > 0 ? 2.0 : 0; // fixed 2:1 by construction
+    const riskReward = atrPct > 0 ? 2.0 : 0; 
 
     return {
       price, atrPct, expected15m, expected60m, totalCostPct, edge15, edge60,
@@ -8282,37 +8199,27 @@
     const dir = predictionDirection(pred, (cfm.momentum || 0) >= 0 ? 1 : -1);
     if (dir === 0) return 0;
 
-    // RSI
     const rsi = ind.rsi?.value ?? 50;
-    if (dir > 0 && rsi < 40) count++; // oversold + bullish = confirming
-    if (dir < 0 && rsi > 60) count++; // overbought + bearish = confirming
-    // EMA
+    if (dir > 0 && rsi < 40) count++; 
+    if (dir < 0 && rsi > 60) count++; 
     if (dir > 0 && (ind.ema?.value ?? 0) > 0.1) count++;
     if (dir < 0 && (ind.ema?.value ?? 0) < -0.1) count++;
-    // OBV
     if (dir > 0 && (ind.obv?.slope ?? 0) > 5) count++;
     if (dir < 0 && (ind.obv?.slope ?? 0) < -5) count++;
-    // Volume delta
     if (dir > 0 && (ind.volume?.ratio ?? 1) > 1.2) count++;
     if (dir < 0 && (ind.volume?.ratio ?? 1) < 0.8) count++;
-    // Trend
     if (dir > 0 && cfm.trend === 'rising') count++;
     if (dir < 0 && cfm.trend === 'falling') count++;
-    // Momentum
     if (Math.abs(cfm.momentum || 0) > 0.1) count++;
-    // Book
     const bookImbal = (ind.book?.imbalance ?? 0);
     if (dir > 0 && bookImbal > 0.2) count++;
     if (dir < 0 && bookImbal < -0.2) count++;
-    // Funding rate (contrarian — negative funding + bullish = confirming)
     const funding = pred?.derivatives?.funding ?? 0;
-    if (dir > 0 && funding < -0.1) count++; // shorts paying = confirms long
-    if (dir < 0 && funding > 0.1) count++; // longs paying = confirms short
-    // CVD
+    if (dir > 0 && funding < -0.1) count++; 
+    if (dir < 0 && funding > 0.1) count++; 
     const cvdSlope = pred?.cvd?.slope ?? 0;
     if (dir > 0 && cvdSlope > 10) count++;
     if (dir < 0 && cvdSlope < -10) count++;
-    // Squeeze aligns with direction
     if (pred?.squeeze) {
       if (dir > 0 && pred.squeeze.type === 'short_squeeze') count++;
       if (dir < 0 && pred.squeeze.type === 'long_squeeze') count++;
@@ -8476,15 +8383,12 @@
     `;
   }
 
-  // ---- Build Opportunities Panel with profitability analysis ----
   function buildOpportunitiesPanel(cfmAll, predAll) {
     const allSignals = [];
     const coinEdges = {};
 
-    // Kalshi orchestrator — resolve YES/NO intents for all coins this render cycle
     const kalshiIntents = window.KalshiOrchestrator?.update(predAll, cfmAll) ?? {};
 
-    // Log orchestrator intent changes — only when action/side/alignment shifts
     try {
       PREDICTION_COINS.forEach(coin => {
         const ki = kalshiIntents[coin.sym];
@@ -8532,7 +8436,6 @@
       });
     } catch (orchLogErr) { console.warn('[orchLog]', orchLogErr.message); }
 
-    // ── DataLogger hooks — fire-and-forget, no perf impact ──────────────────
     if (window.DataLogger) {
       PREDICTION_COINS.forEach(coin => {
         const pred = predAll[coin.sym];
@@ -8553,7 +8456,6 @@
         const ki = kalshiIntents[coin.sym];
         if (ki) window.DataLogger.logDecision(coin.sym, ki);
       });
-      // Expose cfmAll for overlay snapshot
       window._cfmAll = cfmAll;
     }
 
@@ -8562,7 +8464,6 @@
       const pred = predAll[coin.sym];
       if (!cfm || cfm.cfmRate === 0) return;
 
-      // Compute profitability edge
       const edge = calcEdge(coin.sym, cfm, pred);
       if (edge) coinEdges[coin.sym] = edge;
 
@@ -8600,7 +8501,6 @@
       });
     });
 
-    // ---- Trade Verdict Cards (one per coin) ----
     const verdicts = PREDICTION_COINS
       .map(c => ({ sym: c.sym, color: c.color, edge: coinEdges[c.sym] }))
       .filter(v => v.edge)
@@ -8610,21 +8510,17 @@
     const marginal = verdicts.filter(v => v.edge.tier === 'MARGINAL');
     const notWorth = verdicts.filter(v => v.edge.tier === 'NOT WORTH IT' || v.edge.tier === 'BREAK EVEN');
 
-    // Signal counts
     const scalpCount = allSignals.filter(s => s.signal === 'bull').length;
     const fadeCount = allSignals.filter(s => s.signal === 'bear').length;
     const dangerCount = allSignals.filter(s => s.signal === 'danger').length;
 
-    // ---- Build Narrative Callouts (plain-English flagging) ----
     const callouts = buildNarrativeCallouts(verdicts, allSignals, cfmAll, predAll);
     const liveCalibrationTelemetry = window.KalshiOrchestrator?.getCalibrationTelemetry?.() || null;
 
     return `
-      <!-- Narrative Callouts -->
       ${callouts}
       ${renderLiveCalibrationTelemetryStrip(liveCalibrationTelemetry)}
 
-      <!-- Trade Verdict: Should you trade RIGHT NOW? -->
       <div class="opp-panel" style="border-left:3px solid ${highConv.length > 0 ? 'var(--color-green)' : marginal.length > 0 ? 'var(--color-orange)' : 'var(--color-text-faint)'}">
         <div class="card-title" style="color:var(--color-gold)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
@@ -8717,7 +8613,6 @@
             const m = (ki.contractTicker || '').match(/T(\d+(?:\.\d+)?)$/);
             return m ? 'T' + Number(m[1]).toLocaleString() : '';
           })();
-          // Millisecond-precision countdown — recomputed fresh on every render
           const msNow = ki.closeTimeMs ? Math.max(0, ki.closeTimeMs - Date.now()) : null;
           const secsNow = msNow != null ? msNow / 1000 : null;
           const timeStr = secsNow == null ? null
@@ -8792,7 +8687,6 @@
         </div>
       </div>
 
-      <!-- Flashing Indicators -->
       ${allSignals.length > 0 ? `
         <div class="opp-panel">
           <div class="card-title" style="color:var(--color-gold)">
@@ -8827,7 +8721,6 @@
     `;
   }
 
-  // Weight class: determines which orbital shells a coin fills
   const COIN_WEIGHT = {
     BTC: 'heavy', ETH: 'heavy',
     SOL: 'mid', XRP: 'mid', BNB: 'mid',
@@ -8837,18 +8730,10 @@
   const WEIGHT_RANK = { heavy: 3, mid: 2, light: 1 };
   const ORBITAL_ACCESS = { all: 1, mid: 2, heavy: 3 };
 
-  // ================================================================
-  // GROUND STATE ENERGY — Orbital Shell Synthesis
-  // Thesis: inner shells = fundamental state, outer shells = catalysts.
-  // Like an atom's ionisation energy: how far the market is from rest.
-  // score ∈ [-1, +1]:  +1 = fully ionised bullish, -1 = fully ionised bearish
-  // ================================================================
-
   function computeGroundState(vals, pred, weightClass) {
     const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
     const ind = pred?.indicators || {};
 
-    // ── Inner shell contributions (fundamental state) ─────────────────────
     let innerScore = 0;
     let innerCount = 0;
 
@@ -8858,58 +8743,44 @@
       innerCount += w;
     }
 
-    // Shell 1s — VWAP deviation from CFM rate (price truth)
     const vwapDev = ind.vwap?.value ?? 0;
     addInner(clamp(vwapDev / 2, -1, 1), 0.18);
 
-    // Shell 2s — RSI (normalise 50 → 0, extremes → ±1)
     const rsi = ind.rsi?.value ?? 50;
     addInner(clamp((rsi - 50) / 30, -1, 1), 0.14);
 
-    // Shell 2s — MACD
     const macdHist = ind.macd?.histogram ?? 0;
     addInner(clamp(macdHist * 50, -1, 1), 0.10);
 
-    // Shell 2p — EMA cross
     const emaCross = vals._emaCross ?? 0;
     addInner(clamp(emaCross / 0.5, -1, 1), 0.12);
 
-    // Shell 2p — Trend direction
     const trd = vals.trend;
     if (trd === 'rising') addInner(0.7, 0.10);
     else if (trd === 'falling') addInner(-0.7, 0.10);
 
-    // Shell 3s — OBV slope
     const obv = vals._obvSlope ?? 0;
     addInner(clamp(obv / 80, -1, 1), 0.10);
 
-    // Shell 3s — Volume delta
     const volR = vals._volRatio ?? 1;
     addInner(clamp((volR - 1) / 0.5, -1, 1), 0.08);
 
-    // Shell 3p — Book imbalance (mid/heavy only)
     if (weightClass !== 'light') {
       addInner(clamp((vals._bookImbal ?? 0) / 0.5, -1, 1), 0.09);
-      // Aggressor ratio (normalise 50→0)
       addInner(clamp(((vals._aggrBuy ?? 50) - 50) / 30, -1, 1), 0.09);
     }
 
-    // Shell 3d — Funding rate (heavy/mid)
     if (weightClass !== 'light') {
       const fund = vals._funding ?? 0;
-      // Negative funding → longs are scarce → contrarian bullish
       addInner(clamp(-fund / 0.5, -1, 1), 0.08);
     }
 
-    // Normalise inner score → [-1, +1]
     const rawInner = innerCount > 0 ? innerScore / innerCount : 0;
-    const innerNorm = clamp(rawInner, -1, 1) * 0.7; // inner caps at ±0.7
+    const innerNorm = clamp(rawInner, -1, 1) * 0.7; 
 
-    // ── Outer shell overrides (catalysts — additive on top of inner) ───────
     let outerBoost = 0;
     const triggers = [];
 
-    // Shell 3d — Squeeze risk
     const sqz = vals._squeezeScore ?? 0;
     if (sqz >= 1) {
       const dir = vals._squeezeType === 'short_squeeze' ? 1 : vals._squeezeType === 'long_squeeze' ? -1 : 0;
@@ -8920,7 +8791,6 @@
       }
     }
 
-    // Shell 4s — CVD slope
     const cvd = vals._cvdSlope ?? 0;
     if (Math.abs(cvd) > 10) {
       const boost = clamp(cvd / 80, -1, 1) * 0.20;
@@ -8928,7 +8798,6 @@
       triggers.push({ sym: 'CVD', dir: boost > 0 ? 'bull' : 'bear', label: (cvd >= 0 ? '+' : '') + cvd.toFixed(0), strength: Math.abs(cvd) > 40 ? 'strong' : 'medium' });
     }
 
-    // Shell 4s — Coinbase Premium
     const cbp = vals._cbPremium ?? 0;
     if (Math.abs(cbp) > 0.08) {
       const boost = clamp(cbp / 0.3, -1, 1) * 0.18;
@@ -8936,29 +8805,8 @@
       triggers.push({ sym: 'CBP', dir: boost > 0 ? 'bull' : 'bear', label: (cbp >= 0 ? '+' : '') + cbp.toFixed(2) + '%', strength: Math.abs(cbp) > 0.2 ? 'strong' : 'medium' });
     }
 
-    // Shell 5s — Prediction Market consensus
-    const mkt = vals._mktConsensus;
-    if (mkt !== null && mkt !== undefined) {
-      const mktPct = mkt * 100;
-      if (mktPct > 55 || mktPct < 45) {
-        const boost = clamp((mktPct - 50) / 40, -1, 1) * 0.22;
-        outerBoost += boost;
-        triggers.push({ sym: 'MKT', dir: boost > 0 ? 'bull' : 'bear', label: mktPct.toFixed(0) + '%', strength: Math.abs(mktPct - 50) > 15 ? 'strong' : 'medium' });
-      }
-    }
-
-    // Shell 5p — X.com Social Sentiment
-    const xSent = vals._xSentiment;
-    if (xSent !== null && xSent !== undefined && Math.abs(xSent) >= 30) {
-      const boost = clamp(xSent / 70, -1, 1) * 0.18;
-      outerBoost += boost;
-      triggers.push({ sym: 'SNT', dir: boost > 0 ? 'bull' : 'bear', label: (xSent >= 0 ? '+' : '') + Math.round(xSent), strength: Math.abs(xSent) > 60 ? 'strong' : 'medium' });
-    }
-
-    // Clamp outer boost
     outerBoost = clamp(outerBoost, -0.30, 0.30);
 
-    // ── Final ground state score ──────────────────────────────────────────
     const raw = clamp(innerNorm + outerBoost, -1.0, 1.0);
     const abs = Math.abs(raw);
     const dir = raw > 0.08 ? 'up' : raw < -0.08 ? 'down' : 'flat';
@@ -8970,16 +8818,12 @@
     else if (abs >= 0.12) { stateLabel = 'EXCITED'; stateClass = 'excited'; }
     else { stateLabel = 'GROUND'; stateClass = 'ground'; }
 
-    // ── Conflict detection: outer catalysts oppose inner state ────────────
     const conflicted = (
       Math.abs(outerBoost) >= 0.15 &&
       Math.sign(outerBoost) !== Math.sign(innerNorm) &&
       Math.abs(innerNorm) >= 0.10
     );
 
-    // Count how many inner indicators agree with the direction
-    const signedInner = innerNorm > 0 ? 1 : innerNorm < 0 ? -1 : 0;
-    // Rough shell alignment check using bullish/bearish signal counts from pred
     const bullSignals = pred?.signals?.filter(s => s.dir > 0).length ?? 0;
     const bearSignals = pred?.signals?.filter(s => s.dir < 0).length ?? 0;
     const totalSignals = bullSignals + bearSignals;
@@ -9000,7 +8844,6 @@
     };
   }
 
-  // ── Market regime detection ─────────────────────────────────────────────
   function detectMarketRegime(pred) {
     const ind = pred?.indicators || {};
     const adx = ind.adx?.adx ?? 0;
@@ -9023,7 +8866,6 @@
     return { type: 'neutral', label: 'NEUTRAL', cls: 'neutral', desc: 'No dominant regime — mixed conditions' };
   }
 
-  // ── Entry quality grading ──────────────────────────────────────────────
   function computeEntryQuality(gs, regime, pred) {
     const abs = Math.abs(gs.score);
     const conf = gs.shellsTotal > 0 ? gs.shellsAligned / gs.shellsTotal : 0;
@@ -9044,16 +8886,12 @@
     return { grade: 'D', label: 'WAIT', cls: 'wait', reason: 'Low energy or insufficient confluence' };
   }
 
-  // ================================================================
-  // PERIODIC TABLE LAYOUT
-  // ================================================================
   function buildCoinPeriodicTable(coin, cfm, pred) {
     const trendColor = cfm.trend === 'rising' ? 'var(--color-green)' : cfm.trend === 'falling' ? 'var(--color-red)' : 'var(--color-text-muted)';
     const srcKeys = Object.keys(cfm.sources || {});
     const weightClass = COIN_WEIGHT[coin.sym] || 'light';
     const coinRank = WEIGHT_RANK[weightClass];
 
-    // Filter suborbitals by weight class
     const activeOrbitals = SUBORBITALS.filter(orb => {
       const required = ORBITAL_ACCESS[orb.weight] || 1;
       return coinRank >= required;
@@ -9062,7 +8900,6 @@
     const shellCount = new Set(activeOrbitals.map(o => o.shell)).size;
     const atomicMass = activeOrbitals.length;
 
-    // Merge prediction indicators into a flat lookup for suborbitals
     const ind = pred?.indicators || {};
     const bookData = ind.book || {};
     const flowData = ind.flow || {};
@@ -9082,26 +8919,18 @@
       _cbPremium: cbPrice > 0 && cfm.cfmRate > 0 ? ((cbPrice - cfm.cfmRate) / cfm.cfmRate) * 100 : 0,
       _dexVol: dexMeta.vol ?? 0,
       _dexLiq: dexMeta.liq ?? 0,
-      // Derivatives
       _funding: pred?.derivatives?.funding ?? 0,
       _oi: pred?.derivatives?.oi ?? 0,
       _squeezeScore: pred?.squeeze ? (pred.squeeze.severity === 'high' ? 2 : 1) : 0,
       _squeezeType: pred?.squeeze?.type ?? null,
-      // CVD
       _cvdSlope: pred?.cvd?.slope ?? 0,
-      // Prediction Markets
-      _mktConsensus: window.PredictionMarkets?.getCoin(coin.sym)?.combinedProb ?? null,
-      // Social Sentiment
-      _xSentiment: window.SocialSentiment?.getCoin(coin.sym)?.score ?? null,
     };
 
-    // ── Ground state synthesis ──────────────────────────────────────────
     const gs = computeGroundState(vals, pred, weightClass);
     const regime = detectMarketRegime(pred);
     const eq = computeEntryQuality(gs, regime, pred);
 
-    // Ground state bar: fill from centre to each side
-    const barPct = Math.abs(gs.score) * 50;  // 0-50% each side from centre
+    const barPct = Math.abs(gs.score) * 50; 
     const barFill = `left:${gs.dir === 'down' ? 50 - barPct : 50}%;width:${barPct}%;`;
 
     const triggerBadges = gs.triggers.map(t =>
@@ -9221,8 +9050,6 @@
     `;
   }
 
-  // ---- Signal evaluation: determines if an orbital is flashing an opportunity ----
-  // Returns { signal: 'scalp'|'fade'|'danger'|'even'|null, reason: string }
   function evaluateSignal(orb, raw, vals = {}) {
     if (raw === undefined || raw === null) return { signal: null, reason: '', tag: '' };
     const mk = (signal, tag, reason) => ({ signal, tag, reason });
@@ -9303,7 +9130,7 @@
         return mk(null, '', '');
       case 'MKT':
         if (raw === null || raw === undefined) return mk(null, '', '');
-        if (raw > 62) return mk('bull', 'MKT-UP', 'Markets imply ' + raw.toFixed(0) + '% UP — Kalshi/Polymarket consensus');
+        if (raw > 62) return mk('bull', 'MKT-UP', 'Markets imply ' + raw.toFixed(0) + '% UP — Kalshi consensus');
         if (raw < 38) return mk('bear', 'MKT-DN', 'Markets imply ' + (100 - raw).toFixed(0) + '% DOWN — prediction market consensus');
         if (raw > 47 && raw < 53) return mk('even', 'EVEN', 'Markets split ' + raw.toFixed(0) + '/50 — no prediction market edge');
         return mk(null, '', '');
@@ -9804,6 +9631,7 @@
 
       // ── 3. CURRENT SNAPSHOTS ──────────────────────────────────────────────
       const snapRows = Object.entries(snaps).map(([sym, s]) => {
+        if (!s) return '';
         const conflict = s.dirConflict ? '⚠️' : '';
         const confCol = s.dirConflict ? 'color:#f44336;font-weight:700' : 'color:#4caf50';
         const fadeTag = s.fadeActive
@@ -9824,6 +9652,7 @@
 
       // ── 4. CONTRACT LOG ───────────────────────────────────────────────────
       const logRows = log.slice(0, 10).map(e => {
+        if (!e) return '';
         const settled = e._settled
           ? `<span style="color:#4caf50">✓${e._kalshiResult || ''}</span>`
           : (e._pendingAuth ? '<span style="color:#ffc107">⏳</span>' : '–');
@@ -12423,8 +12252,7 @@
       }
     } catch (e) {
       console.error('[render] Panel error:', e);
-      content.innerHTML = <div class="error-notice">⚠ Panel error: {e.message}<br><small>{e.stack || ''}</small></div>;
-    }
+      content.innerHTML = `<div class="error-notice">⚠ Panel error: ${e.message}<br><small>${e.stack || ''}</small></div>`;
     }
   }
 

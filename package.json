@@ -90,6 +90,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.10.1",
+    "assemblyscript": "^0.28.17",
     "electron": "41.4.0",
     "electron-builder": "^26.8.1"
   },
@@ -102,6 +103,7 @@
     "firebase": "^12.13.0",
     "firebase-admin": "^12.7.0",
     "kalshi-typescript": "^3.15.0",
+    "node-addon-api": "^8.7.0",
     "selfsigned": "^5.5.0",
     "ws": "^8.20.1"
   },

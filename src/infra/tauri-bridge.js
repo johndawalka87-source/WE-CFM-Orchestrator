@@ -173,20 +173,24 @@
     }
 
     // 2. Poll /health on the default cascade
-    for (const tryPort of [3010, 3011, 3012, 3013, 3014, 3015]) {
+    for (const tryPort of [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020]) {
       try {
         const r = await fetch(`http://127.0.0.1:${tryPort}/health`, { signal: AbortSignal.timeout(500) });
         if (r.ok) {
-          const d = await fetch(`http://127.0.0.1:${tryPort}/port`).then(r => r.json()).catch(() => ({ port: tryPort }));
-          _proxyPort = d.port || tryPort;
-          _proxyAvailable = true;
-          _proxyFailures = 0;
-          _proxyBypassUntil = 0;
-          console.log(`[BRIDGE] proxy discovered on :${_proxyPort}`);
-          _lastInitAt = Date.now();
-          _lastInitErr = '';
-          _setProxyMode('proxy', 'proxy-discovered');
-          return;
+          const txt = await r.text();
+          if (txt.trim() === 'OK') {
+            console.log(`[tauri-bridge] proxy port resolved locally: ${tryPort}`);
+            const d = await fetch(`http://127.0.0.1:${tryPort}/port`).then(r => r.json()).catch(() => ({ port: tryPort }));
+            _proxyPort = d.port || tryPort;
+            _proxyAvailable = true;
+            _proxyFailures = 0;
+            _proxyBypassUntil = 0;
+            console.log(`[BRIDGE] proxy discovered on :${_proxyPort}`);
+            _lastInitAt = Date.now();
+            _lastInitErr = '';
+            _setProxyMode('proxy', 'proxy-discovered');
+            return;
+          }
         }
       } catch (_) { /* try next */ }
     }
@@ -249,9 +253,13 @@
     'xrplcluster.com':                 'xrpl',
   };
 
+  const IGNORE_DOMAINS = /timeapi\.io|kalshi\.com|polymarket\.com/i;
+
   function _buildProxyUrl(originalUrl) {
     try {
       const u = new URL(originalUrl);
+      if (IGNORE_DOMAINS.test(u.hostname)) return originalUrl;
+
       const slug = HOST_MAP[u.hostname];
       if (slug) {
         return `http://127.0.0.1:${_proxyPort}/${slug}${u.pathname}${u.search}`;

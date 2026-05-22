@@ -18,7 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const PORT = process.env.SETTLEMENT_DASHBOARD_PORT || 3443;
+const PORT = process.env.SETTLEMENT_DASHBOARD_PORT || 3450;
 const HOST = process.env.SETTLEMENT_DASHBOARD_HOST || 'localhost';
 
 let app = null;

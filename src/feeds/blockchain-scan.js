@@ -54,6 +54,7 @@
         const keyMap = {
           ETHERSCAN_API_KEY: 'etherscanApiKey',
           HELIUS_API_KEY: 'heliusApiKey',
+          ALCHEMY_API_KEY: 'alchemyApiKey',
         };
         const localKey = keyMap[name];
         if (localKey) {
@@ -79,12 +80,37 @@
     return `https://api.etherscan.io/v2/api?${qs.toString()}`;
   }
 
-  function _solRpcNodes() {
-    const nodes = ['https://api.mainnet-beta.solana.com'];
-    const heliusKey = _readEnvLike('HELIUS_API_KEY');
+  async function _solRpcNodes() {
+    const nodes = [];
+    const alchemyKey = await _getAlchemyKey();
+    nodes.push(`https://solana-mainnet.g.alchemy.com/v2/${alchemyKey}`);
+    nodes.push('https://api.mainnet-beta.solana.com');
+    let heliusKey = _readEnvLike('HELIUS_API_KEY');
+    if (!heliusKey && window.electron && window.electron.readFile) {
+      try {
+        const txt = await window.electron.readFile('secrets/HELIUS_API_KEYS.txt');
+        if (txt) heliusKey = txt.split('\n')[0].trim();
+      } catch (e) { }
+    }
     if (heliusKey) nodes.push(`https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(heliusKey)}`);
     nodes.push('https://solana-api.projectserum.com');
     return nodes;
+  }
+
+  async function _getAlchemyKey() {
+    let key = _readEnvLike('ALCHEMY_API_KEY');
+    if (!key && window.electron && window.electron.readFile) {
+      try {
+        const txt = await window.electron.readFile('secrets/ALCHEMY-API-KEY.txt');
+        if (txt) key = txt.trim();
+      } catch (e) { }
+    }
+    return key || 'UNcUYppLXPl4s0jAkQe_J';
+  }
+
+  async function _alchemy(chain) {
+    const key = await _getAlchemyKey();
+    return `https://${chain}-mainnet.g.alchemy.com/v2/${key}`;
   }
 
   async function safeJson(url, opts) {
@@ -138,10 +164,11 @@
     throw lastErr || new Error('all endpoints failed');
   }
 
-  // ── BTC — mempool.space ────────────────────────────────────────────────────
+  // ── BTC — mempool.space + Alchemy ──────────────────────────────────────────
   async function fetchBTC() {
     try {
-      const [mR, fR, hR] = await Promise.allSettled([
+      const BTC_RPC = await _alchemy('bitcoin');
+      const [mR, fR, hR, aR] = await Promise.allSettled([
         safeJsonAny([
           'https://mempool.space/api/mempool',
         ]),
@@ -151,16 +178,26 @@
         safeJsonAny([
           'https://mempool.space/api/blocks/tip/height',
         ]),
+        safeJson(BTC_RPC, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getmempoolinfo', params: [] })
+        })
       ]);
-      const m = mR.status === 'fulfilled' ? mR.value : {};
+      let m = mR.status === 'fulfilled' ? mR.value : {};
       const f = fR.status === 'fulfilled' ? fR.value : {};
       const height = hR.status === 'fulfilled' ? hR.value : null;
+      
+      if (aR.status === 'fulfilled' && aR.value?.result) {
+        if (!m.vsize) m.vsize = aR.value.result.bytes;
+        if (!m.count) m.count = aR.value.result.size;
+      }
+
       const vsize = m.vsize || 0;
       const feeFast = f.fastestFee || 0;
       const score = vsize > 200e6 ? 0.55 : vsize > 80e6 ? 0.25 : vsize < 5e6 ? -0.1 : 0;
       return {
         sym: 'BTC', label: 'Bitcoin', chain: 'Bitcoin Network',
-        source: 'mempool.space', explorerUrl: 'https://mempool.space',
+        source: 'mempool.space / Alchemy', explorerUrl: 'https://mempool.space',
         metrics: [
           { k: 'Mempool Txs', v: (m.count || 0).toLocaleString() },
           { k: 'Mempool Size', v: fmtBytes(vsize) },
@@ -178,31 +215,56 @@
     }
   }
 
-  // ── ETH — Etherscan free endpoints (stable) ─────────────────────────────────
+  // ── ETH — Etherscan + Alchemy ─────────────────────────────────────────────
   async function fetchETH() {
     try {
-      const [blockR, gasR] = await Promise.allSettled([
+      const BASE_RPC = await _alchemy('base');
+      const ETH_RPC = await _alchemy('eth');
+      const [blockR, gasR, baseGasR, ethGasR] = await Promise.allSettled([
         safeJson(_etherscanV2Url('proxy', 'eth_blockNumber')),
         safeJson(_etherscanV2Url('gastracker', 'gasoracle')),
+        safeJson(BASE_RPC, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_gasPrice', params: [] })
+        }),
+        safeJson(ETH_RPC, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'eth_gasPrice', params: [] })
+        }),
       ]);
       const block = blockR.status === 'fulfilled' ? parseInt(blockR.value?.result, 16) || 0 : 0;
-      const gas = gasR.status === 'fulfilled' ? gasR.value?.result || {} : {};
-      const gasAvg = parseFloat(gas.ProposeGasPrice || gas.StandardGasPrice || gas.SafeGasPrice || 0);
-      const gasFast = parseFloat(gas.FastGasPrice || gasAvg || 0);
-      const gasSlow = parseFloat(gas.SafeGasPrice || gasAvg || 0);
-      if (!block && !gasAvg) throw new Error('Etherscan ETH empty');
+      let gasAvg = 0, gasFast = 0, gasSlow = 0;
+      
+      const ethGasWei = ethGasR.status === 'fulfilled' && ethGasR.value?.result ? parseInt(ethGasR.value.result, 16) || 0 : 0;
+      const ethGasGwei = ethGasWei / 1e9;
+      
+      if (gasR.status === 'fulfilled' && gasR.value?.result && gasR.value.result.SafeGasPrice) {
+        const gas = gasR.value.result;
+        gasAvg = parseFloat(gas.ProposeGasPrice || gas.StandardGasPrice || gas.SafeGasPrice || 0);
+        gasFast = parseFloat(gas.FastGasPrice || gasAvg || 0);
+        gasSlow = parseFloat(gas.SafeGasPrice || gasAvg || 0);
+      } else {
+        // Fallback to Alchemy ETH gas price if Etherscan proxy fails
+        gasAvg = ethGasGwei;
+        gasFast = ethGasGwei * 1.2;
+        gasSlow = ethGasGwei * 0.8;
+      }
+      
+      const baseGasWei = baseGasR.status === 'fulfilled' && baseGasR.value?.result ? parseInt(baseGasR.value.result, 16) || 0 : 0;
+      const baseGasGwei = baseGasWei / 1e9;
+      
+      if (!block && !gasAvg) throw new Error('Etherscan ETH and Alchemy empty');
       const score = gasAvg > 60 ? 0.5 : gasAvg > 25 ? 0.2 : gasAvg < 5 ? -0.15 : 0;
       return {
-        sym: 'ETH', label: 'Ethereum', chain: 'Ethereum Mainnet',
-        source: 'Etherscan', explorerUrl: 'https://etherscan.io',
+        sym: 'ETH', label: 'Ethereum / Base', chain: 'Ethereum Mainnet',
+        source: 'Etherscan / Alchemy RPC', explorerUrl: 'https://etherscan.io',
         metrics: [
-          { k: 'Gas Avg', v: gasAvg ? `${gasAvg.toFixed(1)} Gwei` : '—' },
-          { k: 'Gas Fast', v: gasFast ? `${gasFast.toFixed(1)} Gwei` : '—' },
-          { k: 'Gas Slow', v: gasSlow ? `${gasSlow.toFixed(1)} Gwei` : '—' },
+          { k: 'L1 Gas Avg', v: gasAvg ? `${gasAvg.toFixed(1)} Gwei` : '—' },
+          { k: 'L1 Gas Fast', v: gasFast ? `${gasFast.toFixed(1)} Gwei` : '—' },
+          { k: 'Base L2 Gas', v: baseGasGwei ? `${baseGasGwei.toFixed(4)} Gwei` : '—' },
           { k: 'Block Height', v: block ? block.toLocaleString() : '—' },
           { k: 'Txs Today', v: '—' },
           { k: 'Total Addrs', v: '—' },
-          { k: 'Total Txs', v: '—' },
         ],
         congestion: gasAvg > 50 ? 'HIGH' : gasAvg > 20 ? 'MED' : 'LOW',
         score, signal: scoreLabel(score), ts: Date.now(),
@@ -214,9 +276,8 @@
   }
 
   // ── SOL — Solana mainnet JSON-RPC (multiple fallbacks) ─────────────────
-  const SOL_RPC_NODES = _solRpcNodes();
-
   async function fetchSOL() {
+    const SOL_RPC_NODES = await _solRpcNodes();
     for (const SOL_RPC of SOL_RPC_NODES) {
       try {
         const [perfR, epochR] = await Promise.allSettled([
@@ -314,14 +375,19 @@
   }
 
   // ── BNB — BSC Blockscout → public BSC JSON-RPC fallback ───────────────────
-  const BSC_RPC_NODES = [
-    'https://rpc.ankr.com/bsc',
-    'https://bsc-dataseed.binance.org',
-    'https://bsc-dataseed1.defibit.io',
-    'https://bsc-dataseed1.ninicoin.io',
-  ];
+  async function _bscRpcNodes() {
+    const nodes = [];
+    const alchemyKey = await _getAlchemyKey();
+    nodes.push(`https://bnb-mainnet.g.alchemy.com/v2/${alchemyKey}`);
+    nodes.push('https://rpc.ankr.com/bsc');
+    nodes.push('https://bsc-dataseed.binance.org');
+    nodes.push('https://bsc-dataseed1.defibit.io');
+    nodes.push('https://bsc-dataseed1.ninicoin.io');
+    return nodes;
+  }
 
   async function fetchBNBviaRPC() {
+    const BSC_RPC_NODES = await _bscRpcNodes();
     for (const node of BSC_RPC_NODES) {
       try {
         const [gpR, bnR] = await Promise.allSettled([
@@ -367,25 +433,39 @@
     }
   }
 
-  // ── DOGE — Blockchair ──────────────────────────────────────────────────────
+  // ── DOGE — Blockchair + Alchemy ────────────────────────────────────────────
   async function fetchDOGE() {
     try {
-      const data = await safeJson('https://api.blockchair.com/dogecoin/stats');
+      const DOGE_RPC = await _alchemy('dogecoin');
+      const [blockchairR, alchemyR] = await Promise.allSettled([
+        safeJson('https://api.blockchair.com/dogecoin/stats'),
+        safeJson(DOGE_RPC, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getmempoolinfo', params: [] })
+        })
+      ]);
+      const data = blockchairR.status === 'fulfilled' ? blockchairR.value : {};
       const s = data.data || {};
       const txs24h = s.transactions_24h || 0;
+      
+      let mempoolTxs = s.mempool_transactions;
+      if (alchemyR.status === 'fulfilled' && alchemyR.value?.result) {
+        if (mempoolTxs == null) mempoolTxs = alchemyR.value.result.size;
+      }
+
       const score = txs24h > 100000 ? 0.4 : txs24h > 50000 ? 0.2 : 0;
       return {
         sym: 'DOGE', label: 'Dogecoin', chain: 'Dogecoin Network',
-        source: 'Blockchair', explorerUrl: 'https://blockchair.com/dogecoin',
+        source: 'Blockchair / Alchemy', explorerUrl: 'https://blockchair.com/dogecoin',
         metrics: [
           { k: 'Txs 24h', v: txs24h ? txs24h.toLocaleString() : '—' },
-          { k: 'Mempool Txs', v: s.mempool_transactions != null ? s.mempool_transactions.toLocaleString() : '—' },
+          { k: 'Mempool Txs', v: mempoolTxs != null ? mempoolTxs.toLocaleString() : '—' },
           { k: 'Block Height', v: s.best_block_height ? s.best_block_height.toLocaleString() : '—' },
           { k: 'Hashrate 24h', v: s.hashrate_24h ? fmtHashrate(s.hashrate_24h) : '—' },
           { k: 'Difficulty', v: s.difficulty ? Number(s.difficulty).toExponential(2) : '—' },
           { k: 'Outputs 24h', v: s.outputs_24h ? s.outputs_24h.toLocaleString() : '—' },
         ],
-        congestion: (s.mempool_transactions || 0) > 5000 ? 'HIGH' : (s.mempool_transactions || 0) > 1000 ? 'MED' : 'LOW',
+        congestion: (mempoolTxs || 0) > 5000 ? 'HIGH' : (mempoolTxs || 0) > 1000 ? 'MED' : 'LOW',
         score, signal: scoreLabel(score), ts: Date.now(),
       };
     } catch (e) {
@@ -397,11 +477,19 @@
   // ── HYPE — Hyperliquid L1 ──────────────────────────────────────────────────
   async function fetchHYPE() {
     try {
-      const data = await safeJson('https://api.hyperliquid.xyz/info', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'metaAndAssetCtxs' }),
-      });
+      const HYPE_RPC = await _alchemy('hyperliquid');
+      const [infoR, rpcR] = await Promise.allSettled([
+        safeJson('https://api.hyperliquid.xyz/info', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'metaAndAssetCtxs' }),
+        }),
+        safeJson(HYPE_RPC, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] })
+        })
+      ]);
+      const data = infoR.status === 'fulfilled' ? infoR.value : null;
       const meta = Array.isArray(data) ? data[0] : {};
       const ctxs = Array.isArray(data) ? data[1] : [];
       const idx = (meta?.universe || []).findIndex(a => a.name === 'HYPE');
@@ -410,14 +498,17 @@
       const oi = ctx ? parseFloat(ctx.openInterest || 0) : 0;
       const vol = ctx ? parseFloat(ctx.dayNtlVlm || 0) : 0;
       const score = funding < -0.001 ? 0.3 : funding > 0.001 ? -0.2 : 0;
+      
+      const block = rpcR.status === 'fulfilled' && rpcR.value?.result ? parseInt(rpcR.value.result, 16) : null;
+      
       return {
         sym: 'HYPE', label: 'HyperLiquid', chain: 'Hyperliquid L1',
-        source: 'Hyperliquid API', explorerUrl: 'https://hypurrscan.io',
+        source: 'Hyperliquid / Alchemy', explorerUrl: 'https://hypurrscan.io',
         metrics: [
           { k: 'Funding Rate', v: ctx ? `${(funding * 100).toFixed(4)}%/hr` : '—' },
           { k: 'Open Interest', v: oi ? `$${fmtCompact(oi)}` : '—' },
           { k: 'Day Volume', v: vol ? `$${fmtCompact(vol)}` : '—' },
-          { k: 'Universe Sz', v: (meta?.universe?.length != null) ? meta.universe.length.toString() : '—' },
+          { k: 'Block Height', v: block ? block.toLocaleString() : '—' },
           { k: 'Mark Price', v: ctx?.markPx ? `$${parseFloat(ctx.markPx).toFixed(4)}` : '—' },
           { k: 'Prev Day Px', v: ctx?.prevDayPx ? `$${parseFloat(ctx.prevDayPx).toFixed(4)}` : '—' },
         ],

@@ -19,11 +19,11 @@
   'use strict';
 
   // ── Fetch with AbortController timeout ──────────────────────────────────
-  function fetchWithTimeout(url, ms = 8000) {
+  function fetchWithTimeout(url, ms = 8000, opts = {}) {
     const ctrl = new AbortController();
     const tid = setTimeout(() => ctrl.abort(), ms);
     const fetchImpl = window.throttledFetch || fetch;
-    return fetchImpl(url, { signal: ctrl.signal })
+    return fetchImpl(url, { ...opts, signal: ctrl.signal })
       .then(r => { clearTimeout(tid); return r; })
       .catch(e => { clearTimeout(tid); throw e; });
   }
@@ -163,23 +163,38 @@
     }
     if (!can('CB')) return null;
     try {
-      const handleResp = async (r) => {
-        if (r.status === 429) { console.warn('CB rate limited'); return null; }
-        if (!r.ok) return null;
-        return r.json();
-      };
-      // Fetch spot first — if it fails, skip buy/sell and don't burn the extra 2 credits.
       hit('CB');
-      const spot = await fetchWithTimeout(`${CB_BASE}/${sym}-USD/spot`).then(handleResp).catch(() => null);
-      const sp = parseFloat(spot?.data?.amount || 0);
+      let jwtStr = null;
+      try {
+        if (window.desktopApp && window.desktopApp.generateCoinbaseJWT) {
+          const res = await window.desktopApp.generateCoinbaseJWT({
+            requestMethod: 'GET',
+            requestPath: 'api.coinbase.com/api/v3/brokerage/best_bid_ask'
+          });
+          if (res && res.success) jwtStr = res.jwt;
+        }
+      } catch(e) { console.warn('[CFM] CB JWT failed:', e.message); }
+
+      const headers = { 'Accept': 'application/json' };
+      if (jwtStr) {
+        headers['Authorization'] = `Bearer ${jwtStr}`;
+      }
+
+      const r = await fetchWithTimeout(`https://api.coinbase.com/api/v3/brokerage/best_bid_ask?product_ids=${sym}-USD`, 8000, { headers });
+      if (r.status === 429) { console.warn('CB rate limited'); return null; }
+      if (!r.ok) return null;
+      
+      const j = await r.json();
+      const book = j.pricebooks && j.pricebooks[0];
+      if (!book) return null;
+      
+      // Best bid = sell to market, Best ask = buy from market
+      const bp = parseFloat(book.asks && book.asks[0] ? book.asks[0].price : 0);
+      const slp = parseFloat(book.bids && book.bids[0] ? book.bids[0].price : 0);
+      const sp = (bp && slp) ? (bp + slp) / 2 : (bp || slp);
+      
       if (!sp) return null;
-      hit('CB'); hit('CB');
-      const [buy, sell] = await Promise.all([
-        fetchWithTimeout(`${CB_BASE}/${sym}-USD/buy`).then(handleResp).catch(() => null),
-        fetchWithTimeout(`${CB_BASE}/${sym}-USD/sell`).then(handleResp).catch(() => null),
-      ]);
-      const bp = parseFloat(buy?.data?.amount || 0);
-      const slp = parseFloat(sell?.data?.amount || 0);
+      
       return { price: sp, buy: bp, sell: slp, spread: bp > 0 && slp > 0 ? (Math.abs(bp - slp) / sp) * 100 : 0 };
     } catch { return null; }
   }

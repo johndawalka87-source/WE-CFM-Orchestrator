@@ -23,7 +23,7 @@
 (function () {
   'use strict';
 
-  const PORT_CASCADE = [3010, 3011, 3012, 3013, 3014];
+  const PORT_CASCADE = [3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020];
 
   // Start in direct mode; enable proxy only after positive health discovery.
   let PROXY_ORIGIN = null;
@@ -124,12 +124,16 @@
     }
   }
 
+  const IGNORE_DOMAINS = /timeapi\.io|kalshi\.com|polymarket\.com/i;
+
   window.fetch = function (input, init) {
     if (typeof input === 'string') {
-      input = rewrite(input);
+      if (!IGNORE_DOMAINS.test(input)) input = rewrite(input);
     } else if (input instanceof Request && EXTERNAL.test(input.url)) {
-      const rw = rewrite(input.url);
-      if (rw !== input.url) input = new Request(rw, input);
+      if (!IGNORE_DOMAINS.test(input.url)) {
+        const rw = rewrite(input.url);
+        if (rw !== input.url) input = new Request(rw, input);
+      }
     }
     return _origFetch(input, init);
   };
@@ -140,16 +144,15 @@
   (function discoverProxyPort() {
     let idx = 0;
 
-    // First: honour port injected by main.js after proxy binds (fastest path)
-    if (typeof window.__PROXY_PORT__ === 'number') {
-      PROXY_ORIGIN = `http://127.0.0.1:${window.__PROXY_PORT__}`;
-      proxyReady = true;
-      console.info(`[WE] proxy-fetch — port from main.js: ${window.__PROXY_PORT__}`);
-      return;
-    }
-
+    // We previously trusted window.__PROXY_PORT__ here, but main.js sometimes injects
+    // a stale default (3010) before the Rust proxy has bound to a dynamic port (e.g. 3012).
+    // To ensure 100% reliability, we ALWAYS ping the cascade ports to verify health.
     function tryNext() {
       if (idx >= PORT_CASCADE.length) {
+        if (!window.__PROXY_PORT__) {
+          setTimeout(discoverProxyPort, 1000); // retry every 1s
+          return;
+        }
         PROXY_ORIGIN = null;
         console.warn('[WE] proxy-fetch — proxy not found on any port; proxied calls will go direct');
         return;
@@ -158,7 +161,7 @@
       const xhr = new XMLHttpRequest();
       xhr.timeout = 500;
       xhr.onload = function () {
-        if (xhr.status === 200) {
+        if (xhr.status === 200 && xhr.responseText.trim() === 'OK') {
           PROXY_ORIGIN = `http://127.0.0.1:${port}`;
           proxyReady = true;
           console.info(`[WE] proxy-fetch v1.4 — live on port ${port}`);

@@ -20,6 +20,9 @@ function createWebSocketBridge(url, options = {}) {
     headers: options.headers,
   });
 
+  const bufferedEvents = [];
+  const handlers = {};
+
   const api = {
     url,
     readyState: socket.readyState,
@@ -33,71 +36,70 @@ function createWebSocketBridge(url, options = {}) {
     close: (code, reason) => socket.close(code, reason),
     on: (eventName, callback) => {
       if (typeof callback !== 'function') return false;
-      socket.on(eventName, (...args) => {
-        api.readyState = socket.readyState;
-        if (eventName === 'message') {
-          callback(args[0]?.toString?.() ?? String(args[0] ?? ''));
-          return;
-        }
-        if (eventName === 'error') {
-          const err = args[0] || {};
-          callback({
-            message: err.message || String(err),
-            code: err.code || null,
-            statusCode: err.statusCode || null,
-            statusMessage: err.statusMessage || null,
-          });
-          return;
-        }
-        if (eventName === 'close') {
-          callback(args[0], args[1]?.toString?.() ?? String(args[1] || ''));
-          return;
-        }
-        callback(...args);
+      handlers[eventName] = handlers[eventName] || [];
+      handlers[eventName].push(callback);
+      
+      // Replay buffered events
+      const toReplay = bufferedEvents.filter(e => e.eventName === eventName);
+      toReplay.forEach(e => {
+        const idx = bufferedEvents.indexOf(e);
+        if (idx !== -1) bufferedEvents.splice(idx, 1);
+        callback(...e.args);
       });
       return true;
     },
     once: (eventName, callback) => {
       if (typeof callback !== 'function') return false;
-      socket.once(eventName, (...args) => {
-        api.readyState = socket.readyState;
-        if (eventName === 'message') {
-          callback(args[0]?.toString?.() ?? String(args[0] ?? ''));
-          return;
-        }
-        if (eventName === 'error') {
-          const err = args[0] || {};
-          callback({
-            message: err.message || String(err),
-            code: err.code || null,
-            statusCode: err.statusCode || null,
-            statusMessage: err.statusMessage || null,
-          });
-          return;
-        }
-        if (eventName === 'close') {
-          callback(args[0], args[1]?.toString?.() ?? String(args[1] || ''));
-          return;
-        }
-        if (eventName === 'unexpected-response') {
-          const res = args[1] || {};
-          callback(null, {
-            statusCode: res.statusCode || null,
-            statusMessage: res.statusMessage || '',
-          });
-          return;
-        }
+      const onceCb = (...args) => {
+        const idx = (handlers[eventName] || []).indexOf(onceCb);
+        if (idx !== -1) handlers[eventName].splice(idx, 1);
         callback(...args);
-      });
+      };
+      handlers[eventName] = handlers[eventName] || [];
+      handlers[eventName].push(onceCb);
+      
+      const toReplay = bufferedEvents.find(e => e.eventName === eventName);
+      if (toReplay) {
+        const idx = bufferedEvents.indexOf(toReplay);
+        if (idx !== -1) bufferedEvents.splice(idx, 1);
+        onceCb(...toReplay.args);
+      }
       return true;
     },
   };
 
-  socket.on('open', () => { api.readyState = socket.readyState; });
-  socket.on('close', () => { api.readyState = socket.readyState; });
-  socket.on('error', () => { api.readyState = socket.readyState; });
+  const dispatch = (eventName, ...args) => {
+    api.readyState = socket.readyState;
+    if (handlers[eventName] && handlers[eventName].length > 0) {
+      handlers[eventName].forEach(cb => cb(...args));
+    } else {
+      bufferedEvents.push({ eventName, args });
+    }
+  };
+
+  socket.on('open', () => dispatch('open'));
+  socket.on('message', (data) => dispatch('message', data?.toString?.() ?? String(data ?? '')));
+  socket.on('error', (err) => {
+    err = err || {};
+    dispatch('error', {
+      message: err.message || String(err),
+      code: err.code || null,
+      statusCode: err.statusCode || null,
+      statusMessage: err.statusMessage || null,
+    });
+  });
+  socket.on('close', (code, reason) => dispatch('close', code, reason?.toString?.() ?? String(reason || '')));
+  socket.on('unexpected-response', (req, res) => {
+    res = res || {};
+    dispatch('unexpected-response', null, {
+      statusCode: res.statusCode || null,
+      statusMessage: res.statusMessage || '',
+    });
+  });
+
   return api;
 }
+
 
 contextBridge.exposeInMainWorld('desktopApp', {
   isElectron: true,
@@ -110,6 +112,7 @@ contextBridge.exposeInMainWorld('desktopApp', {
   proxyPort: () => ipcRenderer.invoke('proxy:port'),
   loadKalshiCredentials: () => ipcRenderer.invoke('kalshi:loadCredentials'),
   getKalshiWsAuthHeaders: () => ipcRenderer.invoke('kalshi:wsAuthHeaders'),
+  generateCoinbaseJWT: (opts) => ipcRenderer.invoke('coinbase:generate-jwt', opts || {}),
   // Returns all local drives (C-Z), UNC network shares, and cloud sync folders
   getDrives: () => ipcRenderer.invoke('storage:getDrives'),
   networkError: (type, details) => ipcRenderer.invoke('network:logError', type, details),
@@ -130,6 +133,15 @@ contextBridge.exposeInMainWorld('electron', {
     getDiagnostics: () => ipcRenderer.invoke('llm:getDiagnostics'),
     envStatus: () => ipcRenderer.invoke('llm:envStatus'),
   },
+  sab: {
+    onInit: (callback) => {
+      ipcRenderer.on('sab:init', (event, payload) => {
+        if (payload && payload.sab) {
+          callback(payload.sab);
+        }
+      });
+    }
+  }
 });
 
 // Power-user bridge alias for context-isolated renderer integrations

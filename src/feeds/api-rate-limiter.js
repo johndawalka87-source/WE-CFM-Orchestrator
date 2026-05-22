@@ -94,7 +94,7 @@
   // Registry of all limiters by name
   const limiters = {
     'coingecko': new RateLimiter('coingecko', 1 / 60), // hard backoff: 1 req/min
-    'coinbase': new RateLimiter('coinbase', 8),        // adaptive floor/ceiling handled by orchestrator
+    'coinbase': new RateLimiter('coinbase', 4),        // adaptive floor/ceiling handled by orchestrator
     'okx': new RateLimiter('okx', 10),
     'okc': new RateLimiter('okc', 10),
     'bitstamp': new RateLimiter('bitstamp', 5),
@@ -108,7 +108,7 @@
     'cryptocom': new RateLimiter('cryptocom', 8),
     'kalshi': new RateLimiter('kalshi', 5),
     'polymarket': new RateLimiter('polymarket', 12),
-    'blockchainraw': new RateLimiter('blockchainraw', 4),
+    'blockchainraw': new RateLimiter('blockchainraw', 8),
     'blockcypher': new RateLimiter('blockcypher', 0.05), // 180 req/hr, below 200 req/hr free
     'blockscout': new RateLimiter('blockscout', 3),    // conservative public API pacing
     'chainso': new RateLimiter('chainso', 1),          // conservative fallback pacing

@@ -12,7 +12,7 @@
 
   const MAX_RETRIES = 3;
   const RETRY_DELAY_MS = 500;
-  const TIMEOUT_MS = 5000;  // 5s default timeout
+  const TIMEOUT_MS = 15000;  // 15s default timeout for proxy routing
 
   function resolveRuntimeKey(name) {
     try {

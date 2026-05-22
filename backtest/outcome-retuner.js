@@ -934,7 +934,7 @@ async function main() {
   let maxWindows   = null;
 
   for (let i = 0; i < args.length; i++) {
-    if      (args[i] === '--days')          days         = parseInt(args[++i], 10);
+    if      (args[i] === '--days')          days         = parseFloat(args[++i]);
     else if (args[i] === '--coins')         coinsArg     = args[++i].split(',');
     else if (args[i] === '--write-weights') writeWeights = true;
     else if (args[i] === '--test')          testMode     = true;

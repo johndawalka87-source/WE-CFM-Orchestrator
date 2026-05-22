@@ -166,14 +166,18 @@
 
   // ─── Subscribe ──────────────────────────────────────────────────────────────
 
-  function subscribe() {
+  async function subscribe() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // Filter to products that Coinbase actually supports (HYPE may not be listed)
-    const sub = (channel) => ws.send(JSON.stringify({
-      type:        'subscribe',
-      product_ids: PRODUCTS,
-      channel
-    }));
+    
+    const sub = (channel) => {
+      const payload = {
+        type:        'subscribe',
+        product_ids: PRODUCTS,
+        channel
+      };
+      ws.send(JSON.stringify(payload));
+    };
+    
     sub('candles');
     sub('ticker');
   }

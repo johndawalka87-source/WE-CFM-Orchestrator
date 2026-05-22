@@ -30,7 +30,6 @@
   const HEALTHY_OK_MAX_AGE_MS = 90_000;
   const PROVIDER_ROLE = {
     kalshi: 'critical',
-    polymarket: 'critical',
     pyth: 'critical',
     binance: 'optional',
     generic: 'optional',
@@ -457,7 +456,7 @@
       byKey[key] = { ...row };
     }
     const preferred = {};
-    for (const provider of ['kalshi', 'polymarket', 'binance', 'pyth', 'generic']) {
+    for (const provider of ['kalshi', 'binance', 'pyth', 'generic']) {
       for (const transport of PRIORITY) {
         const row = stats[`${provider}:${transport}`];
         if (!row) continue;
@@ -597,7 +596,7 @@
           return window._proxyOrchestrator.fetch(url, {
             endpoint: opts.endpoint || 'kalshi-markets-legacy',
             cacheType: opts.cacheType || 'market-data',
-            fallbackChain: opts.fallbackChain || ['kalshi', 'polymarket', 'cache'],
+            fallbackChain: opts.fallbackChain || ['kalshi', 'cache'],
           });
         },
       });
@@ -723,9 +722,7 @@
       rpc: (ctx) => (ctx.market_ticker ? rpcKalshiMarket(ctx) : rpcKalshiMarkets(ctx)),
       http: (ctx) => httpFetchJson(ctx.url, ctx.opts || {}, 'kalshi', ctx.domain || 'kalshi-markets'),
     },
-    polymarket: {
-      http: (ctx) => httpFetchJson(ctx.url, ctx.opts || {}, 'polymarket', ctx.domain || 'polymarket-markets'),
-    },
+
     binance: {
       grpc: grpcBinanceKlines,
       http: (ctx) => httpFetchJson(ctx.url, ctx.opts || {}, 'binance', ctx.domain || 'binance-feed'),
@@ -787,7 +784,7 @@
       opts: {
         endpoint: 'kalshi-settlement',
         cacheType: 'settlement',
-        fallbackChain: ['kalshi', 'polymarket', 'cache'],
+        fallbackChain: ['kalshi', 'cache'],
         ...opts,
       },
     });

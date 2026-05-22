@@ -19,24 +19,24 @@
 
   // ── 1. CONCURRENT THROTTLE ────────────────────────────────────────────────
   const MAX_CONCURRENT  = 20;     // allows 7-coin parallel fetch without queue build-up
-  const FETCH_TIMEOUT_MS = 10000; // hard deadline per request (10 s) — proxy sources need room
+  const FETCH_TIMEOUT_MS = 15000; // hard deadline per request (15 s) — proxy sources need room
   const SLOT_GAP_MS      = 30;    // breathing room between slot releases
   const API_TIMEOUT_MS = {
-    coingecko: 12000,
-    coinbase: 9000,
-    okx: 9000,
-    okc: 9000,
-    bitstamp: 9000,
-    binance: 8000,
-    bybit: 8500,
-    kraken: 9000,
-    kucoin: 9000,
-    mexc: 9000,
-    bitfinex: 9000,
-    cryptocom: 9000,
-    kalshi: 10000,
-    polymarket: 10000,
-    blockchainraw: 10000,
+    coingecko: 15000,
+    coinbase: 15000,
+    okx: 15000,
+    okc: 15000,
+    bitstamp: 15000,
+    binance: 15000,
+    bybit: 15000,
+    kraken: 15000,
+    kucoin: 15000,
+    mexc: 15000,
+    bitfinex: 15000,
+    cryptocom: 15000,
+    kalshi: 15000,
+    polymarket: 15000,
+    blockchainraw: 15000,
     default: FETCH_TIMEOUT_MS,
   };
 

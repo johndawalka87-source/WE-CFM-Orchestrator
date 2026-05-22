@@ -23,17 +23,17 @@
   let _timer = null;
 
   // ── helpers ──────────────────────────────────────────────────────
-  function timedFetch(url) {
+  function timedFetch(url, opts = {}) {
     return Promise.race([
-      fetch(url),
+      fetch(url, opts),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error('timeout')), TIMEOUT)
       ),
     ]);
   }
 
-  async function getJson(url) {
-    const res = await timedFetch(url);
+  async function getJson(url, opts = {}) {
+    const res = await timedFetch(url, opts);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   }
@@ -168,18 +168,57 @@
       return { exchange, available: false, reason: 'Not listed' };
     }
     try {
+      let jwtStrTrades = null;
+      let jwtStrTicker = null;
+      try {
+        if (window.desktopApp && window.desktopApp.generateCoinbaseJWT) {
+          const res1 = await window.desktopApp.generateCoinbaseJWT({
+            requestMethod: 'GET',
+            requestPath: `api.coinbase.com/api/v3/brokerage/products/${sym}-USD/ticker` // Note: limit is not part of the signature URI
+          });
+          if (res1 && res1.success) jwtStrTrades = res1.jwt;
+          else console.warn(`[CEX] CB JWT 1 failed for ${sym}:`, res1?.error || 'unknown');
+          
+          const res2 = await window.desktopApp.generateCoinbaseJWT({
+            requestMethod: 'GET',
+            requestPath: `api.coinbase.com/api/v3/brokerage/products/${sym}-USD`
+          });
+          if (res2 && res2.success) jwtStrTicker = res2.jwt;
+          else console.warn(`[CEX] CB JWT 2 failed for ${sym}:`, res2?.error || 'unknown');
+        }
+      } catch(e) { console.warn('[CEX] CB JWT failed:', e.message); }
+
+      const tradesOpts = jwtStrTrades ? { headers: { 'Authorization': `Bearer ${jwtStrTrades}` } } : {};
+      const tickerOpts = jwtStrTicker ? { headers: { 'Authorization': `Bearer ${jwtStrTicker}` } } : {};
+
+      const url1 = `https://api.coinbase.com/api/v3/brokerage/products/${sym}-USD/ticker?limit=100`;
+      const url2 = `https://api.coinbase.com/api/v3/brokerage/products/${sym}-USD`;
+      
+      console.log(`[CEX DEBUG] Requesting ${url1} with headers:`, tradesOpts.headers);
+      console.log(`[CEX DEBUG] Requesting ${url2} with headers:`, tickerOpts.headers);
+
       const [tradesRes, tickerRes] = await Promise.allSettled([
-        getJson(`https://api.exchange.coinbase.com/products/${sym}-USD/trades?limit=100`),
-        getJson(`https://api.exchange.coinbase.com/products/${sym}-USD/ticker`),
+        getJson(url1, tradesOpts).catch(async (e) => {
+          console.error(`[CEX DEBUG] ${sym} Trades Failed:`, e.message);
+          throw e;
+        }),
+        getJson(url2, tickerOpts).catch(async (e) => {
+          console.error(`[CEX DEBUG] ${sym} Ticker Failed:`, e.message);
+          throw e;
+        }),
       ]);
 
-      if (tradesRes.status === 'rejected') throw new Error(tradesRes.reason?.message || 'trades failed');
+      if (tradesRes.status === 'rejected') {
+        console.error(`[CEX DEBUG] ${sym} Final Trades Reject:`, tradesRes.reason);
+        throw new Error(tradesRes.reason?.message || 'trades failed');
+      }
 
-      const trades = Array.isArray(tradesRes.value) ? tradesRes.value : [];
+      const trades = tradesRes.value?.trades || [];
       let buyQty = 0, sellQty = 0;
       for (const t of trades) {
         const qty = parseFloat(t.size || 0);
-        if (t.side === 'buy') buyQty += qty;
+        // In Coinbase V3, side is the aggressor side ("BUY" or "SELL")
+        if (t.side === 'BUY') buyQty += qty;
         else sellQty += qty;
       }
       const totalQty = buyQty + sellQty;
@@ -188,7 +227,7 @@
 
       let vol24h = null;
       if (tickerRes.status === 'fulfilled') {
-        vol24h = parseFloat(tickerRes.value.volume || 0);
+        vol24h = parseFloat(tickerRes.value.volume_24h || 0);
       }
       const volKey = `${exchange}_${sym}`;
       pushVolHistory(volKey, vol24h);

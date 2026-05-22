@@ -49,7 +49,7 @@ try {
   webGoogleCloudBridge = null;
 }
 
-const PORT = Number(process.env.WECRYPTO_WEB_PORT || 3443);
+const PORT = Number(process.env.WECRYPTO_WEB_PORT || 3450);
 const HOST = process.env.WECRYPTO_WEB_HOST || '0.0.0.0';
 const PORT_RETRY_LIMIT = Number(process.env.WECRYPTO_WEB_PORT_RETRY_LIMIT || 10);
 
