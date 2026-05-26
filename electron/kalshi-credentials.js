@@ -30,6 +30,11 @@ function addSecretCandidate(candidates, baseDir) {
   addCandidate(candidates, path.join(baseDir, 'secrets', CREDENTIAL_FILE_NAME));
 }
 
+function addDirectCandidate(candidates, baseDir) {
+  if (!baseDir) return;
+  addCandidate(candidates, path.join(baseDir, CREDENTIAL_FILE_NAME));
+}
+
 function resolveRelativeCredentialPath(value, baseDirs) {
   if (!value) return [];
   if (path.isAbsolute(value)) return [value];
@@ -74,14 +79,24 @@ function buildCredentialCandidates(options = {}) {
 
   for (const baseDir of baseDirs) {
     addSecretCandidate(candidates, baseDir);
+    addDirectCandidate(candidates, baseDir);
     addSecretCandidate(candidates, baseDir ? path.join(baseDir, 'WECRYP') : null);
+    addDirectCandidate(candidates, baseDir ? path.join(baseDir, 'WECRYP') : null);
   }
 
   if (process.platform === 'win32') {
     for (let code = 67; code <= 90; code += 1) {
       const driveRoot = `${String.fromCharCode(code)}:\\`;
+      addSecretCandidate(candidates, driveRoot);
+      addDirectCandidate(candidates, driveRoot);
+      addSecretCandidate(candidates, path.join(driveRoot, 'My Drive'));
+      addDirectCandidate(candidates, path.join(driveRoot, 'My Drive'));
+      addSecretCandidate(candidates, path.join(driveRoot, 'My Drive', 'WECRYP'));
+      addDirectCandidate(candidates, path.join(driveRoot, 'My Drive', 'WECRYP'));
       addSecretCandidate(candidates, path.join(driveRoot, 'WECRYP'));
+      addDirectCandidate(candidates, path.join(driveRoot, 'WECRYP'));
       addSecretCandidate(candidates, path.join(driveRoot, 'WECRYP', 'desktop-build'));
+      addDirectCandidate(candidates, path.join(driveRoot, 'WECRYP', 'desktop-build'));
     }
   }
 

@@ -62,12 +62,26 @@ for (let i = 0; i < args.length; i++) {
 
 // Load credentials from file if not provided
 if (!config.apiKeyId) {
-  const credPath = path.join(__dirname, '../secrets/KALSHI-API-KEY.txt');
-  if (fs.existsSync(credPath)) {
-    const content = fs.readFileSync(credPath, 'utf8');
-    const parsed = parseCredentialFile(content);
-    config.apiKeyId = parsed.apiKeyId;
-    config.privateKeyPem = parsed.privateKeyPem;
+  try {
+    const { loadKalshiCredentials } = require('./kalshi-credentials.js');
+    const result = loadKalshiCredentials();
+    if (result.success) {
+      config.apiKeyId = result.apiKeyId;
+      config.privateKeyPem = result.privateKeyPem;
+      console.log(`[Kalshi Worker] Auto-loaded credentials from: ${result.path}`);
+    } else {
+      console.warn(`[Kalshi Worker] Credential auto-load failed: ${result.error}`);
+    }
+  } catch (err) {
+    // Fallback to legacy path if module fails
+    const credPath = path.join(__dirname, '../secrets/KALSHI-API-KEY.txt');
+    if (fs.existsSync(credPath)) {
+      const content = fs.readFileSync(credPath, 'utf8');
+      const parsed = parseCredentialFile(content);
+      config.apiKeyId = parsed.apiKeyId;
+      config.privateKeyPem = parsed.privateKeyPem;
+      console.log(`[Kalshi Worker] Legacy loaded credentials from: ${credPath}`);
+    }
   }
 }
 

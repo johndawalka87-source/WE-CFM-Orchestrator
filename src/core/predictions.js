@@ -998,7 +998,7 @@
       const fetchOptions = typeof window.withCoinGeckoAuth === 'function'
         ? window.withCoinGeckoAuth(url, baseFetchOptions)
         : baseFetchOptions;
-      const res = await fetchWithTimeout(url, 4500, fetchOptions);
+      const res = await fetchWithTimeout(url, 15000, fetchOptions);
 
       if (res.status === 429) {
         geckoConsecutive429s++;

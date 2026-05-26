@@ -663,7 +663,7 @@
     const q = new URLSearchParams();
     if (ctx.series_ticker) q.set('series_ticker', ctx.series_ticker);
     if (ctx.status) q.set('status', ctx.status);
-    q.set('limit', String(ctx.limit || 25));
+    q.set('limit', String(ctx.limit || 500));
 
     if (window.electron?.invoke) {
       const ipc = await window.electron.invoke('kalshi:markets', {
@@ -811,7 +811,7 @@
     const q = new URLSearchParams();
     if (params.series_ticker) q.set('series_ticker', params.series_ticker);
     if (params.status) q.set('status', params.status);
-    q.set('limit', String(params.limit || 25));
+    q.set('limit', String(params.limit || 500));
     const url = `${KALSHI_BASE}/markets?${q}`;
     const hit = await fetchWithPriority('kalshi', {
       domain: 'kalshi-markets',
@@ -981,7 +981,7 @@
       domain: 'kalshi-markets',
       intervalMs: 18_000,
       poll: async () => {
-        const payload = await rpcKalshiMarkets({ status: 'open', limit: 5 });
+        const payload = await rpcKalshiMarkets({ status: 'open', limit: 500 });
         const markets = Array.isArray(payload?.markets) ? payload.markets : [];
         return { marketCount: markets.length };
       },
@@ -994,7 +994,7 @@
       intervalMs: 30_000,
       poll: async () => {
         const payload = await httpFetchJson(
-          `${KALSHI_BASE}/markets?limit=5&status=open`,
+          `${KALSHI_BASE}/markets?limit=500&status=open`,
           { endpoint: 'kalshi-markets', cacheType: 'market-data', retries: 0 },
           'kalshi',
           'kalshi-markets',
