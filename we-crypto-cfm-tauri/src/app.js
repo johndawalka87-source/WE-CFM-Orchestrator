@@ -1,4 +1,4 @@
-﻿// ================================================================
+// ================================================================
 // WE CFM Orchestrator — Application Shell
 // Benchmark feeds via Crypto.com Exchange API (no key required)
 // Supporting flow and wallet data via Blockscout public API
@@ -787,8 +787,10 @@
       if (!lock || lock.bucketTs !== currentBucket) {
         // New 15M bucket: reset lock and accept whatever the model says
         lock = { bucketTs: currentBucket, lockedDir: rawDir, flipStreak: 0, flipDir: null };
-      } else if (rawDir === 'FLAT' || rawDir === lock.lockedDir) {
-        // Agrees with locked direction (or flat): reinforce, clear any flip streak
+      } else if (rawDir === 'FLAT') {
+        // FLAT is a neutral wiggle: pause, do not reset or increment the flip streak
+      } else if (rawDir === lock.lockedDir) {
+        // Agrees with locked direction: reinforce, clear any flip streak
         lock.flipStreak = 0;
         lock.flipDir    = null;
       } else {

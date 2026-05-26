@@ -181,7 +181,7 @@
   }, 50);
   // --------------------------------------------------------------------------
 
-  function crowdFadeDir(kalshiYesPrice, dirs, modelDir) {
+  function crowdFadeDir(kalshiYesPrice, secsLeft, dirs, modelDir) {
     if (!Number.isFinite(kalshiYesPrice)) return null;
     if (!dirs || !modelDir) return null;
 
@@ -789,7 +789,7 @@
     var key = sym + '_' + (closeTimeMs || 'none');
     function clearCandidate() { delete _fadeCandidates[key]; }
 
-    var fadeDir = crowdFadeDir(kalshiYesPrice, dirs, modelDir);
+    var fadeDir = crowdFadeDir(kalshiYesPrice, secsLeft, dirs, modelDir);
     if (!fadeDir || !modelActive || !Number.isFinite(modelYesProb)) {
       clearCandidate();
       return null;
