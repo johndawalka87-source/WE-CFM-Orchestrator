@@ -2,7 +2,7 @@
 /**
  * Pyth Lazer Real-Time Feed Test
  * Validates that Pyth Lazer WebSocket connects and receives data
- * Uses fixed_rate@1000ms channel for 1-second updates
+ * Uses fixed_rate@1000ms by default (or override via PYTH_LAZER_CHANNEL)
  * 
  * Usage:
  *   node test-pyth-lazer-live.js
@@ -17,7 +17,9 @@ if (!token) {
 }
 
 console.log('═══════════════════════════════════════════════════════════════');
-console.log('Pyth Lazer Live WebSocket Test (fixed_rate@1000ms)');
+const PYTH_TEST_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@1000ms';
+
+console.log(`Pyth Lazer Live WebSocket Test (${PYTH_TEST_CHANNEL})`);
 console.log('═══════════════════════════════════════════════════════════════\n');
 
 const LAZER_FEED_IDS = [1, 2, 6, 10, 13, 14, 15, 110]; // BTC,ETH,SOL,DOGE,F13,XRP,BNB,F110
@@ -40,7 +42,7 @@ const LAZER_ID_MAP   = { 1:'BTCUSD', 2:'ETHUSD', 6:'SOLUSD', 10:'DOGEUSD', 14:'X
       },
     });
 
-    console.log('[TEST] Subscribing to fixed_rate@1000ms channel...\n');
+    console.log(`[TEST] Subscribing to ${PYTH_TEST_CHANNEL} channel...\n`);
 
     client.subscribe({
       type:               'subscribe',
@@ -48,7 +50,7 @@ const LAZER_ID_MAP   = { 1:'BTCUSD', 2:'ETHUSD', 6:'SOLUSD', 10:'DOGEUSD', 14:'X
       priceFeedIds:       LAZER_FEED_IDS,
       properties:         ['price', 'bestBidPrice', 'bestAskPrice', 'confidence'],
       formats:            ['solana'],
-      channel:            'fixed_rate@1000ms',  // ★ STRICT 1000ms rate
+      channel:            PYTH_TEST_CHANNEL,
       deliveryFormat:     'json',
       parsed:             true,
       ignoreInvalidFeeds: true,
@@ -110,7 +112,7 @@ const LAZER_ID_MAP   = { 1:'BTCUSD', 2:'ETHUSD', 6:'SOLUSD', 10:'DOGEUSD', 14:'X
         console.log('═══════════════════════════════════════════════════════════════');
         console.log(`✅ SUCCESS: Pyth Lazer is working!`);
         console.log(`  Updates received: ${updateCount}`);
-        console.log(`  Channel: fixed_rate@1000ms (1 update/second)`);
+        console.log(`  Channel: ${PYTH_TEST_CHANNEL}`);
         console.log(`  Status: Connected and receiving real-time data`);
         console.log('═══════════════════════════════════════════════════════════════\n');
         process.exit(0);

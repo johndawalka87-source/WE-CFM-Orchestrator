@@ -37,7 +37,13 @@
 
   async function timedFetch(url, opts = {}) {
     const ctrl = new AbortController();
-    const tid = setTimeout(() => ctrl.abort(), TIMEOUT);
+    const tid = setTimeout(() => {
+      try {
+        ctrl.abort(new DOMException(`Chain route timed out after ${TIMEOUT}ms`, 'TimeoutError'));
+      } catch (_) {
+        try { ctrl.abort(); } catch (_) { }
+      }
+    }, TIMEOUT);
     try {
       const r = await fetch(url, { ...opts, signal: ctrl.signal });
       clearTimeout(tid);
@@ -677,7 +683,7 @@
       ]
     },
     { sym: 'BNB', handlers: [bnbAnkrRpc, bnbBscscan, bnbBlockscout] },
-    { sym: 'DOGE', handlers: [dogeBlockcypher, dogeChainSo, dogeBlockchair] },
+    { sym: 'DOGE', handlers: [dogeBlockcypher, dogeBlockchair] },
     { sym: 'HYPE', handlers: [hypeHyperliquid] },
   ];
 

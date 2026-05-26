@@ -115,9 +115,14 @@
         bucketReason: 'websocket connect failure (readyState=3 before open)',
       };
     }
+    let finalReason = String(err?.message || err || `${provider}:${transport} transport failure`);
+    if (finalReason.includes('signal is aborted without reason')) {
+      finalReason = `${provider}:${transport} timed out`;
+    }
+
     return {
       bucket: 'network/transport',
-      bucketReason: String(err?.message || err || `${provider}:${transport} transport failure`),
+      bucketReason: finalReason,
     };
   }
 
@@ -674,16 +679,28 @@
       }
     }
 
-    const res = await fetch(`${KALSHI_WORKER_URL}/markets?${q}`, {
-      signal: AbortSignal.timeout(8000),
-      headers: { Accept: 'application/json' },
-    });
-    if (!res.ok) throw new Error(`Worker HTTP ${res.status}`);
-    const envelope = await res.json();
-    if (envelope?.success === false) throw new Error(envelope.error || 'worker markets failed');
-    const payload = envelope?.data ?? envelope;
-    if (payload?.markets) return payload;
-    return payload;
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timeoutId = controller ? setTimeout(() => {
+      try {
+        controller.abort(new DOMException('Kalshi RPC markets timed out after 8000ms', 'TimeoutError'));
+      } catch (_) {
+        try { controller.abort(); } catch (_) { }
+      }
+    }, 8000) : null;
+    try {
+      const res = await fetch(`${KALSHI_WORKER_URL}/markets?${q}`, {
+        signal: controller ? controller.signal : undefined,
+        headers: { Accept: 'application/json' },
+      });
+      if (!res.ok) throw new Error(`Worker HTTP ${res.status}`);
+      const envelope = await res.json();
+      if (envelope?.success === false) throw new Error(envelope.error || 'worker markets failed');
+      const payload = envelope?.data ?? envelope;
+      if (payload?.markets) return payload;
+      return payload;
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
   }
 
   function grpcBinanceKlines(ctx) {

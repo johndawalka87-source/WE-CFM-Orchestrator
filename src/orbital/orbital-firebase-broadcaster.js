@@ -321,10 +321,28 @@ function getDiagnostics() {
   };
 }
 
+
+function pushMatrixElement(element) {
+  if (!element || !element.asset) return;
+  _initFirebase();
+  const sym = _toUpper(element.asset, 'UNKNOWN');
+  
+  // We bypass rate limiting for the matrix elements as they are 15-min windowed already
+  const payload = {
+    ...element,
+    timestamp_iso: new Date().toISOString(),
+    source: 'orbital-matrix-engine'
+  };
+
+  _pushOrbitalState(sym, payload).catch(() => { });
+  _pushToRTDB(sym, payload).catch(() => { });
+}
 module.exports = {
   push,
   pushBatch,
   pushMarketTick,
   pushVertexExecution,
+  pushMatrixElement,
   getDiagnostics,
 };
+

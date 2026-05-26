@@ -387,7 +387,11 @@
       nearClose = !!m;
     }
     if (!m) {
-      if (!suppressWarnings) {
+      const nowMs = Date.now();
+      const msUntilClose = bucketMs - (nowMs % bucketMs);
+      const inRolloverDeadband = markets.length > 0 && msUntilClose <= (minTradableMs + 15000);
+
+      if (!suppressWarnings && !inRolloverDeadband) {
         console.warn(`[PredictionMarkets] No open markets found for series ${series}. Markets available: ${markets.length}`);
       }
       return null;
@@ -397,7 +401,7 @@
     return applyWsTickerToContract(built);
   }
 
-  // ---- Kalshi 15M (sequential with 200ms stagger to avoid burst rate limits) ---
+  // ---- Kalshi 15M -----------------------------------------------------
 
   async function fetchKalshi15M() {
     const result = {};
@@ -405,7 +409,6 @@
     for (let i = 0; i < coins.length; i++) {
       const sym = coins[i];
       const series = KALSHI_15M_SERIES[sym];
-      if (i > 0) await new Promise(r => setTimeout(r, 50)); // stagger — was 200ms
       result[sym] = await fetchKalshiSeriesForSym(series, {
         bucketMs: BUCKET_MS_15M,
         minTradableMs: MIN_TRADABLE_MS_15M,
@@ -445,7 +448,6 @@
     for (let i = 0; i < coins.length; i++) {
       const sym = coins[i];
       const series5m = KALSHI_5M_SERIES[sym] || null;
-      if (i > 0) await new Promise(r => setTimeout(r, 50)); // stagger — was 200ms
 
       // 1. Try dedicated 5M series (e.g. KXBTC5M) — may not exist on Kalshi
       let data = series5m ? await fetchKalshiSeriesForSym(series5m, {
@@ -558,7 +560,7 @@
 
   async function _doFetch() {
     _polyCycleCount++;
-    const fetch5M = _polyCycleCount === 1 || _polyCycleCount % 2 === 0;
+    const fetch5M = false; // Disabled 5M polling due to Kalshi 400/429 limits and new 15M architecture
 
     const kalshi15m = await fetchKalshi15M();
 

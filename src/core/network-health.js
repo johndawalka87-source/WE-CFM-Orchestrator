@@ -24,6 +24,7 @@
     const state = {};
     const failureCounters = {}; // provider -> { count, lastDown }
     const FAILURE_THRESHOLD = 3; // cycles before alert
+    const OPTIONAL_FAILURE_TTL_MS = 2 * 60_000;
     const OPTIONAL_PROVIDERS = new Set([
         'Alternative.me',
         'CoinMarketCap',
@@ -34,6 +35,7 @@
         'BSCScan',
         'DexScreener',
         'Chain.so',
+        'Bullish',
     ]);
     const OPTIONAL_PROVIDER_KEYS = new Set([
         'alternative.me',
@@ -46,6 +48,7 @@
         'dexscreener',
         'chain.so',
         'chainso',
+        'bullish',
     ]);
     const TRANSIENT_REASON_RE = /(abort|timed?\s*out|timeout|502|503|504|429|network\s*changed|econnreset|socket hang up|failed to fetch)/i;
     const APP_LOGIC_RE = /(stale[-\s]*watchdog|stale[-\s]*demote|demote|hysteresis|scheduler|circuit|loop|oscillat|internal|state bug|coordination|reconnect storm|thrash|browser websocket cannot send|requires node ws|credential|crypto unavailable|signature generation)/i;
@@ -69,6 +72,29 @@
         bus: {},
         coordination: {},
     };
+
+    function canonicalProviderName(provider) {
+        const raw = String(provider || '').trim();
+        const key = raw.toLowerCase().replace(/\s+/g, '');
+        if (!raw) return 'Network';
+        if (key.includes('coingecko')) return 'CoinGecko';
+        if (key.includes('bullish')) return 'Bullish';
+        if (key.includes('localproxy') || key.includes('127.0.0.1') || key.includes('localhost')) return 'LocalProxy';
+        if (key.includes('coinmarketcap')) return 'CoinMarketCap';
+        if (key.includes('alternative.me')) return 'Alternative.me';
+        if (key.includes('blockscout')) return 'Blockscout';
+        if (key.includes('dexscreener')) return 'DexScreener';
+        if (key.includes('kalshi')) return 'Kalshi';
+        if (key.includes('polymarket')) return 'Polymarket';
+        if (key.includes('pyth') || key.includes('hermes')) return 'Pyth';
+        return raw;
+    }
+
+    function isOptionalProvider(provider) {
+        const canonical = canonicalProviderName(provider);
+        const key = String(canonical || '').toLowerCase().replace(/\s+/g, '');
+        return OPTIONAL_PROVIDERS.has(canonical) || OPTIONAL_PROVIDER_KEYS.has(key);
+    }
     for (const p of PROVIDERS) {
         state[p] = { ...DEFAULT_STATUS };
         failureCounters[p] = { count: 0, lastDown: null, alertActive: false };
@@ -85,7 +111,7 @@
         const reason = String(statusObj?.reason || '');
         const inputStatus = statusObj?.status || 'unknown';
         const providerKey = String(provider || '').toLowerCase().replace(/\s+/g, '');
-        const isOptional = OPTIONAL_PROVIDERS.has(provider) || OPTIONAL_PROVIDER_KEYS.has(providerKey);
+        const isOptional = isOptionalProvider(provider) || OPTIONAL_PROVIDER_KEYS.has(providerKey);
         const isTransient = !!statusObj?.transient || TRANSIENT_REASON_RE.test(reason);
 
         let status = inputStatus;
@@ -160,13 +186,16 @@
         bucketCounters[BUCKETS.UNKNOWN] = 0;
         for (const row of Object.values(state)) {
             if (!row || (row.status !== 'degraded' && row.status !== 'down')) continue;
+            if (row.optional && row.lastFetch && (Date.now() - row.lastFetch) > OPTIONAL_FAILURE_TTL_MS) continue;
             const bucket = _normalizeBucket(row.bucket);
             bucketCounters[bucket] = (bucketCounters[bucket] || 0) + 1;
         }
     }
 
     function update(provider, statusObj) {
+        provider = canonicalProviderName(provider);
         if (!state[provider]) state[provider] = { ...DEFAULT_STATUS };
+        if (!failureCounters[provider]) failureCounters[provider] = { count: 0, lastDown: null, alertActive: false };
         const { status, isOptional, isTransient } = classify(provider, statusObj || {});
         const bucketMeta = classifyBucket(statusObj || {});
         Object.assign(state[provider], statusObj, {
@@ -203,12 +232,29 @@
         }
     }
 
+    function displayRow(row) {
+        if (!row) return row;
+        if (row.optional && row.lastFetch && (Date.now() - row.lastFetch) > OPTIONAL_FAILURE_TTL_MS) {
+            return {
+                ...row,
+                status: 'unknown',
+                fallback: false,
+                reason: '',
+                bucket: BUCKETS.UNKNOWN,
+                bucketReason: '',
+                staleOptional: true,
+            };
+        }
+        return { ...row };
+    }
+
     function get(provider) {
-        return provider ? state[provider] : { ...state };
+        if (provider) return displayRow(state[canonicalProviderName(provider)]);
+        return Object.fromEntries(Object.entries(state).map(([k, v]) => [k, displayRow(v)]));
     }
 
     function getAll() {
-        return { ...state };
+        return get();
     }
 
     function updateTransport(summary) {
@@ -330,6 +376,7 @@
     }
 
     function getBucketCounters() {
+        recomputeBucketCounters();
         return { ...bucketCounters };
     }
 

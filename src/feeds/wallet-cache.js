@@ -404,7 +404,13 @@
 
   function _timedFetch(url, opts = {}, ms = 8000) {
     const ctrl = new AbortController();
-    const tid = setTimeout(() => ctrl.abort(), ms);
+    const tid = setTimeout(() => {
+      try {
+        ctrl.abort(new DOMException(`Wallet cache fetch timed out after ${ms}ms`, 'TimeoutError'));
+      } catch (_) {
+        try { ctrl.abort(); } catch (_) { }
+      }
+    }, ms);
 
     // Try resilientFetch first for GET requests (adds automatic retry + fallback)
     if ((!opts.method || opts.method === 'GET') && window.resilientFetch) {

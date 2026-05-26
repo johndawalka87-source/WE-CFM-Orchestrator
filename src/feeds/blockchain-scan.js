@@ -119,7 +119,13 @@
 
     // Add timeout controller (10 second hard limit)
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => {
+      try {
+        controller.abort(new DOMException('Blockchain scan timed out after 10000ms', 'TimeoutError'));
+      } catch (_) {
+        try { controller.abort(); } catch (_) { }
+      }
+    }, 10000);
     const signal = controller.signal;
 
     try {

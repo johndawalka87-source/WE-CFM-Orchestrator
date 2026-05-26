@@ -163,3 +163,63 @@
 - Days: 14  Train: 400  Test: 100  Step: 50
 - Coins: ETH
 - Log: G:\WECRYP\backtest-logs\wf-2026-05-21.log
+
+## Walk-Forward Backtest — 2026-05-23T21:23:46.918Z
+- Days: 5  Train: 400  Test: 100  Step: 50
+- Coins: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\wf-2026-05-23.log
+
+## Advanced Backtest — 2026-05-23T21:23:52.942Z
+- Days: 5  Candles: 1440
+- Coins analyzed: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\advanced-2026-05-23.log
+
+## Walk-Forward Backtest — 2026-05-24T22:48:15.152Z
+- Days: 7  Train: 200  Test: 50  Step: 50
+- Coins: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\wf-2026-05-24.log
+
+## Advanced Backtest — 2026-05-24T22:48:34.901Z
+- Days: 7  Candles: 2016
+- Coins analyzed: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\advanced-2026-05-24.log
+
+## Advanced Backtest — 2026-05-24T23:16:19.874Z
+- Days: 7  Candles: 2016
+- Coins analyzed: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\advanced-2026-05-24.log
+
+## Advanced Backtest — 2026-05-24T23:23:34.339Z
+- Days: 7  Candles: 2016
+- Coins analyzed: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\advanced-2026-05-24.log
+
+## Advanced Backtest — 2026-05-24T23:24:10.767Z
+- Days: 7  Candles: 2016
+- Coins analyzed: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\advanced-2026-05-24.log
+
+## Advanced Backtest — 2026-05-24T23:24:47.552Z
+- Days: 7  Candles: 2016
+- Coins analyzed: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\advanced-2026-05-24.log
+
+## Walk-Forward Backtest — 2026-05-24T23:26:13.768Z
+- Days: 30  Train: 500  Test: 100  Step: 100
+- Coins: 
+- Log: G:\WECRYP\backtest-logs\wf-2026-05-24.log
+
+## Walk-Forward Backtest — 2026-05-24T23:26:18.902Z
+- Days: 30  Train: 200  Test: 50  Step: 50
+- Coins: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\wf-2026-05-24.log
+
+## Advanced Backtest — 2026-05-25T01:20:42.757Z
+- Days: 2  Candles: 576
+- Coins analyzed: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\advanced-2026-05-25.log
+
+## Advanced Backtest — 2026-05-25T01:21:43.229Z
+- Days: 2  Candles: 576
+- Coins analyzed: BTC, ETH, SOL, XRP
+- Log: G:\WECRYP\backtest-logs\advanced-2026-05-25.log

@@ -7,6 +7,13 @@
 (function () {
   'use strict';
 
+  window.__env = window.__env || {};
+  try {
+    if (window.desktopApp?.publicEnv && typeof window.desktopApp.publicEnv === 'object') {
+      Object.assign(window.__env, window.desktopApp.publicEnv);
+    }
+  } catch (_) { }
+
   // ---- Icon cache — stores computed HTML string per symbol so each coin's
   //      img element is only constructed once and reused across re-renders ----
   const _iconCache = new Map();
@@ -292,7 +299,27 @@
     capRuntimeLogs();
     scheduleLogBackup(true);
     setTimeout(() => { restoreLogsFromBackupIfNeeded(); }, 0);
-  })();
+    // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
 
   // ── Initialize 2-Hour Contract Cache + Multi-Drive Sync ──────────────────
   (function initContractCache() {
@@ -312,7 +339,27 @@
     } catch (e) {
       console.warn('[ContractCache] Failed to initialize:', e.message);
     }
-  })();
+    // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
 
   // ── Initialize Proxy Orchestrator ────────────────────────────────────────
   // Coordinates rate-limiting, request deduplication, fallback chains, and multi-layer caching
@@ -320,7 +367,7 @@
     try {
       if (typeof window.ProxyOrchestrator === 'undefined') {
         console.warn('[ProxyOrchestrator] Not loaded yet — will retry on demand');
-        cleanupPredScrollListener();
+        // removed cleanup
         return;
       }
 
@@ -358,7 +405,27 @@
       console.warn('[ProxyOrchestrator] Initialization failed:', e.message);
       // Graceful degradation — app continues to work with direct fetch
     }
-  })();
+    // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
 
   // ── Initialize Signal Scheduler Agent ────────────────────────────────────
   // Prioritizes price → momentum → validation work so refreshes do not blast
@@ -367,7 +434,7 @@
     try {
       if (typeof window.SignalSchedulerAgent === 'undefined') {
         console.warn('[SignalScheduler] Not loaded yet — skipping initialization');
-        cleanupPredScrollListener();
+        // removed cleanup
         return;
       }
 
@@ -392,7 +459,27 @@
     } catch (e) {
       console.warn('[SignalScheduler] Initialization failed:', e.message);
     }
-  })();
+    // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
 
   function savePredLog() {
     try {
@@ -618,7 +705,7 @@
         });
         if (ok) {
           delete window._journalPending[sym];
-          cleanupPredScrollListener();
+          // removed cleanup
           return;
         }
       }
@@ -1689,7 +1776,27 @@
     } catch {
       return {};
     }
-  })();
+    // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
   if (uiState.currentView) currentView = uiState.currentView;
   if (Number.isFinite(uiState.refreshSecs)) refreshSecs = uiState.refreshSecs;
   if (uiState.theme === 'light' || uiState.theme === 'dark') theme = uiState.theme;
@@ -1802,6 +1909,8 @@
 
   const CDC_BASE = 'https://api.crypto.com/exchange/v1/public';
   const GECKO_BASE = 'https://api.coingecko.com/api/v3';
+  const GECKO_PRO_BASE = 'https://pro-api.coingecko.com/api/v3';
+  const COINCAP_BASE = 'https://rest.coincap.io/v3';
   const BIN_BASE = 'https://data-api.binance.vision/api/v3';   // market-data fallback after WS
   const MEXC_BASE = 'https://api.mexc.com/api/v3';
   const PYTH_HERMES = 'https://hermes.pyth.network';
@@ -1814,6 +1923,39 @@
   const HL_BASE = 'https://api.hyperliquid.xyz';
   const CB_BASE = 'https://api.exchange.coinbase.com';
 
+  function resolveRuntimeKeyLocal(name) {
+    try {
+      if (typeof window.resolveRuntimeKey === 'function') return window.resolveRuntimeKey(name) || '';
+    } catch (_) { }
+    try {
+      return window.__env?.[name] || window.desktopApp?.publicEnv?.[name] || '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function coinGeckoRequest(path, params = {}) {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v != null && v !== '') qs.set(k, String(v));
+    });
+    const fallbackKey = String(resolveRuntimeKeyLocal('COINGECKO_API_KEY') || '').trim();
+    const fallbackTier = String(resolveRuntimeKeyLocal('COINGECKO_API_TIER') || '').trim().toLowerCase();
+    const fallbackUsePro = !!fallbackKey && /^(pro|paid|enterprise)$/.test(fallbackTier);
+    const baseUrl = fallbackUsePro ? GECKO_PRO_BASE : GECKO_BASE;
+    const rawUrl = `${baseUrl}${path}${qs.toString() ? `?${qs.toString()}` : ''}`;
+    const url = typeof window.coinGeckoUrl === 'function' ? window.coinGeckoUrl(rawUrl) : rawUrl;
+    const baseOptions = { headers: { Accept: 'application/json' } };
+    const options = typeof window.withCoinGeckoAuth === 'function'
+      ? window.withCoinGeckoAuth(url, baseOptions)
+      : baseOptions;
+    if (typeof window.withCoinGeckoAuth !== 'function' && fallbackKey) {
+      const headerName = fallbackUsePro ? 'x-cg-pro-api-key' : 'x-cg-demo-api-key';
+      options.headers = { ...(options.headers || {}), [headerName]: fallbackKey };
+    }
+    return { url, options };
+  }
+
   // Binance: instrument → Binance USDT symbol (covers all 37 WATCHLIST coins)
   const BIN_ALL_SYMS = {
     'BTCUSD': 'BTCUSDT', 'ETHUSD': 'ETHUSDT', 'LTCUSD': 'LTCUSDT',
@@ -1823,7 +1965,7 @@
     'SUIUSD': 'SUIUSDT', 'APTUSD': 'APTUSDT', 'SEIUSD': 'SEIUSDT',
     'NEARUSD': 'NEARUSDT', 'BONKUSD': 'BONKUSDT', 'PEPEUSD': 'PEPEUSDT',
     'WIFUSD': 'WIFUSDT', 'FLOKIUSD': 'FLOKIUSDT', 'JUPUSD': 'JUPUSDT',
-    'AEROUSD': 'AEROUSDT', 'DYDXUSD': 'DYDXUSDT', 'PYTHUSD': 'PYTHUSDT',
+    'DYDXUSD': 'DYDXUSDT', 'PYTHUSD': 'PYTHUSDT',
     'RENDERUSD': 'RENDERUSDT', 'FETUSD': 'FETUSDT', 'TAOUSD': 'TAOUSDT',
     'XLMUSD': 'XLMUSDT', 'LINKUSD': 'LINKUSDT', 'UNIUSD': 'UNIUSDT',
     'AAVEUSD': 'AAVEUSDT', 'ICPUSD': 'ICPUSDT', 'HBARUSD': 'HBARUSDT',
@@ -1966,13 +2108,20 @@
       schedulerDelayMs = 0,
       schedulerDedupeKey = null,
       schedulerPriorityBoost = 0,
+      schedulerBoundary = null,
       ...fetchOptions
     } = options || {};
 
     const runFetch = () => {
       const ctrl = new AbortController();
       const tid = setTimeout(
-        () => ctrl.abort(new DOMException(`Timed out after ${timeoutMs}ms — ${url}`, 'TimeoutError')),
+        () => {
+          try {
+            ctrl.abort(new DOMException(`App fetch timed out after ${timeoutMs}ms`, 'TimeoutError'));
+          } catch (_) {
+            try { ctrl.abort(); } catch (_) { }
+          }
+        },
         timeoutMs
       );
       const fetchImpl = window.throttledFetch || fetch;
@@ -1986,6 +2135,7 @@
       lane: schedulerLane || scheduler.inferLaneFromUrl?.(url, 'price') || 'price',
       provider: schedulerProvider || scheduler.inferProviderFromUrl?.(url) || 'default',
       delayMs: schedulerDelayMs,
+      boundary: schedulerBoundary || null,
       priorityBoost: schedulerPriorityBoost,
       dedupeKey: schedulerDedupeKey || `${String(fetchOptions.method || 'GET').toUpperCase()}:${url}`,
       tag: `app:${url}`,
@@ -2067,12 +2217,25 @@
     const ids = Array.from(new Set(targets.map(t => t.geckoId))).join(',');
     let res;
     try {
-      const url = `${GECKO_BASE}/coins/markets?vs_currency=usd&ids=${ids}&order=market_cap_desc&sparkline=false&price_change_percentage=24h`;
+      const cgReq = coinGeckoRequest('/coins/markets', {
+        vs_currency: 'usd',
+        ids,
+        order: 'market_cap_desc',
+        sparkline: 'false',
+        price_change_percentage: '24h',
+      });
       if (typeof window._proxyOrchestrator !== 'undefined' && window._proxyOrchestrator) {
-        const data = await window._proxyOrchestrator.fetch(url, { endpoint: 'coingecko' });
+        const data = await window._proxyOrchestrator.fetch(cgReq.url, {
+          endpoint: 'coingecko',
+          headers: cgReq.options.headers,
+        });
         res = { ok: true, json: async () => data };
       } else {
-        res = await fetchWithTimeout(url, 15000, { schedulerLane: 'supplemental', schedulerProvider: 'coingecko' });
+        res = await fetchWithTimeout(cgReq.url, 20000, {
+          ...cgReq.options,
+          schedulerLane: 'supplemental',
+          schedulerProvider: 'coingecko',
+        });
       }
     } catch (e) {
       const msg = String(e?.message || e || '');
@@ -2119,6 +2282,22 @@
     return result;
   }
 
+  function unwrapKalshiIpcPayload(response) {
+    const outer = (response && typeof response === 'object') ? response : {};
+    const envelope = Object.prototype.hasOwnProperty.call(outer, 'data') ? outer.data : outer;
+    const payload = (envelope && typeof envelope === 'object' && Object.prototype.hasOwnProperty.call(envelope, 'data'))
+      ? envelope.data
+      : envelope;
+    const outerSuccess = typeof outer.success === 'boolean' ? outer.success : true;
+    const envelopeSuccess = (envelope && typeof envelope.success === 'boolean') ? envelope.success : true;
+    return {
+      success: outerSuccess && envelopeSuccess,
+      payload: (payload && typeof payload === 'object') ? payload : null,
+      error: outer.error || envelope?.error || null,
+      status: outer.status || null,
+    };
+  }
+
   // ---- Kalshi Prediction Markets — Real-time sentiment data ----
   async function fetchKalshiData() {
     try {
@@ -2133,7 +2312,6 @@
         }
         _kalshiIpcWasAvailable = false;
         window._kalshiSnapshot = null;
-        cleanupPredScrollListener();
         return;
       }
 
@@ -2143,27 +2321,30 @@
       _kalshiIpcWasAvailable = true;
 
       // Get markets (limit to top 100 by volume)
-      const marketsRes = await window.Kalshi.getMarkets(100);
-      if (!marketsRes.success || !marketsRes.data?.markets) {
-        console.warn('[Kalshi] Markets fetch failed:', marketsRes.error);
+      const marketsRes = await window.Kalshi.getMarkets({ limit: 100, status: 'open' });
+      const marketsParsed = unwrapKalshiIpcPayload(marketsRes);
+      const markets = Array.isArray(marketsParsed.payload?.markets) ? marketsParsed.payload.markets : [];
+      if (!marketsParsed.success || !markets.length) {
+        console.warn('[Kalshi] Markets fetch failed:', marketsParsed.error || 'No open markets returned');
         return;
       }
 
       // Get balance for portfolio context
       const balanceRes = await window.Kalshi.getBalance();
-      const balance = balanceRes.success ? balanceRes.data.balance : null;
+      const balanceParsed = unwrapKalshiIpcPayload(balanceRes);
+      const balance = balanceParsed.success ? (balanceParsed.payload?.balance ?? null) : null;
 
       // Store Kalshi snapshot
       window._kalshiSnapshot = {
         timestamp: Date.now(),
-        markets: marketsRes.data.markets,
+        markets,
         balance,
-        count: marketsRes.count,
+        count: markets.length,
       };
 
       // Build quick lookup by market ticker
       const kalshiByTicker = {};
-      marketsRes.data.markets.forEach(m => {
+      markets.forEach(m => {
         kalshiByTicker[m.market_ticker] = {
           price: parseFloat(m.last_price),      // 0-100 probability
           volume: parseFloat(m.volume),          // 24h volume
@@ -2172,7 +2353,7 @@
       });
       window._kalshiByTicker = kalshiByTicker;
 
-      console.log(`[Kalshi] Loaded ${marketsRes.count} markets, balance: $${balance}`);
+      console.log(`[Kalshi] Loaded ${markets.length} markets, balance: $${balance}`);
     } catch (error) {
       const msg = String(error?.message || error || 'unknown error');
       const now = Date.now();
@@ -2344,15 +2525,12 @@
               requestMethod: 'GET',
               requestPath: `api.coinbase.com/api/v3/brokerage/products/${product}`
             });
-            if (res && res.success) jwtHeader = { 'Authorization': `Bearer ${res.jwt}` };
+            if (res && res.success && res.jwt) jwtHeader = { 'Authorization': `Bearer ${res.jwt}` };
           }
         } catch (e) { }
 
         const url = `https://api.coinbase.com/api/v3/brokerage/products/${product}`;
-        
-        console.log(`[APP DEBUG] Coinbase Fallback URL: ${url}`);
-        console.log(`[APP DEBUG] Coinbase Fallback Headers:`, jwtHeader);
-        
+
         const promise = window.resilientFetch
           ? window.resilientFetch(url, { headers: jwtHeader })
           : fetchWithTimeout(url, 5000, { headers: jwtHeader });
@@ -2360,8 +2538,6 @@
         return promise
           .then(async r => {
             if (!r.ok) {
-              const text = await r.text().catch(() => '');
-              console.error(`[APP DEBUG] Coinbase Fallback 401 Body: ${text}`);
               throw new Error(`CB ${r.status}`);
             }
             return r.json();
@@ -2709,7 +2885,11 @@
       // Try CoinGecko first
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await fetch(`${GECKO_BASE}/coins/${geckoId}/market_chart?vs_currency=usd&days=${days}`);
+          const cgReq = coinGeckoRequest(`/coins/${geckoId}/market_chart`, {
+            vs_currency: 'usd',
+            days,
+          });
+          const res = await fetch(cgReq.url, cgReq.options);
           if (res.status === 429) {
             await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
             continue;
@@ -2751,7 +2931,22 @@
       console.warn(`[Chart] CoinGecko failed (${lastErr?.message}); trying CoinCap...`);
       try {
         const coincapId = geckoId; // CoinCap uses similar IDs (bitcoin, ethereum, etc)
-        const res = await fetch(`https://api.coincap.io/v2/assets/${coincapId}/history?interval=d1`, { signal: AbortSignal.timeout(8000) });
+        const coinCapKey = String(
+          resolveRuntimeKeyLocal('COINCAP_API_KEY')
+          || resolveRuntimeKeyLocal('COINCAP_BEARER_TOKEN')
+          || resolveRuntimeKeyLocal('COINCAP_TOKEN')
+          || ''
+        ).trim();
+        if (!coinCapKey) {
+          console.info(`[Chart] CoinCap skipped for ${instrument}: no API key configured`);
+          return [];
+        }
+        const res = await fetchWithTimeout(`${COINCAP_BASE}/assets/${coincapId}/history?interval=d1`, 8000, {
+          headers: {
+            Accept: 'application/json',
+            Authorization: `Bearer ${coinCapKey}`,
+          },
+        });
         if (!res.ok) throw new Error(`CoinCap ${res.status}`);
         const json = await res.json();
         const data = Array.isArray(json.data) ? json.data : [];
@@ -2902,11 +3097,17 @@
     }
     // Fallback: original inline logic if WalletCache not loaded
     const ctrl = new AbortController();
-    const tid = setTimeout(() => ctrl.abort(), 8000);
+    const tid = setTimeout(() => {
+      try {
+        ctrl.abort(new DOMException('Wallet fetch timed out after 8000ms', 'TimeoutError'));
+      } catch (_) {
+        try { ctrl.abort(); } catch (_) { }
+      }
+    }, 8000);
     try {
       // Try resilientFetch first (adds automatic retry + fallback to Etherscan)
       const res = window.resilientFetch
-        ? await window.resilientFetch(`https://eth.blockscout.com/api/v2/addresses/${address}/token-balances`)
+        ? await window.resilientFetch(`https://eth.blockscout.com/api/v2/addresses/${address}/token-balances`, { signal: ctrl.signal })
         : await fetch(`https://eth.blockscout.com/api/v2/addresses/${address}/token-balances`, { signal: ctrl.signal });
       if (res.ok) { window._walletDataSource = 'blockscout'; return res.json(); }
     } catch (e) { if (e.name === 'AbortError') console.warn('[WE] Wallet fetch timed out'); }
@@ -3128,20 +3329,30 @@
       window.pythLazer?.onTimeout?.((data) => {
         if (!window.NetworkHealth) return;
         window.NetworkHealth.update('Pyth', {
-          status: 'degraded',
+          status: 'healthy',
           lastFetch: Date.now(),
           fallback: true,
-          reason: data?.reason || 'Pyth timeout',
+          reason: data?.reason === 'no_data_timeout_plus_grace'
+            ? 'Lazer quiet; fallback feeds active'
+            : (data?.reason || 'Pyth fallback active'),
+          bucket: 'unknown',
+          bucketReason: '',
         });
       });
 
       window.pythLazer?.onConnectionLost?.((data) => {
         if (!window.NetworkHealth) return;
+        const reason = data?.reason || 'Pyth connection lost';
         window.NetworkHealth.update('Pyth', {
-          status: 'down',
+          status: 'degraded',
           lastFetch: Date.now(),
           fallback: true,
-          reason: data?.reason || 'Pyth connection lost',
+          transient: true,
+          reason: reason === 'all_connections_down'
+            ? 'all_connections_down (auto-reconnect in progress)'
+            : reason,
+          bucket: 'network/transport',
+          bucketReason: '',
         });
       });
 
@@ -3338,9 +3549,9 @@
       // ── ACTIVATE CMC POLLING ON FIRST APP STARTUP ────────────────
       if (window._cmcProFeed && typeof window._cmcProFeed.startPolling === 'function' && !window._cmcPollingStarted) {
         try {
-          window._cmcProFeed.startPolling(['BTC', 'ETH', 'XRP', 'DOGE', 'BNB'], 60000);  // ★ REMOVED HYPE and SOL per backtest
+          window._cmcProFeed.startPolling(['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'], 60000);
           window._cmcPollingStarted = true;
-          console.log('[App] ✅ CMC polling activated (60-second interval)');
+          console.log('[App] ✅ CMC polling activated (1-hour interval)');
         } catch (cmcErr) {
           console.warn('[App] Failed to start CMC polling:', cmcErr.message);
         }
@@ -3500,6 +3711,25 @@
   let settledFetcher = null;
   let learningEngine = null;
 
+  function syncAdaptiveWeightsToPredictionEngine() {
+    if (!learningEngine || !window.PredictionEngine?.setAdaptiveWeights) return false;
+
+    const weightsByCoin = window._adaptiveWeights || learningEngine.signalWeights || {};
+    let applied = false;
+
+    for (const [coin, weights] of Object.entries(weightsByCoin)) {
+      if (!weights || typeof weights !== 'object') continue;
+      window.PredictionEngine.setAdaptiveWeights(coin, weights);
+      applied = true;
+    }
+
+    if (applied) {
+      window._adaptiveWeightsSyncedAt = Date.now();
+    }
+
+    return applied;
+  }
+
   function initHistoricalLearning() {
     if (!settledFetcher && typeof HistoricalSettlementFetcher !== 'undefined') {
       settledFetcher = new HistoricalSettlementFetcher();
@@ -3509,6 +3739,7 @@
       learningEngine = new AdaptiveLearningEngine();
       console.log('[App] AdaptiveLearningEngine initialized');
     }
+    syncAdaptiveWeightsToPredictionEngine();
   }
 
   function startHistoricalPolling() {
@@ -3609,7 +3840,7 @@
             const tuned = learningEngine.autoTuneWeights();
             if (tuned && Object.keys(tuned).length > 0) {
               console.log('[Learning] Weights auto-tuned:', tuned);
-              // TODO: Apply new weights to PredictionEngine
+              syncAdaptiveWeightsToPredictionEngine();
             }
           }
 
@@ -3780,10 +4011,13 @@
   function snapshotPredictions() {
     const preds = window._predictions || {};
     const nowMs = Date.now();
-    const currentBucket = Math.floor(nowMs / _BUCKET_MS) * _BUCKET_MS;
 
     PREDICTION_COINS.forEach(coin => {
       const p = preds[coin.sym];
+      
+      const pm = window.PredictionMarkets?.getCoin?.(coin.sym);
+      const k15Close = pm?.kalshi15m?.closeTime;
+      const currentBucket = k15Close ? new Date(k15Close).getTime() : Math.ceil((nowMs + 45000) / _BUCKET_MS) * _BUCKET_MS;
 
       // ── Record missing or disabled prediction as error ─────────────────────
       if (!p || !p.price) {
@@ -4549,6 +4783,36 @@
         if (window._kalshiLog.length > LOG_CAP) window._kalshiLog.shift();
         saveKalshiLog();
 
+        // ── WECRYPTO Reinforcement Learning Loop ─────────────────────────────
+        if (typeof window.update_indicator_weights === 'function' && kSnap.signalComponents && kEntry.modelCorrect !== null) {
+          const activeFeatures = kSnap.signalComponents
+            .filter(c => Math.abs(c.value) > 0.1)
+            .map(c => c.name);
+
+          const expectedProfit = (kSnap.modelScore || 0) * 10;
+          const actualProfit = kEntry.modelCorrect ? 10.0 : -10.0;
+          const trade_result = {
+            profit: actualProfit,
+            expected_value: expectedProfit,
+            confidence: kSnap.modelConf ?? 0.5
+          };
+
+          try {
+            const currentWeights = window.PredictionMarkets?.getAdaptiveWeights?.(sym) || {};
+            const rlOutput = window.update_indicator_weights(trade_result, currentWeights, activeFeatures);
+            console.log(`[RL Loop] 🧠 ${sym} Adaptive Alpha: ${(rlOutput.meta.alpha * 100).toFixed(2)}%. Weight adjustments triggered.`);
+            
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              window.PredictionMarkets.setAdaptiveWeights(sym, rlOutput.new_weights);
+            }
+            if (window.wecryp?.updateSystemWeights) {
+              window.wecryp.updateSystemWeights(rlOutput.new_weights).catch(e => console.warn('[RL Firebase Sync Failed]', e));
+            }
+          } catch (rlErr) {
+            console.error('[RL Loop Error]', rlErr);
+          }
+        }
+
         // ── Record settlement in scorecard aggregator ─────────────────────
         console.log(`[Settlement] Recording: ${sym} → ${kEntry.actualOutcome} (aggregator=${!!window._aggregator})`);
         if (window._aggregator) {
@@ -4883,6 +5147,8 @@
   function high(ticker) { return ticker ? parseFloat(ticker.high) : 0; }
   function low(ticker) { return ticker ? parseFloat(ticker.low) : 0; }
   function marketCap(meta) { return meta ? parseFloat(meta.marketCap || 0) : 0; }
+  function atomicWeight(meta) { return meta ? parseFloat(meta.atomicWeight || meta.marketCap || 0) : 0; }
+  function tvlUsd(meta) { return meta ? parseFloat(meta.tvlUsd || 0) : 0; }
   function compareNumbers(a, b, dir = -1) { return dir === -1 ? b - a : a - b; }
   function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, char => ({
@@ -4986,7 +5252,27 @@
             return; // done — skip remaining sources
           } catch { /* try next source */ }
         }
-      })();
+        // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
     }
 
     return html;
@@ -5055,13 +5341,26 @@
     if (screenerMetaPromise) return screenerMetaPromise;
 
     const ids = Array.from(new Set(Object.values(SCREENER_GECKO_IDS))).join(',');
-    const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${ids}&order=market_cap_desc&sparkline=false&price_change_percentage=24h`;
+    const cgReq = coinGeckoRequest('/coins/markets', {
+      vs_currency: 'usd',
+      ids,
+      order: 'market_cap_desc',
+      sparkline: 'false',
+      price_change_percentage: '24h',
+    });
     
     let fetchPromise;
     if (typeof window._proxyOrchestrator !== 'undefined' && window._proxyOrchestrator) {
-      fetchPromise = window._proxyOrchestrator.fetch(url, { endpoint: 'coingecko' });
+      fetchPromise = window._proxyOrchestrator.fetch(cgReq.url, {
+        endpoint: 'coingecko',
+        headers: cgReq.options.headers,
+      });
     } else {
-      fetchPromise = fetchWithTimeout(url, 15000, { schedulerLane: 'supplemental', schedulerProvider: 'coingecko' })
+      fetchPromise = fetchWithTimeout(cgReq.url, 20000, {
+        ...cgReq.options,
+        schedulerLane: 'supplemental',
+        schedulerProvider: 'coingecko',
+      })
         .then(r => { if (!r.ok) throw new Error(`CoinGecko ${r.status}`); return r.json(); });
     }
 
@@ -5071,12 +5370,17 @@
         rows.forEach(row => {
           const sym = GECKO_ID_TO_SYMBOL[row.id];
           if (!sym) return;
+          const orbital = window.ShellRouter?.getAtomicProfile?.(sym) || null;
           next[sym] = {
             marketCap: row.market_cap || 0,
             totalVolume: row.total_volume || 0,
             image: row.image || '',
             rank: row.market_cap_rank || null,
             geckoId: row.id,
+            tvlUsd: orbital?.tvlUsd || 0,
+            atomicWeight: orbital?.atomicWeightUsd || row.market_cap || 0,
+            orbitalFocus: orbital?.orbitalFocus || null,
+            classification: orbital?.classification || null,
           };
         });
         screenerMetaCache = next;
@@ -5172,6 +5476,7 @@
     if (currentView === 'markets5m') { renderMarkets5M(); return; }
     if (currentView === 'debuglog') { renderDebugLog(); return; }
     if (currentView === 'observability') { renderObservability(); return; }
+    if (currentView === 'hourly-ranges') return; // Panel manages its own 30s poll
     render();
   }
 
@@ -7463,8 +7768,14 @@
   function sortScreenerCoins(coins) {
     return [...coins].sort((a, b) => {
       if (screenerSortBy === 'alpha') return screenerSortDir === -1 ? b.sym.localeCompare(a.sym) : a.sym.localeCompare(b.sym);
-      const av = screenerSortBy === 'marketCap' ? marketCap(a.meta) : screenerSortBy === 'volume' ? (a.meta?.totalVolume || a.vol) : a.change;
-      const bv = screenerSortBy === 'marketCap' ? marketCap(b.meta) : screenerSortBy === 'volume' ? (b.meta?.totalVolume || b.vol) : b.change;
+      const av = screenerSortBy === 'marketCap' ? marketCap(a.meta)
+        : screenerSortBy === 'atomicWeight' ? atomicWeight(a.meta)
+          : screenerSortBy === 'volume' ? (a.meta?.totalVolume || a.vol)
+            : a.change;
+      const bv = screenerSortBy === 'marketCap' ? marketCap(b.meta)
+        : screenerSortBy === 'atomicWeight' ? atomicWeight(b.meta)
+          : screenerSortBy === 'volume' ? (b.meta?.totalVolume || b.vol)
+            : b.change;
       return compareNumbers(av, bv, screenerSortDir);
     });
   }
@@ -7489,10 +7800,10 @@
     const gainers = coins.filter(c => c.change > 3);
     const losers = coins.filter(c => c.change < -3);
     const hot = coins.filter(c => (c.meta?.totalVolume || c.vol) > 100000);
-    const topCap = WATCHLIST
+    const topGravity = WATCHLIST
       .map(c => ({ ...c, meta: screenerMetaCache[c.sym] || {} }))
-      .filter(c => marketCap(c.meta) > 0)
-      .sort((a, b) => marketCap(b.meta) - marketCap(a.meta))
+      .filter(c => atomicWeight(c.meta) > 0)
+      .sort((a, b) => atomicWeight(b.meta) - atomicWeight(a.meta))
       .slice(0, 5);
 
     content.innerHTML = `
@@ -7510,6 +7821,7 @@
             <span class="ctrl-label">Sort</span>
             <select class="ctrl-select" id="screenerSortSelect">
               <option value="marketCap" ${screenerSortBy === 'marketCap' ? 'selected' : ''}>Market Cap</option>
+              <option value="atomicWeight" ${screenerSortBy === 'atomicWeight' ? 'selected' : ''}>Atomic Weight</option>
               <option value="volume" ${screenerSortBy === 'volume' ? 'selected' : ''}>Volume</option>
               <option value="change" ${screenerSortBy === 'change' ? 'selected' : ''}>24h Change</option>
               <option value="alpha" ${screenerSortBy === 'alpha' ? 'selected' : ''}>Alphabetical</option>
@@ -7520,12 +7832,12 @@
             <button class="tf-btn ${screenerSortDir === 1 ? 'active' : ''}" data-screener-dir="1">Asc</button>
           </div>
           <div class="screener-summary-strip">
-            ${topCap.map(c => `<span class="screener-chip">${c.sym} ${c.meta?.rank ? '#' + c.meta.rank : ''}</span>`).join('')}
+            ${topGravity.map(c => `<span class="screener-chip">${c.sym} ${c.meta?.classification ? '· ' + c.meta.classification : ''}</span>`).join('')}
           </div>
         </div>
       </div>
 
-      <div class="section-header"><span class="section-title">All Monitored Markets</span><span style="font-size:11px;color:var(--color-text-muted)">Sorted by ${screenerSortBy === 'alpha' ? 'alphabetical order' : screenerSortBy === 'marketCap' ? 'market cap' : screenerSortBy === 'volume' ? 'daily volume' : '24h change'}</span></div>
+      <div class="section-header"><span class="section-title">All Monitored Markets</span><span style="font-size:11px;color:var(--color-text-muted)">Sorted by ${screenerSortBy === 'alpha' ? 'alphabetical order' : screenerSortBy === 'marketCap' ? 'market cap' : screenerSortBy === 'atomicWeight' ? 'atomic weight' : screenerSortBy === 'volume' ? 'daily volume' : '24h change'}</span></div>
       <div class="screener-grid">
         ${coins.map(c => screenerCard(c, c.change > 0 ? 'bullish' : 'bearish')).join('')}
       </div>
@@ -7601,9 +7913,11 @@
         <div class="sc-chg ${posneg(c.change)}">${c.ticker ? fmtPct(c.change) : '—'}</div>
         <div class="sc-meta-grid">
           <div class="sc-vol">MCap: ${fmtCompactUsd(c.meta?.marketCap)}</div>
+          <div class="sc-vol">Atomic: ${fmtCompactUsd(c.meta?.atomicWeight || c.meta?.marketCap)}</div>
+          <div class="sc-vol">TVL: ${fmtCompactUsd(c.meta?.tvlUsd)}</div>
           <div class="sc-vol">Vol: ${fmtCompactUsd(c.meta?.totalVolume || c.vol)}</div>
           <div class="sc-vol">Rank: ${c.meta?.rank || '—'}</div>
-          <div class="sc-vol">Source: ${c.meta?.geckoId ? 'Gecko' : 'Ticker'}</div>
+          <div class="sc-vol">Orbital: ${c.meta?.classification || c.meta?.orbitalFocus || '—'}</div>
         </div>
         <div class="signal-badge ${sentiment}">
           <span>${signalLabel}</span>
@@ -7904,7 +8218,27 @@
       } finally {
         cleanupCFMScrollListener();
       }
-    })();
+      // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
   }
 
   // ================================================================
@@ -8612,7 +8946,27 @@
           const strikeC = ki.strikeStr || (() => {
             const m = (ki.contractTicker || '').match(/T(\d+(?:\.\d+)?)$/);
             return m ? 'T' + Number(m[1]).toLocaleString() : '';
-          })();
+            // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
           const msNow = ki.closeTimeMs ? Math.max(0, ki.closeTimeMs - Date.now()) : null;
           const secsNow = msNow != null ? msNow / 1000 : null;
           const timeStr = secsNow == null ? null
@@ -10069,7 +10423,7 @@
     const allSetups = [];
     predArr.forEach(p => {
       (p.scalpSetups || []).forEach(s => {
-        allSetups.push({ ...s, coin: p.sym, color: p.color });
+        allSetups.push({ ...s, coin: p.sym, color: p.color, llm: p.llm });
       });
     });
     const highSetups = allSetups.filter(s => s.strength === 'high');
@@ -10182,7 +10536,12 @@
                     <span style="margin-left:auto;font-size:18px;color:${dirColor}">${dirIcon}</span>
                   </div>
                   <div style="font-size:12px;font-weight:600;margin-bottom:2px">${s.label}</div>
-                  <div style="font-size:11px;color:var(--color-text-muted);line-height:1.4">${s.desc}</div>
+                  <div style="font-size:11px;color:var(--color-text-muted);line-height:1.4">
+                    ${(() => {
+                      const aiDesc = s.llm?.ai_wording?.scalp_setups?.find(x => x.label === s.label)?.ai_description;
+                      return aiDesc ? `<span style="color:#8fa8ff"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(aiDesc)}</span>` : s.desc;
+                    })()}
+                  </div>
                 </div>
               `;
     }).join('')}
@@ -10435,7 +10794,27 @@
         return `High-confidence overlay: HOLD (confidence ${Math.round(confNorm * 100)}% < ${Math.round(hcConfThreshold * 100)}% threshold).`;
       }
       return `High-confidence overlay: HOLD (edge ${compositeEdge.toFixed(2)} < ${hcEdgeThreshold.toFixed(2)} threshold).`;
-    })();
+      // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
     const waitRationale = (() => {
       if (verdictDir !== 'wait') return '';
 
@@ -10460,7 +10839,27 @@
         return `Model thinking: semi-confidence (${Math.round(confNorm * 100)}%) with crowd conflict in the last 45 seconds, so entry is blocked.`;
       }
       return `Model thinking: waiting for stronger directional confirmation.`;
-    })();
+      // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
     const llmRegime = p.llm?.regime || p.diagnostics?.llmRegime || null;
     const llmConfidence = Number(p.llm?.confidence || p.diagnostics?.llmConfidence || 0);
     const llmNotes = String(p.llm?.notes || p.diagnostics?.llmNotes || '').trim();
@@ -10531,7 +10930,27 @@
         return { label: '15m setup: caution', cls: 'bear', detail: `${wr.toFixed(1)}% hit · ${fmtPct(edge)} edge` };
       }
       return { label: '15m setup: mixed', cls: 'flat', detail: `${wr.toFixed(1)}% hit · ${fmtPct(edge)} edge` };
-    })();
+      // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
     const depthMeta = ind.orderBookImbalance?.meta || null;
     const depth10 = depthMeta?.levels?.level10 || null;
     const depth20 = depthMeta?.levels?.level20 || null;
@@ -10660,7 +11079,27 @@
       }
 
       return `<div class="ind-item k15m-row"><span class="ind-name">Kalshi 15M</span><span class="ind-val ${kCls}">${probLine}${refLine}${gapLine}${countdown}</span></div>`;
-    })();
+      // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
 
     return `
       <div class="pred-card ${p.signal} ${expanded ? 'expanded' : ''}" data-testid="pred-${p.sym}" data-pred-toggle="${p.sym}"
@@ -10704,10 +11143,17 @@
             ${londonBadge}${calibBadge}${weakBadge}${safetyBadge}${hcBadge}
             <span style="font-size:9px;padding:2px 6px;border-radius:9999px;background:var(--color-surface-2);color:${setup15.cls === 'bull' ? 'var(--color-green)' : setup15.cls === 'bear' ? 'var(--color-red)' : 'var(--color-text-muted)'};font-weight:700;text-transform:uppercase">${setup15.label}</span>
           </div>
-          ${waitRationale ? `<div class="pred-verdict-rationale">${waitRationale}</div>` : ''}
-          ${hcRationale ? `<div class="pred-verdict-rationale">${hcRationale}</div>` : ''}
-          ${ratPrimary ? `<div class="pred-verdict-rationale">${ratPrimary}</div>` : ''}
-          ${llmNotes ? `<div class="pred-verdict-rationale" style="opacity:.82">🧠 ${escapeHtml(llmNotes.slice(0, 180))}</div>` : ''}
+          ${(p.llm?.ai_wording?.wait_rationale) ? `<div class="pred-verdict-rationale" style="color:#8fa8ff"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(p.llm.ai_wording.wait_rationale)}</div>` : waitRationale ? `<div class="pred-verdict-rationale">${waitRationale}</div>` : ''}
+          ${(p.llm?.ai_wording?.high_confidence_rationale) ? `<div class="pred-verdict-rationale" style="color:#8fa8ff"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(p.llm.ai_wording.high_confidence_rationale)}</div>` : hcRationale ? `<div class="pred-verdict-rationale">${hcRationale}</div>` : ''}
+          ${(p.llm?.ai_wording?.primary_rationale) ? `<div class="pred-verdict-rationale" style="color:#8fa8ff"><span style="font-weight:700">✨ AI:</span> ${escapeHtml(p.llm.ai_wording.primary_rationale)}</div>` : ratPrimary ? `<div class="pred-verdict-rationale">${ratPrimary}</div>` : ''}
+          ${llmNotes ? `
+            <div class="ai-insights-block" style="margin-top:12px;padding:12px;border-radius:8px;background:rgba(143,168,255,0.08);border:1px solid rgba(143,168,255,0.2);">
+              <div style="font-size:11px;font-weight:700;color:#8fa8ff;margin-bottom:6px;display:flex;align-items:center;gap:6px;">
+                <span>🧠 AI MARKET ANALYSIS</span>
+                <span style="font-size:9px;padding:2px 6px;border-radius:4px;background:rgba(143,168,255,0.15);">${escapeHtml((llmRegime || 'Mixed Regime').replace(/_/g, ' '))}</span>
+              </div>
+              <div style="font-size:12px;color:var(--color-text);line-height:1.5;white-space:pre-wrap;">${escapeHtml(llmNotes)}</div>
+            </div>` : ''}
           <div class="pred-verdict-bar-wrap">
             <div class="pred-verdict-bar-fill ${verdictDir}" style="width:${p.confidence}%"></div>
           </div>
@@ -10978,7 +11424,27 @@
         const sideColor = ki.side === 'YES' ? 'var(--color-green)' : ki.side === 'NO' ? 'var(--color-red)' : 'var(--color-orange)';
         const sideBg = ki.side === 'YES' ? 'rgba(0,200,100,0.18)' : ki.side === 'NO' ? 'rgba(220,60,60,0.18)' : 'transparent';
         const actionLabel = isTrade ? '🟢 TRADE' : isExit ? '🔴 EXIT' : isHold ? '⏳ HOLD' : '👁 WATCH';
-        const strikeLabel = (() => { const m = ki.contractTicker?.match(/T(\d+(?:\.\d+)?)$/); return m ? 'T' + Number(m[1]).toLocaleString() : ''; })();
+        const strikeLabel = (() => { const m = ki.contractTicker?.match(/T(\d+(?:\.\d+)?)$/); return m ? 'T' + Number(m[1]).toLocaleString() : '';   // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
         const liveSecsLeft = ki.closeTimeMs ? Math.max(0, (ki.closeTimeMs - Date.now()) / 1000) : null;
         const fmtSecsLeft = s => s == null ? null : s < 60 ? Math.round(s) + 's' : (s / 60).toFixed(1) + 'm';
         const minsStr = fmtSecsLeft(liveSecsLeft);
@@ -12811,7 +13277,27 @@
         fb.src = `https://cdn.jsdelivr.net/gh/atomiclabs/cryptocurrency-icons/128/color/${sym.toLowerCase()}.png`;
       };
     });
-  })();
+    // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
 
   // ── Staggered boot — unlock nav immediately, populate panels as data arrives ──
   // Set _fetchAttempted now so render() never blocks on the loading screen gate.
@@ -12914,7 +13400,27 @@
     } catch (err) {
       console.warn('[Birdeye] Error loading API key:', err.message);
     }
-  })();
+    // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
 
   // ── Initialize Adaptive Tuning Modules ────────────────────────────
   (function initializeAdaptiveModules() {
@@ -13043,7 +13549,27 @@
     } catch (err) {
       console.warn('[App] Failed to initialize adaptive modules:', err.message);
     }
-  })();
+    // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
 
   // ── Initialize Blockchain Research Agent ──────────────────────────
   (async function initializeResearchAgent() {
@@ -13055,7 +13581,27 @@
     } catch (err) {
       console.warn('[App] Failed to initialize research agent:', err.message);
     }
-  })();
+    // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
+})();
 
   // ── KalshiDebug console API ──────────────────────────────────────
   // Accessible from DevTools console for live inspection.
@@ -13164,4 +13710,25 @@
   };
   console.log('[ContractCacheDebug] API ready — ContractCacheDebug.status() .accuracy() .byCoins() .recent(minutes)');
 
+  // =========================================================================
+  // RL Weights Synchronization
+  // =========================================================================
+  setTimeout(() => {
+    if (window.wecryp?.getSystemWeights) {
+      window.wecryp.getSystemWeights()
+        .then(res => {
+          if (res.success && res.weights) {
+            console.log('[RL Loop] ?? Fetched system_weights from Firebase on startup');
+            if (window.PredictionMarkets?.setAdaptiveWeights) {
+              const symbols = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP']; 
+              symbols.forEach(sym => {
+                window.PredictionMarkets.setAdaptiveWeights(sym, res.weights);
+              });
+            }
+          }
+        })
+        .catch(err => console.warn('[RL Loop] Failed to sync startup weights:', err));
+    }
+  }, 3000); 
 })();
+

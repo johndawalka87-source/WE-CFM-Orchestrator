@@ -275,6 +275,11 @@
   // ── Core fetch ───────────────────────────────────────────────────────────────
   window.proxyFetch = async function (url, options = {}) {
     await initOnce();
+    try {
+      const isGecko = /coingecko/i.test(String(url));
+      if (isGecko && typeof window.coinGeckoUrl === 'function') url = window.coinGeckoUrl(url);
+      if (isGecko && typeof window.withCoinGeckoAuth === 'function') options = window.withCoinGeckoAuth(url, options);
+    } catch (_) { }
 
     const maxAttempts = Number.isFinite(options.retries) ? Math.max(1, options.retries) : 3;
     let lastErr = null;

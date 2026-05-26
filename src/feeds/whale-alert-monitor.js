@@ -84,7 +84,13 @@
       if (API_KEY) url.searchParams.set('api_key', API_KEY);
 
       const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 8000);
+      const tid = setTimeout(() => {
+        try {
+          ctrl.abort(new DOMException('Whale Alert fetch timed out after 8000ms', 'TimeoutError'));
+        } catch (_) {
+          try { ctrl.abort(); } catch (_) { }
+        }
+      }, 8000);
 
       const res = await fetch(url.toString(), { signal: ctrl.signal });
       clearTimeout(tid);

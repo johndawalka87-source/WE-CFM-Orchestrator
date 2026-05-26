@@ -502,12 +502,20 @@ Use this recall only as context, and prioritize current market snapshot data if 
         ? raw.suggestions.issues.map(String).filter(w => w.length > 0)
         : [];
 
+    const ai_wording = raw.ai_wording || {
+      primary_rationale: "",
+      wait_rationale: "",
+      high_confidence_rationale: "",
+      scalp_setups: []
+    };
+
     return {
       regime,
       confidence,
       suggestions,
       warnings,
       analysis: raw.analysis || {},
+      ai_wording,
     };
   }
 

@@ -215,7 +215,13 @@
             const run = (async () => {
                 const fetchSource = async (source) => {
                     const ctrl = new AbortController();
-                    const timeoutId = setTimeout(() => ctrl.abort(), 2500);
+                    const timeoutId = setTimeout(() => {
+                        try {
+                            ctrl.abort(new DOMException('Async refresh fetch timed out after 2500ms', 'TimeoutError'));
+                        } catch (_) {
+                            try { ctrl.abort(); } catch (_) { }
+                        }
+                    }, 2500);
                     try {
                         const res = await fetch(source.url, { signal: ctrl.signal });
                         if (!res.ok) throw new Error(`${source.name} HTTP ${res.status}`);
@@ -475,7 +481,9 @@
 
                     nextRunAt = this.nextAlignedAt(5_000, nextRunAt + 5_000);
                 } catch (err) {
-                    console.warn(`[Stream:KalshiBalance] Error:`, err.message);
+                    if (!String(err?.message || err).includes('Electron IPC not available')) {
+                        console.warn(`[Stream:KalshiBalance] Error:`, err.message);
+                    }
                     this.setStreamState(streamId, {
                         status: 'error',
                         cycle,

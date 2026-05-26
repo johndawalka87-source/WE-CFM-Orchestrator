@@ -100,35 +100,135 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
     COINBASE: 'COINBASE',
     KRAKEN: 'KRAKEN',
     BYBIT: 'BYBIT',
+    HYPERLIQUID: 'HYPERLIQUID',
     OKX: 'OKX',
     KUCOIN: 'KUCOIN',
     GATE: 'GATE',
+    UPBIT: 'UPBIT',
+    BITGET: 'BITGET',
+    BINGX: 'BINGX',
+    BITVAVO: 'BITVAVO',
+    GEMINI: 'GEMINI',
+    COINW: 'COINW',
+    LBANK: 'LBANK',
+    BITSTAMP: 'BITSTAMP',
+    BITSO: 'BITSO',
+    BULLISH: 'BULLISH',
+    WHITEBIT: 'WHITEBIT',
+    OURBIT: 'OURBIT',
+    WEEX: 'WEEX'
+  };
+
+  const PROVIDER_PROFILE = {
+    BINANCE: { marketType: 'spot', venueType: 'cex' },
+    COINBASE: { marketType: 'spot', venueType: 'cex' },
+    KRAKEN: { marketType: 'spot', venueType: 'cex' },
+    BYBIT: { marketType: 'spot', venueType: 'cex' },
+    HYPERLIQUID: { marketType: 'perps', venueType: 'dex' },
+    OKX: { marketType: 'spot', venueType: 'cex' },
+    KUCOIN: { marketType: 'spot', venueType: 'cex' },
+    GATE: { marketType: 'spot', venueType: 'cex' },
+    UPBIT: { marketType: 'spot', venueType: 'cex' },
+    BITGET: { marketType: 'spot', venueType: 'cex' },
+    BINGX: { marketType: 'spot_derivatives', venueType: 'cex' },
+    BITVAVO: { marketType: 'spot', venueType: 'cex' },
+    GEMINI: { marketType: 'spot', venueType: 'cex' },
+    COINW: { marketType: 'spot_futures', venueType: 'cex' },
+    LBANK: { marketType: 'spot', venueType: 'cex' },
+    BITSTAMP: { marketType: 'spot', venueType: 'cex' },
+    BITSO: { marketType: 'spot', venueType: 'cex' },
+    BULLISH: { marketType: 'spot', venueType: 'cex' },
+    WHITEBIT: { marketType: 'spot', venueType: 'cex' },
+    OURBIT: { marketType: 'spot_derivatives', venueType: 'cex' },
+    WEEX: { marketType: 'spot', venueType: 'cex' },
   };
 
   const MAP = {
     BINANCE: { BTC: 'btcusdt', ETH: 'ethusdt', SOL: 'solusdt', XRP: 'xrpusdt', BNB: 'bnbusdt', DOGE: 'dogeusdt', HYPE: 'hypeusdt' },
     COINBASE: { BTC: 'BTC-USD', ETH: 'ETH-USD', SOL: 'SOL-USD', XRP: 'XRP-USD', DOGE: 'DOGE-USD' },
-    KRAKEN: { BTC: 'XBT/USDT', ETH: 'ETH/USDT', SOL: 'SOL/USDT', XRP: 'XRP/USDT', DOGE: 'DOGE/USDT' },
+    KRAKEN: { BTC: 'BTC/USD', ETH: 'ETH/USD', SOL: 'SOL/USD', XRP: 'XRP/USD', DOGE: 'DOGE/USD' },
     BYBIT: { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', BNB: 'BNBUSDT', DOGE: 'DOGEUSDT' },
+    HYPERLIQUID: { BTC: 'BTC', ETH: 'ETH', SOL: 'SOL', XRP: 'XRP', DOGE: 'DOGE', HYPE: 'HYPE' },
     OKX: { BTC: 'BTC-USDT', ETH: 'ETH-USDT', SOL: 'SOL-USDT', XRP: 'XRP-USDT', BNB: 'BNB-USDT', DOGE: 'DOGE-USDT' },
     KUCOIN: { BTC: 'BTC-USDT', ETH: 'ETH-USDT', SOL: 'SOL-USDT', XRP: 'XRP-USDT', BNB: 'BNB-USDT', DOGE: 'DOGE-USDT' },
     GATE: { BTC: 'BTC_USDT', ETH: 'ETH_USDT', SOL: 'SOL_USDT', XRP: 'XRP_USDT', BNB: 'BNB_USDT', DOGE: 'DOGE_USDT' },
+    UPBIT: { BTC: 'USDT-BTC', ETH: 'USDT-ETH', SOL: 'USDT-SOL', XRP: 'USDT-XRP', DOGE: 'USDT-DOGE' }, // USDT pairs
+    BITGET: { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', BNB: 'BNBUSDT', DOGE: 'DOGEUSDT', HYPE: 'HYPEUSDT' },
+    BINGX: { BTC: 'BTC-USDT', ETH: 'ETH-USDT', SOL: 'SOL-USDT', XRP: 'XRP-USDT', BNB: 'BNB-USDT', DOGE: 'DOGE-USDT', HYPE: 'HYPE-USDT' },
+    BITVAVO: { BTC: 'BTC-EUR', ETH: 'ETH-EUR', SOL: 'SOL-EUR', XRP: 'XRP-EUR', DOGE: 'DOGE-EUR' },
+    GEMINI: { BTC: 'BTCUSD', ETH: 'ETHUSD', SOL: 'SOLUSD', XRP: 'XRPUSD', DOGE: 'DOGEUSD' },
+    COINW: { BTC: 'BTC_USDT', ETH: 'ETH_USDT', SOL: 'SOL_USDT', XRP: 'XRP_USDT', DOGE: 'DOGE_USDT' },
+    LBANK: { BTC: 'btc_usdt', ETH: 'eth_usdt', SOL: 'sol_usdt', XRP: 'xrp_usdt', DOGE: 'doge_usdt' },
+    BITSTAMP: { BTC: 'btcusd', ETH: 'ethusd', SOL: 'solusd', XRP: 'xrpusd' }, // Bitstamp uses lowercase no separator
+    BITSO: { BTC: 'btc_usd', ETH: 'eth_usd', SOL: 'sol_usd', XRP: 'xrp_usd', DOGE: 'doge_usd' },
+    BULLISH: { BTC: 'BTCUSD', ETH: 'ETHUSD', SOL: 'SOLUSD', XRP: 'XRPUSD', DOGE: 'DOGEUSD' },
+    [PROVIDERS.WHITEBIT]: { BTC: 'BTC_USDT', ETH: 'ETH_USDT', SOL: 'SOL_USDT', XRP: 'XRP_USDT', DOGE: 'DOGE_USDT' },
+    [PROVIDERS.OURBIT]: { BTC: 'BTC-USDT', ETH: 'ETH-USDT', SOL: 'SOL-USDT', XRP: 'XRP-USDT', DOGE: 'DOGE-USDT' },
+    [PROVIDERS.WEEX]: { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', DOGE: 'DOGEUSDT' }
   };
 
+  const TRACKED_COINS = new Set(COINS);
+  for (const provider of Object.keys(MAP)) {
+    const filtered = {};
+    const source = MAP[provider] || {};
+    for (const [sym, pair] of Object.entries(source)) {
+      if (TRACKED_COINS.has(sym)) filtered[sym] = pair;
+    }
+    MAP[provider] = filtered;
+  }
+
   function now() { return Date.now(); }
+
+  function getProviderProfile(provider) {
+    return PROVIDER_PROFILE[provider] || { marketType: 'unknown', venueType: 'unknown' };
+  }
+
+  function getProviderPair(provider, sym) {
+    return MAP?.[provider]?.[sym] || null;
+  }
+
+  function applyMarketStructure(snap) {
+    const bid = parseNum(snap.bid);
+    const ask = parseNum(snap.ask);
+    const price = parseNum(snap.price);
+    const hasBook = Number.isFinite(bid) && Number.isFinite(ask) && ask > 0 && bid > 0 && ask >= bid;
+    const mid = hasBook ? (bid + ask) / 2 : (Number.isFinite(price) ? price : null);
+    const spreadAbs = hasBook ? Math.max(ask - bid, 0) : null;
+    const spreadBps = hasBook && mid > 0 ? (spreadAbs / mid) * 10000 : null;
+    const profile = getProviderProfile(snap.provider);
+
+    snap.mid = mid;
+    snap.spreadAbs = spreadAbs;
+    snap.spreadBps = spreadBps;
+    snap.marketType = profile.marketType;
+    snap.venueType = profile.venueType;
+    snap.pair = getProviderPair(snap.provider, snap.sym);
+    snap.tradeImbalance = parseNum(snap.buyPct) != null && parseNum(snap.sellPct) != null
+      ? (snap.buyPct - snap.sellPct) / 100
+      : 0;
+    return snap;
+  }
 
   function ensureSnapshot(provider, sym) {
     if (!STORE[provider]) STORE[provider] = {};
     if (!STORE[provider][sym]) {
+      const profile = getProviderProfile(provider);
       STORE[provider][sym] = {
         sym,
         provider,
+        pair: getProviderPair(provider, sym),
+        marketType: profile.marketType,
+        venueType: profile.venueType,
         price: null,
         bid: null,
         ask: null,
+        mid: null,
+        spreadAbs: null,
+        spreadBps: null,
         vol24h: null,
         buyPct: 50,
         sellPct: 50,
+        tradeImbalance: 0,
         ts: 0,
         tradeTs: 0,
         trades: [], // { ts, qty, buy }
@@ -179,7 +279,7 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
     if (patch.ask != null) snap.ask = patch.ask;
     if (patch.vol24h != null) snap.vol24h = patch.vol24h;
     snap.ts = patch.ts || now();
-    return snap;
+    return applyMarketStructure(snap);
   }
 
   function updateTrade(provider, sym, trade) {
@@ -192,7 +292,7 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
     snap.tradeTs = ts;
     if (trade.price != null && trade.price > 0) snap.price = trade.price;
     snap.ts = ts;
-    return snap;
+    return applyMarketStructure(snap);
   }
 
   function conn(name) {
@@ -317,22 +417,34 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
     const c = conn(name);
     if (!c.active) return;
     if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
-    c.ws = new WebSocket('wss://ws-feed.exchange.coinbase.com');
+    c.ws = new WebSocket('wss://advanced-trade-ws.coinbase.com');
     c.ws.onopen = () => {
       c.reconnectMs = RECONNECT_BASE_MS;
       recordSuccess('COINBASE');
       const products = Object.values(MAP.COINBASE);
-      c.ws.send(JSON.stringify({
-        type: 'subscribe',
-        product_ids: products,
-        channels: ['ticker', 'matches'],
-      }));
+      c.ws.send(JSON.stringify({ type: 'subscribe', channel: 'ticker', product_ids: products }));
     };
     c.ws.onmessage = (ev) => {
       recordSuccess('COINBASE');
       let msg;
       try { msg = JSON.parse(ev.data); } catch (_) { return; }
-      const productId = msg.product_id;
+      if (msg.channel === 'ticker' && Array.isArray(msg.events)) {
+        for (const event of msg.events) {
+          for (const t of (event.tickers || [])) {
+            const sym = Object.keys(MAP.COINBASE).find(k => MAP.COINBASE[k] === t.product_id);
+            if (!sym) continue;
+            updateTicker(PROVIDERS.COINBASE, sym, {
+              price: parseNum(t.price),
+              bid: parseNum(t.best_bid),
+              ask: parseNum(t.best_ask),
+              vol24h: parseNum(t.volume_24_h),
+              ts: now(),
+            });
+          }
+        }
+        return;
+      }
+      const productId = msg.product_id || msg.productId;
       if (!productId) return;
       const sym = Object.keys(MAP.COINBASE).find(k => MAP.COINBASE[k] === productId);
       if (!sym) return;
@@ -344,10 +456,10 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
           vol24h: parseNum(msg.volume_24h),
           ts: now(),
         });
-      } else if (msg.type === 'match' || msg.type === 'last_match') {
+      } else if (msg.type === 'match' || msg.type === 'last_match' || msg.type === 'trade') {
         updateTrade(PROVIDERS.COINBASE, sym, {
           buy: msg.side === 'buy',
-          qty: parseNum(msg.size) || 0,
+          qty: parseNum(msg.size || msg.quantity) || 0,
           price: parseNum(msg.price),
           ts: msg.time ? Date.parse(msg.time) || now() : now(),
         });
@@ -363,21 +475,47 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
     const c = conn(name);
     if (!c.active) return;
     if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
-    c.ws = new WebSocket('wss://ws.kraken.com');
+    c.ws = new WebSocket('wss://ws.kraken.com/v2');
     c.ws.onopen = () => {
       c.reconnectMs = RECONNECT_BASE_MS;
       recordSuccess('KRAKEN');
       const pairs = Object.values(MAP.KRAKEN);
-      c.ws.send(JSON.stringify({ event: 'subscribe', pair: pairs, subscription: { name: 'ticker' } }));
-      c.ws.send(JSON.stringify({ event: 'subscribe', pair: pairs, subscription: { name: 'trade' } }));
+      c.ws.send(JSON.stringify({ method: 'subscribe', params: { channel: 'ticker', symbol: pairs } }));
+      c.ws.send(JSON.stringify({ method: 'subscribe', params: { channel: 'trade', symbol: pairs } }));
     };
     c.ws.onmessage = (ev) => {
       recordSuccess('KRAKEN');
       let msg;
       try { msg = JSON.parse(ev.data); } catch (_) { return; }
-      if (!Array.isArray(msg) || msg.length < 4) return;
-      const channel = msg[2];
-      const pair = msg[3];
+      if (Array.isArray(msg) && msg.length >= 3) {
+        const channel = msg[1];
+        const pair = msg[2];
+        const sym = Object.keys(MAP.KRAKEN).find(k => MAP.KRAKEN[k] === pair);
+        if (!sym) return;
+        if (channel === 'ticker') {
+          const d = msg[0] || {};
+          updateTicker(PROVIDERS.KRAKEN, sym, {
+            price: parseNum(d.c?.[0] || d.last || d.price),
+            bid: parseNum(d.b?.[0] || d.bid),
+            ask: parseNum(d.a?.[0] || d.ask),
+            vol24h: parseNum(d.v?.[1] || d.volume || d.vol24h),
+            ts: now(),
+          });
+        } else if (channel === 'trade') {
+          const rows = Array.isArray(msg[0]) ? msg[0] : [];
+          for (const t of rows) {
+            updateTrade(PROVIDERS.KRAKEN, sym, {
+              buy: String(t?.[3] || '').toLowerCase() === 'b',
+              qty: parseNum(t?.[1]) || 0,
+              price: parseNum(t?.[0]),
+              ts: t?.[2] ? Math.floor(parseFloat(t[2]) * 1000) : now(),
+            });
+          }
+        }
+        return;
+      }
+      const channel = msg.channel || msg.type;
+      const pair = msg.symbol || msg.pair;
       const sym = Object.keys(MAP.KRAKEN).find(k => MAP.KRAKEN[k] === pair);
       if (!sym) return;
       if (channel === 'ticker') {
@@ -451,6 +589,184 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
       }
     };
     bindCloseReconnect(name, connectBybit);
+  }
+
+  // ─────────────────────── Hyperliquid (DEX Perps) ────────────────────────
+  function connectHyperliquid() {
+    if (isProviderDisabled('HYPERLIQUID')) return;
+    const name = 'HYPERLIQUID';
+    const c = conn(name);
+    if (!c.active) return;
+    if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
+    c.ws = new WebSocket('wss://api.hyperliquid.xyz/ws');
+    c.ws.onopen = () => {
+      c.reconnectMs = RECONNECT_BASE_MS;
+      recordSuccess('HYPERLIQUID');
+      c.ws.send(JSON.stringify({ method: 'subscribe', subscription: { type: 'allMids' } }));
+      for (const coin of Object.values(MAP.HYPERLIQUID)) {
+        c.ws.send(JSON.stringify({ method: 'subscribe', subscription: { type: 'l2Book', coin } }));
+        c.ws.send(JSON.stringify({ method: 'subscribe', subscription: { type: 'trades', coin } }));
+      }
+    };
+    c.ws.onmessage = (ev) => {
+      recordSuccess('HYPERLIQUID');
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      const channel = String(msg?.channel || msg?.subscription?.type || msg?.type || '').toLowerCase();
+      const payload = msg?.data || {};
+
+      const mids = payload?.mids || (channel.includes('allmids') ? payload : null);
+      if (mids && typeof mids === 'object') {
+        for (const [coin, midPx] of Object.entries(mids)) {
+          const sym = Object.keys(MAP.HYPERLIQUID).find(k => MAP.HYPERLIQUID[k] === coin || k === String(coin).toUpperCase());
+          if (!sym) continue;
+          updateTicker(PROVIDERS.HYPERLIQUID, sym, { price: parseNum(midPx), ts: now() });
+        }
+      }
+
+      if (channel.includes('l2book') || payload?.levels) {
+        const coin = payload?.coin || msg?.coin || msg?.subscription?.coin;
+        const sym = Object.keys(MAP.HYPERLIQUID).find(k => MAP.HYPERLIQUID[k] === coin || k === String(coin || '').toUpperCase());
+        if (sym) {
+          const levels = payload?.levels || [];
+          const bids = Array.isArray(levels[0]) ? levels[0] : [];
+          const asks = Array.isArray(levels[1]) ? levels[1] : [];
+          const topBid = bids[0] || {};
+          const topAsk = asks[0] || {};
+          const bid = parseNum(topBid.px ?? topBid[0]);
+          const ask = parseNum(topAsk.px ?? topAsk[0]);
+          const mid = Number.isFinite(bid) && Number.isFinite(ask) ? (bid + ask) / 2 : null;
+          updateTicker(PROVIDERS.HYPERLIQUID, sym, { bid, ask, price: mid, ts: now() });
+        }
+      }
+
+      if (channel.includes('trade')) {
+        const coin = payload?.coin || msg?.coin || msg?.subscription?.coin;
+        const sym = Object.keys(MAP.HYPERLIQUID).find(k => MAP.HYPERLIQUID[k] === coin || k === String(coin || '').toUpperCase());
+        if (!sym) return;
+        const rows = Array.isArray(payload?.trades) ? payload.trades : (Array.isArray(payload) ? payload : []);
+        for (const t of rows) {
+          const side = String(t?.side || '').toLowerCase();
+          const ts = parseNum(t?.time);
+          updateTrade(PROVIDERS.HYPERLIQUID, sym, {
+            buy: side === 'buy' || side === 'bid' || side === 'b',
+            qty: parseNum(t?.sz ?? t?.size ?? t?.amount) || 0,
+            price: parseNum(t?.px ?? t?.price),
+            ts: Number.isFinite(ts) ? (ts < 1e12 ? ts * 1000 : ts) : now(),
+          });
+        }
+      }
+    };
+    bindCloseReconnect(name, connectHyperliquid);
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // OURBIT
+  // ────────────────────────────────────────────────────────────────────────
+  function connectOurbit() {
+    if (isProviderDisabled('OURBIT')) return;
+    const name = 'OURBIT';
+    const c = conn('OURBIT');
+    if (!c.active) return;
+    if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
+
+    c.ws = new WebSocket('wss://ws.ourbit.com/ws');
+    c.ws.onopen = () => {
+      c.reconnectMs = RECONNECT_BASE_MS;
+      recordSuccess('OURBIT');
+      const pairs = Object.values(MAP[PROVIDERS.OURBIT]);
+      pairs.forEach(p => {
+        c.ws.send(JSON.stringify({ op: 'subscribe', args: [`ticker:${p}`] }));
+        c.ws.send(JSON.stringify({ op: 'subscribe', args: [`trade:${p}`] }));
+      });
+      c.extra.pingTimer = setInterval(() => {
+        if (c.ws && c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify({ op: 'ping' }));
+      }, 20000);
+    };
+    c.ws.onmessage = (ev) => {
+      recordSuccess('OURBIT');
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      if (msg.event === 'pong') return;
+
+      if (msg.topic && msg.topic.startsWith('ticker:')) {
+        const pair = msg.topic.split(':')[1];
+        const sym = Object.keys(MAP[PROVIDERS.OURBIT]).find(k => MAP[PROVIDERS.OURBIT][k] === pair);
+        if (sym && msg.data) {
+          updateTicker(PROVIDERS.OURBIT, sym, { price: parseNum(msg.data.lastPrice), vol24h: parseNum(msg.data.volume24h), bid: parseNum(msg.data.bestBid), ask: parseNum(msg.data.bestAsk), ts: now() });
+        }
+      } else if (msg.topic && msg.topic.startsWith('trade:')) {
+        const pair = msg.topic.split(':')[1];
+        const sym = Object.keys(MAP[PROVIDERS.OURBIT]).find(k => MAP[PROVIDERS.OURBIT][k] === pair);
+        if (sym && msg.data) {
+          const arr = Array.isArray(msg.data) ? msg.data : [msg.data];
+          arr.forEach(t => {
+            updateTrade(PROVIDERS.OURBIT, sym, { buy: t.side === 'buy', qty: parseNum(t.size), price: parseNum(t.price), ts: t.time || now() });
+          });
+        }
+      }
+    };
+    bindCloseReconnect(name, connectOurbit);
+    const origClose = c.ws.onclose;
+    c.ws.onclose = (ev) => {
+      if (c.extra.pingTimer) clearInterval(c.extra.pingTimer);
+      c.extra.pingTimer = null;
+      if (origClose) origClose(ev);
+    };
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // WEEX
+  // ────────────────────────────────────────────────────────────────────────
+  function connectWeex() {
+    if (isProviderDisabled('WEEX')) return;
+    const name = 'WEEX';
+    const c = conn('WEEX');
+    if (!c.active) return;
+    if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
+
+    c.ws = new WebSocket('wss://ws-spot.weex.com/v3/ws/public');
+    c.ws.onopen = () => {
+      c.reconnectMs = RECONNECT_BASE_MS;
+      recordSuccess('WEEX');
+      const pairs = Object.values(MAP[PROVIDERS.WEEX]);
+      pairs.forEach(p => {
+        c.ws.send(JSON.stringify({ method: 'SUBSCRIBE', params: [`${p}@ticker`], id: 1 }));
+        c.ws.send(JSON.stringify({ method: 'SUBSCRIBE', params: [`${p}@trade`], id: 2 }));
+      });
+    };
+    c.ws.onmessage = (ev) => {
+      recordSuccess('WEEX');
+      let msg;
+      if (typeof ev.data === 'string' && ev.data === 'ping') {
+        c.ws.send(JSON.stringify({ method: 'PONG', id: 1 }));
+        return;
+      }
+      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      
+      if (msg.event === 'ping') {
+        c.ws.send(JSON.stringify({ method: 'PONG', id: 1 }));
+        return;
+      }
+
+      if (msg.ch && msg.ch.endsWith('@ticker')) {
+        const pair = msg.ch.split('@')[0];
+        const sym = Object.keys(MAP[PROVIDERS.WEEX]).find(k => MAP[PROVIDERS.WEEX][k] === pair);
+        if (sym && msg.data) {
+          updateTicker(PROVIDERS.WEEX, sym, { price: parseNum(msg.data.c), vol24h: parseNum(msg.data.v), ts: now() });
+        }
+      } else if (msg.ch && msg.ch.endsWith('@trade')) {
+        const pair = msg.ch.split('@')[0];
+        const sym = Object.keys(MAP[PROVIDERS.WEEX]).find(k => MAP[PROVIDERS.WEEX][k] === pair);
+        if (sym && msg.data) {
+          const arr = Array.isArray(msg.data) ? msg.data : [msg.data];
+          arr.forEach(t => {
+            updateTrade(PROVIDERS.WEEX, sym, { buy: t.S === '1', qty: parseNum(t.v), price: parseNum(t.p), ts: t.t || now() });
+          });
+        }
+      }
+    };
+    bindCloseReconnect(name, connectWeex);
   }
 
   // ───────────────────────── OKX ──────────────────────────────
@@ -630,6 +946,450 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
     bindCloseReconnect(name, connectGate);
   }
 
+  // ───────────────────────── Upbit ──────────────────────────────
+  function connectUpbit() {
+    if (isProviderDisabled('UPBIT')) return;
+    const name = 'UPBIT';
+    const c = conn(name);
+    if (!c.active) return;
+    if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
+    c.ws = new WebSocket('wss://api.upbit.com/websocket/v1');
+    c.ws.onopen = () => {
+      c.reconnectMs = RECONNECT_BASE_MS;
+      recordSuccess('UPBIT');
+      const codes = Object.values(MAP.UPBIT);
+      c.ws.send(JSON.stringify([
+        { ticket: "wecrypto" },
+        { type: "ticker", codes, isOnlyRealtime: true },
+        { type: "trade", codes, isOnlyRealtime: true }
+      ]));
+    };
+    c.ws.onmessage = async (ev) => {
+      recordSuccess('UPBIT');
+      let text;
+      try {
+        if (ev.data instanceof Blob) text = await ev.data.text();
+        else text = ev.data;
+      } catch (_) { return; }
+      let msg;
+      try { msg = JSON.parse(text); } catch (_) { return; }
+      
+      const code = msg?.code;
+      if (!code) return;
+      const sym = Object.keys(MAP.UPBIT).find(k => MAP.UPBIT[k] === code);
+      if (!sym) return;
+
+      if (msg.type === 'ticker') {
+        updateTicker(PROVIDERS.UPBIT, sym, {
+          price: parseNum(msg.trade_price),
+          bid: null,
+          ask: null,
+          vol24h: parseNum(msg.acc_trade_volume_24h),
+          ts: msg.timestamp || now(),
+        });
+      } else if (msg.type === 'trade') {
+        updateTrade(PROVIDERS.UPBIT, sym, {
+          buy: msg.ask_bid === 'BID',
+          qty: parseNum(msg.trade_volume) || 0,
+          price: parseNum(msg.trade_price),
+          ts: msg.timestamp || now(),
+        });
+      }
+    };
+    bindCloseReconnect(name, connectUpbit);
+  }
+
+  // ───────────────────────── Bitget ─────────────────────────────
+  function connectBitget() {
+    if (isProviderDisabled('BITGET')) return;
+    const name = 'BITGET';
+    const c = conn(name);
+    if (!c.active) return;
+    if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
+    c.ws = new WebSocket('wss://ws.bitget.com/v2/ws/public');
+    c.ws.onopen = () => {
+      c.reconnectMs = RECONNECT_BASE_MS;
+      recordSuccess('BITGET');
+      const args = Object.values(MAP.BITGET).map(s => ({ instType: 'SPOT', channel: 'ticker', instId: s }));
+      const argsTrade = Object.values(MAP.BITGET).map(s => ({ instType: 'SPOT', channel: 'trade', instId: s }));
+      c.ws.send(JSON.stringify({ op: 'subscribe', args: [...args, ...argsTrade] }));
+      
+      if (c.extra.pingTimer) clearInterval(c.extra.pingTimer);
+      c.extra.pingTimer = setInterval(() => {
+        try { if (c.ws?.readyState === WebSocket.OPEN) c.ws.send('ping'); } catch (_) { }
+      }, 30000);
+    };
+    c.ws.onmessage = (ev) => {
+      recordSuccess('BITGET');
+      if (ev.data === 'pong') return;
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      const arg = msg?.arg || {};
+      const instId = arg.instId;
+      if (!instId) return;
+      const sym = Object.keys(MAP.BITGET).find(k => MAP.BITGET[k] === instId);
+      if (!sym) return;
+      
+      const rows = Array.isArray(msg?.data) ? msg.data : [];
+      if (arg.channel === 'ticker') {
+        const d = rows[0] || {};
+        updateTicker(PROVIDERS.BITGET, sym, {
+          price: parseNum(d.lastPr),
+          bid: parseNum(d.bidPr),
+          ask: parseNum(d.askPr),
+          vol24h: parseNum(d.baseVolume),
+          ts: parseNum(d.ts) || now(),
+        });
+      } else if (arg.channel === 'trade') {
+        for (const d of rows) {
+          updateTrade(PROVIDERS.BITGET, sym, {
+            buy: String(d.side || '').toLowerCase() === 'buy',
+            qty: parseNum(d.size) || 0,
+            price: parseNum(d.price),
+            ts: parseNum(d.ts) || now(),
+          });
+        }
+      }
+    };
+    bindCloseReconnect(name, connectBitget);
+  }
+
+  // ───────────────────────── BingX ──────────────────────────────
+  function connectBingX() {
+    if (isProviderDisabled('BINGX')) return;
+    const name = 'BINGX';
+    const c = conn(name);
+    if (!c.active) return;
+    if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
+    c.ws = new WebSocket('wss://open-api-ws.bingx.com/market');
+    c.ws.onopen = () => {
+      c.reconnectMs = RECONNECT_BASE_MS;
+      recordSuccess('BINGX');
+      const symbols = Object.values(MAP.BINGX);
+      for (const s of symbols) {
+        c.ws.send(JSON.stringify({ id: `ticker_${s}`, reqType: "sub", dataType: `${s}@ticker` }));
+        c.ws.send(JSON.stringify({ id: `trade_${s}`, reqType: "sub", dataType: `${s}@trade` }));
+      }
+    };
+    c.ws.onmessage = (ev) => {
+      recordSuccess('BINGX');
+      let text = ev.data;
+      if (text instanceof Blob) return;
+      if (text === 'Ping') {
+        c.ws.send('Pong');
+        return;
+      }
+      let msg;
+      try { msg = JSON.parse(text); } catch (_) { return; }
+      
+      const dataType = msg?.dataType || '';
+      if (!dataType) return;
+      const pair = dataType.split('@')[0];
+      const sym = Object.keys(MAP.BINGX).find(k => MAP.BINGX[k] === pair);
+      if (!sym) return;
+      const data = msg?.data;
+      if (!data) return;
+
+      if (dataType.endsWith('@ticker')) {
+        updateTicker(PROVIDERS.BINGX, sym, {
+          price: parseNum(data.c),
+          bid: parseNum(data.b),
+          ask: parseNum(data.a),
+          vol24h: parseNum(data.v),
+          ts: parseNum(data.T) || now(),
+        });
+      } else if (dataType.endsWith('@trade')) {
+        const rows = Array.isArray(data) ? data : [data];
+        for (const t of rows) {
+          updateTrade(PROVIDERS.BINGX, sym, {
+            buy: !t.m,
+            qty: parseNum(t.q) || 0,
+            price: parseNum(t.p),
+            ts: parseNum(t.T) || now(),
+          });
+        }
+      }
+    };
+    bindCloseReconnect(name, connectBingX);
+  }
+
+  // ───────────────────────── Bitvavo ──────────────────────────
+  function connectBitvavo() {
+    if (isProviderDisabled('BITVAVO')) return;
+    const name = 'BITVAVO';
+    const c = conn(name);
+    if (!c.active) return;
+    if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
+    c.ws = new WebSocket('wss://ws.bitvavo.com/v2/');
+    c.ws.onopen = () => {
+      c.reconnectMs = RECONNECT_BASE_MS;
+      recordSuccess('BITVAVO');
+      const markets = Object.values(MAP.BITVAVO);
+      c.ws.send(JSON.stringify({ action: 'subscribe', channels: [{ name: 'ticker', markets }, { name: 'trades', markets }] }));
+    };
+    c.ws.onmessage = (ev) => {
+      recordSuccess('BITVAVO');
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      if (msg.event === 'ticker') {
+        const sym = Object.keys(MAP.BITVAVO).find(k => MAP.BITVAVO[k] === msg.market);
+        if (sym) updateTicker(PROVIDERS.BITVAVO, sym, { price: parseNum(msg.lastPrice), bid: parseNum(msg.bestBid), ask: parseNum(msg.bestAsk), vol24h: parseNum(msg.volume24h), ts: now() });
+      } else if (msg.event === 'trade') {
+        const sym = Object.keys(MAP.BITVAVO).find(k => MAP.BITVAVO[k] === msg.market);
+        if (sym) updateTrade(PROVIDERS.BITVAVO, sym, { buy: msg.side === 'buy', qty: parseNum(msg.amount), price: parseNum(msg.price), ts: msg.timestamp || now() });
+      }
+    };
+    bindCloseReconnect(name, connectBitvavo);
+  }
+
+  // ───────────────────────── Gemini ───────────────────────────
+  function connectGemini() {
+    if (isProviderDisabled('GEMINI')) return;
+    const name = 'GEMINI';
+    const c = conn(name);
+    if (!c.active) return;
+    if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
+    const symbols = Object.values(MAP.GEMINI).join(',');
+    c.ws = new WebSocket(`wss://api.gemini.com/v1/multimarketdata?symbols=${symbols}&bids=true&offers=true&trades=true`);
+    c.ws.onopen = () => {
+      c.reconnectMs = RECONNECT_BASE_MS;
+      recordSuccess('GEMINI');
+    };
+    c.ws.onmessage = (ev) => {
+      recordSuccess('GEMINI');
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      if (msg.type === 'update' && msg.events) {
+        const pair = msg.symbol || (msg.events[0] && msg.events[0].symbol);
+        if (!pair) return;
+        const sym = Object.keys(MAP.GEMINI).find(k => MAP.GEMINI[k] === pair);
+        if (!sym) return;
+        for (const e of msg.events) {
+          if (e.type === 'trade') {
+            updateTrade(PROVIDERS.GEMINI, sym, { buy: e.makerSide === 'ask', qty: parseNum(e.amount), price: parseNum(e.price), ts: msg.timestampms || now() });
+          } else if (e.type === 'change') {
+            updateTicker(PROVIDERS.GEMINI, sym, { price: parseNum(e.price), ts: msg.timestampms || now() });
+          }
+        }
+      }
+    };
+    bindCloseReconnect(name, connectGemini);
+  }
+
+  // ───────────────────────── CoinW ────────────────────────────
+  function connectCoinW() {
+    if (isProviderDisabled('COINW')) return;
+    const name = 'COINW';
+    const c = conn(name);
+    if (!c.active) return;
+    if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
+    c.ws = new WebSocket('wss://ws.futurescw.info');
+    c.ws.onopen = () => {
+      c.reconnectMs = RECONNECT_BASE_MS;
+      recordSuccess('COINW');
+      const pairs = Object.values(MAP.COINW);
+      pairs.forEach(p => c.ws.send(JSON.stringify({ cmd: 'req', args: [`ticker:${p}`, `trade:${p}`] })));
+    };
+    c.ws.onmessage = (ev) => {
+      recordSuccess('COINW');
+      // Generic fallback WS parser for CoinW undocumented streams
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      const channel = msg.ch || msg.channel || '';
+      if (!channel) return;
+      const sym = Object.keys(MAP.COINW).find(k => channel.includes(MAP.COINW[k]));
+      if (!sym) return;
+      if (channel.includes('ticker')) {
+        updateTicker(PROVIDERS.COINW, sym, { price: parseNum(msg.tick?.close || msg.data?.close), vol24h: parseNum(msg.tick?.vol || msg.data?.vol), ts: now() });
+      } else if (channel.includes('trade')) {
+        const trades = Array.isArray(msg.data) ? msg.data : (msg.tick ? [msg.tick] : []);
+        for (const t of trades) {
+          updateTrade(PROVIDERS.COINW, sym, { buy: t.direction === 'buy' || t.side === 'buy', qty: parseNum(t.amount || t.vol), price: parseNum(t.price), ts: now() });
+        }
+      }
+    };
+    bindCloseReconnect(name, connectCoinW);
+  }
+
+  // ───────────────────────── LBank ────────────────────────────
+  function connectLBank() {
+    if (isProviderDisabled('LBANK')) return;
+    const name = 'LBANK';
+    const c = conn(name);
+    if (!c.active) return;
+    if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
+    c.ws = new WebSocket('wss://www.lbkex.net/ws/V2/');
+    c.ws.onopen = () => {
+      c.reconnectMs = RECONNECT_BASE_MS;
+      recordSuccess('LBANK');
+      const pairs = Object.values(MAP.LBANK);
+      pairs.forEach(p => c.ws.send(JSON.stringify({ action: 'subscribe', subscribe: 'tick', pair: p })));
+      pairs.forEach(p => c.ws.send(JSON.stringify({ action: 'subscribe', subscribe: 'trade', pair: p })));
+    };
+    c.ws.onmessage = (ev) => {
+      recordSuccess('LBANK');
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      if (msg.type === 'tick' && msg.tick) {
+        const sym = Object.keys(MAP.LBANK).find(k => MAP.LBANK[k] === msg.pair);
+        if (sym) updateTicker(PROVIDERS.LBANK, sym, { price: parseNum(msg.tick.latest), vol24h: parseNum(msg.tick.vol), ts: now() });
+      } else if (msg.type === 'trade' && msg.trade) {
+        const sym = Object.keys(MAP.LBANK).find(k => MAP.LBANK[k] === msg.pair);
+        if (sym) updateTrade(PROVIDERS.LBANK, sym, { buy: msg.trade.direction === 'buy', qty: parseNum(msg.trade.amount), price: parseNum(msg.trade.price), ts: now() });
+      }
+    };
+    bindCloseReconnect(name, connectLBank);
+  }
+
+  // ───────────────────────── Bitstamp ─────────────────────────
+  function connectBitstamp() {
+    if (isProviderDisabled('BITSTAMP')) return;
+    const name = 'BITSTAMP';
+    const c = conn(name);
+    if (!c.active) return;
+    if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
+    c.ws = new WebSocket('wss://ws.bitstamp.net');
+    c.ws.onopen = () => {
+      c.reconnectMs = RECONNECT_BASE_MS;
+      recordSuccess('BITSTAMP');
+      const pairs = Object.values(MAP.BITSTAMP);
+      pairs.forEach(p => c.ws.send(JSON.stringify({ event: 'bts:subscribe', data: { channel: `live_trades_${p}` } })));
+    };
+    c.ws.onmessage = (ev) => {
+      recordSuccess('BITSTAMP');
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      if (msg.event === 'trade' && msg.data) {
+        const channel = msg.channel;
+        const pair = channel.replace('live_trades_', '');
+        const sym = Object.keys(MAP.BITSTAMP).find(k => MAP.BITSTAMP[k] === pair);
+        if (sym) {
+          updateTrade(PROVIDERS.BITSTAMP, sym, { buy: msg.data.type === 0, qty: parseNum(msg.data.amount), price: parseNum(msg.data.price), ts: parseNum(msg.data.microtimestamp) / 1000 || now() });
+          updateTicker(PROVIDERS.BITSTAMP, sym, { price: parseNum(msg.data.price), ts: now() });
+        }
+      }
+    };
+    bindCloseReconnect(name, connectBitstamp);
+  }
+
+  // ───────────────────────── Bitso ────────────────────────────
+  function connectBitso() {
+    if (isProviderDisabled('BITSO')) return;
+    const name = 'BITSO';
+    const c = conn(name);
+    if (!c.active) return;
+    if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
+    c.ws = new WebSocket('wss://ws.bitso.com');
+    c.ws.onopen = () => {
+      c.reconnectMs = RECONNECT_BASE_MS;
+      recordSuccess('BITSO');
+      const pairs = Object.values(MAP.BITSO);
+      pairs.forEach(p => c.ws.send(JSON.stringify({ action: 'subscribe', book: p, type: 'trades' })));
+    };
+    c.ws.onmessage = (ev) => {
+      recordSuccess('BITSO');
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      if (msg.type === 'trades' && msg.payload) {
+        const sym = Object.keys(MAP.BITSO).find(k => MAP.BITSO[k] === msg.book);
+        if (sym) {
+          msg.payload.forEach(t => {
+            updateTrade(PROVIDERS.BITSO, sym, { buy: t.maker_side === 'sell', qty: parseNum(t.amount), price: parseNum(t.rate), ts: now() });
+            updateTicker(PROVIDERS.BITSO, sym, { price: parseNum(t.rate), ts: now() });
+          });
+        }
+      }
+    };
+    bindCloseReconnect(name, connectBitso);
+  }
+
+  // ───────────────────────── Bullish ──────────────────────────
+  function connectBullish() {
+    if (isProviderDisabled('BULLISH')) return;
+    const name = 'BULLISH';
+    const c = conn(name);
+    if (!c.active) return;
+    if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
+    c.ws = new WebSocket('wss://api.exchange.bullish.com/trading-ws/v1/');
+    c.ws.onopen = () => {
+      c.reconnectMs = RECONNECT_BASE_MS;
+      recordSuccess('BULLISH');
+      const pairs = Object.values(MAP.BULLISH);
+      c.ws.send(JSON.stringify({
+        jsonrpc: '2.0',
+        type: 'command',
+        method: 'subscribe',
+        params: { topic: 'marketDataTick', symbols: pairs },
+        id: String(Date.now()),
+      }));
+    };
+    c.ws.onmessage = (ev) => {
+      recordSuccess('BULLISH');
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      const row = msg?.data || msg?.result || {};
+      const market = msg.market || row.symbol || msg.symbol;
+      const sym = Object.keys(MAP.BULLISH).find(k => MAP.BULLISH[k] === market);
+      if (!sym) return;
+      if (row) updateTicker(PROVIDERS.BULLISH, sym, {
+        price: parseNum(row.last || row.close || row.currentPrice),
+        vol24h: parseNum(row.baseVolume || row.quoteVolume),
+        bid: parseNum(row.bestBid),
+        ask: parseNum(row.bestAsk),
+        ts: parseNum(row.publishedAtTimestamp || row.createdAtTimestamp) || now(),
+      });
+    };
+    bindCloseReconnect(name, connectBullish);
+  }
+
+  // ───────────────────────── WhiteBIT ─────────────────────────
+  function connectWhiteBIT() {
+    if (isProviderDisabled('WHITEBIT')) return;
+    const name = 'WHITEBIT';
+    const c = conn(name);
+    if (!c.active) return;
+    if (c.ws && (c.ws.readyState === WebSocket.OPEN || c.ws.readyState === WebSocket.CONNECTING)) return;
+    c.ws = new WebSocket('wss://api.whitebit.com/ws');
+    c.ws.onopen = () => {
+      c.reconnectMs = RECONNECT_BASE_MS;
+      recordSuccess('WHITEBIT');
+      const pairs = Object.values(MAP[PROVIDERS.WHITEBIT]);
+      c.ws.send(JSON.stringify({ id: 1, method: 'lastprice_subscribe', params: pairs }));
+      c.ws.send(JSON.stringify({ id: 2, method: 'trades_subscribe', params: [pairs, 100] }));
+      
+      c.extra.pingTimer = setInterval(() => {
+        if (c.ws && c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify({ id: 3, method: 'ping', params: [] }));
+      }, 50000);
+    };
+    c.ws.onmessage = (ev) => {
+      recordSuccess('WHITEBIT');
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      if (msg.method === 'lastprice_update' && msg.params) {
+        const [pair, priceStr] = msg.params;
+        const sym = Object.keys(MAP[PROVIDERS.WHITEBIT]).find(k => MAP[PROVIDERS.WHITEBIT][k] === pair);
+        if (sym) updateTicker(PROVIDERS.WHITEBIT, sym, { price: parseNum(priceStr), ts: now() });
+      } else if (msg.method === 'trades_update' && msg.params) {
+        const [pair, trades] = msg.params;
+        const sym = Object.keys(MAP[PROVIDERS.WHITEBIT]).find(k => MAP[PROVIDERS.WHITEBIT][k] === pair);
+        if (sym && Array.isArray(trades)) {
+          trades.forEach(t => {
+            updateTrade(PROVIDERS.WHITEBIT, sym, { buy: t.type === 'buy', qty: parseNum(t.amount), price: parseNum(t.price), ts: t.time * 1000 || now() });
+          });
+        }
+      }
+    };
+    const origClose = c.ws.onclose;
+    c.ws.onclose = (ev) => {
+      if (c.extra.pingTimer) {
+        clearInterval(c.extra.pingTimer);
+        c.extra.pingTimer = null;
+      }
+      if (origClose) origClose(ev);
+    };
+    bindCloseReconnect(name, connectWhiteBIT);
+  }
+
   // ─────────────────── Blockchain.com mempool ───────────────────
   function connectBlockchainMempool() {
     const name = 'BLOCKCHAIN_MEMPOOL';
@@ -684,16 +1444,30 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
   }
 
   function start() {
-    for (const name of ['BINANCE', 'COINBASE', 'KRAKEN', 'BYBIT', 'OKX', 'KUCOIN', 'GATE', 'BLOCKCHAIN_MEMPOOL']) {
+    for (const name of ['BINANCE', 'COINBASE', 'KRAKEN', 'BYBIT', 'HYPERLIQUID', 'OKX', 'KUCOIN', 'GATE', 'UPBIT', 'BITGET', 'BINGX', 'BITVAVO', 'GEMINI', 'COINW', 'LBANK', 'BITSTAMP', 'BITSO', 'BULLISH', 'WHITEBIT', 'OURBIT', 'WEEX', 'BLOCKCHAIN_MEMPOOL']) {
       conn(name).active = true;
     }
     connectBinance();
     connectCoinbase();
     connectKraken();
     connectBybit();
+    connectHyperliquid();
     connectOKX();
     connectKuCoin();
     connectGate();
+    connectUpbit();
+    connectBitget();
+    connectBingX();
+    connectBitvavo();
+    connectGemini();
+    connectCoinW();
+    connectLBank();
+    connectBitstamp();
+    connectBitso();
+    connectBullish();
+    connectWhiteBIT();
+    connectOurbit();
+    connectWeex();
     connectBlockchainMempool();
     connectDexPaprikaSSE();
   }
@@ -724,14 +1498,43 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
     return {
       provider: snap.provider,
       sym: snap.sym,
+      pair: snap.pair,
+      marketType: snap.marketType,
+      venueType: snap.venueType,
       price: snap.price,
       bid: snap.bid,
       ask: snap.ask,
+      mid: snap.mid,
+      spreadAbs: snap.spreadAbs,
+      spreadBps: snap.spreadBps,
       vol24h: snap.vol24h,
       buyPct: snap.buyPct,
       sellPct: snap.sellPct,
+      tradeImbalance: snap.tradeImbalance,
       ts: snap.ts,
       tradeTs: snap.tradeTs,
+    };
+  }
+
+  function getMarketStructure(provider, sym, maxAgeMs = 20000) {
+    const snap = getTicker(provider, sym, maxAgeMs);
+    if (!snap) return null;
+    return {
+      provider: snap.provider,
+      venueType: snap.venueType,
+      marketType: snap.marketType,
+      sym: snap.sym,
+      pair: snap.pair,
+      mid: snap.mid,
+      bid: snap.bid,
+      ask: snap.ask,
+      spreadAbs: snap.spreadAbs,
+      spreadBps: snap.spreadBps,
+      vol24h: snap.vol24h,
+      buyPct: snap.buyPct,
+      sellPct: snap.sellPct,
+      tradeImbalance: snap.tradeImbalance,
+      ts: snap.ts,
     };
   }
 
@@ -741,12 +1544,19 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
     for (const [sym, snap] of Object.entries(perProvider)) {
       out[sym] = {
         sym,
+        pair: snap.pair,
+        marketType: snap.marketType,
+        venueType: snap.venueType,
         price: snap.price,
         bid: snap.bid,
         ask: snap.ask,
+        mid: snap.mid,
+        spreadAbs: snap.spreadAbs,
+        spreadBps: snap.spreadBps,
         vol24h: snap.vol24h,
         buyPct: snap.buyPct,
         sellPct: snap.sellPct,
+        tradeImbalance: snap.tradeImbalance,
         ts: snap.ts,
       };
     }
@@ -756,6 +1566,54 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
   function getMempool() {
     const ageMs = MEMPOOL.lastTxTs ? now() - MEMPOOL.lastTxTs : null;
     return { ...MEMPOOL, ageMs };
+  }
+
+  function getQualityGates(maxAgeMs = 30000) {
+    const gates = {};
+    for (const provider of Object.keys(MAP)) {
+      const expected = Object.keys(MAP[provider] || {}).filter(sym => TRACKED_COINS.has(sym));
+      const rows = STORE?.[provider] || {};
+      const stale = [];
+      const missing = [];
+      const fresh = [];
+      let withBook = 0;
+      for (const sym of expected) {
+        const snap = rows[sym];
+        if (!snap || !Number.isFinite(snap.price) || snap.price <= 0 || !snap.ts) {
+          missing.push(sym);
+          continue;
+        }
+        const ageMs = now() - snap.ts;
+        if (ageMs > maxAgeMs) {
+          stale.push(sym);
+          continue;
+        }
+        fresh.push(sym);
+        if (Number.isFinite(snap.bid) && Number.isFinite(snap.ask) && snap.ask > 0 && snap.bid > 0 && snap.ask >= snap.bid) {
+          withBook++;
+        }
+      }
+      const expectedCount = expected.length || 1;
+      const freshCount = fresh.length;
+      const staleCount = stale.length;
+      const missingCount = missing.length;
+      const coveragePct = Math.round((freshCount / expectedCount) * 100);
+      const bookCoveragePct = freshCount > 0 ? Math.round((withBook / freshCount) * 100) : 0;
+
+      gates[provider] = {
+        expectedSymbols: expected,
+        freshSymbols: fresh,
+        staleSymbols: stale,
+        missingSymbols: missing,
+        freshCount,
+        staleCount,
+        missingCount,
+        coveragePct,
+        bookCoveragePct,
+        ok: coveragePct >= 80 && staleCount === 0,
+      };
+    }
+    return gates;
   }
 
   function getStatus() {
@@ -771,6 +1629,7 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
       connections: status,
       sse: { active: SSE.active, lastError: SSE.lastError },
       providers: Object.keys(STORE),
+      qualityGates: getQualityGates(),
       mempool: getMempool(),
     };
   }
@@ -780,8 +1639,10 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
     start,
     stop,
     getTicker,
+    getMarketStructure,
     getAll,
     getMempool,
+    getQualityGates,
     getStatus,
   };
 
@@ -789,4 +1650,3 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
     try { start(); } catch (_) { }
   });
 })();
-

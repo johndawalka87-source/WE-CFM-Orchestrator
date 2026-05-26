@@ -210,8 +210,12 @@
         }
         const list = Object.entries(state).map(([provider, v]) => {
             const bucketLabel = v.bucket && v.bucket !== 'unknown' ? ` [${v.bucket}]` : '';
+            const reasonParts = [v.reason, v.bucketReason]
+                .map((x) => String(x || '').trim())
+                .filter(Boolean)
+                .filter((x, idx, arr) => arr.findIndex((y) => y.toLowerCase() === x.toLowerCase()) === idx);
             const reason = v.status === 'degraded' || v.status === 'down'
-                ? `${v.reason || ''}${v.bucketReason ? ` · ${v.bucketReason}` : ''}`
+                ? reasonParts.join(' · ')
                 : '';
             return `<div style="display:flex;align-items:center;margin-bottom:4px;">
         <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${statusColor(v.status)};margin-right:8px;"></span>

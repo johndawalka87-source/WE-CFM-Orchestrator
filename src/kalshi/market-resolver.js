@@ -91,7 +91,13 @@
   // ── Fetch helpers ────────────────────────────────────────────────
   function fetchWithTimeout(url, ms = 7000) {
     const ctrl = new AbortController();
-    const tid = setTimeout(() => ctrl.abort(), ms);
+    const tid = setTimeout(() => {
+      try {
+        ctrl.abort(new DOMException(`Market resolver timed out after ${ms}ms`, 'TimeoutError'));
+      } catch (_) {
+        try { ctrl.abort(); } catch (_) { }
+      }
+    }, ms);
     return fetch(url, { signal: ctrl.signal })
       .then(r => { clearTimeout(tid); return r; })
       .catch(e => { clearTimeout(tid); throw e; });

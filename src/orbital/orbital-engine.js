@@ -311,7 +311,85 @@
     return levels;
   }
 
-  function buildQspState(closes, orbitals, v2) {
+  // ── Asset-Specific Quantization Math ───────────────────────────────────────
+  function meqQuantize(value, historyWindow, binCount) {
+    if (historyWindow.length < binCount) return value;
+    var sorted = historyWindow.slice().sort(function(a, b) { return a - b; });
+    var n = sorted.length;
+    var rank = 0;
+    for (var i = 0; i < n; i++) {
+      if (value > sorted[i]) rank++;
+    }
+    var percentile = rank / n;
+    return (percentile * 2) - 1;
+  }
+
+  function garchUpdate(state, return_t_minus_1) {
+    var omega = 0.000001;
+    var alpha = 0.15;
+    var beta = 0.80;
+    if (!state.sigma2) state.sigma2 = omega / (1 - alpha - beta);
+    var r2 = return_t_minus_1 * return_t_minus_1;
+    state.sigma2 = omega + alpha * r2 + beta * state.sigma2;
+    return Math.sqrt(state.sigma2);
+  }
+
+  function haarWaveletEnergy(returns) {
+    var n = Math.min(returns.length, 8);
+    if (n < 2) return 0;
+    var energy = 0;
+    for (var i = 0; i < n - 1; i += 2) {
+      var diff = (returns[i] - returns[i+1]) / Math.SQRT2;
+      energy += diff * diff;
+    }
+    return energy;
+  }
+
+  function lloydMaxQuantize(value, historyWindow, binCount) {
+    if (historyWindow.length < binCount) return value;
+    var centroids = [];
+    var min = historyWindow[0], max = historyWindow[0];
+    for (var k = 1; k < historyWindow.length; k++) {
+      if (historyWindow[k] < min) min = historyWindow[k];
+      if (historyWindow[k] > max) max = historyWindow[k];
+    }
+    for(var i = 0; i < binCount; i++) {
+      centroids.push(min + (max - min) * (i / (Math.max(1, binCount - 1))));
+    }
+    for(var iter = 0; iter < 3; iter++) {
+      var sums = new Array(binCount).fill(0);
+      var counts = new Array(binCount).fill(0);
+      for(var i2 = 0; i2 < historyWindow.length; i2++) {
+        var v = historyWindow[i2];
+        var bestDistInner = Infinity;
+        var bestIdxInner = 0;
+        for(var j = 0; j < binCount; j++) {
+          var distInner = Math.abs(v - centroids[j]);
+          if(distInner < bestDistInner) {
+            bestDistInner = distInner;
+            bestIdxInner = j;
+          }
+        }
+        sums[bestIdxInner] += v;
+        counts[bestIdxInner]++;
+      }
+      for(var j2 = 0; j2 < binCount; j2++) {
+        if(counts[j2] > 0) centroids[j2] = sums[j2] / counts[j2];
+      }
+    }
+    var bestDist = Infinity;
+    var bestIdx = 0;
+    for(var j3 = 0; j3 < binCount; j3++) {
+      var dist = Math.abs(value - centroids[j3]);
+      if(dist < bestDist) {
+        bestDist = dist;
+        bestIdx = j3;
+      }
+    }
+    return -1 + (2 * bestIdx / (binCount - 1));
+  }
+
+  function buildQspState(sym, closes, orbitals, v2) {
     var seq = Array.isArray(closes) ? closes.filter(Number.isFinite) : [];
     if (seq.length < 4) return null;
     var rets = returnsFromCloses(seq.slice(-QSP_WINDOW_SIZE));
@@ -321,14 +399,40 @@
     var pPct = v2 && Number.isFinite(v2.pPct) ? v2.pPct : (Number.isFinite(orbitals.p) ? orbitals.p : 0);
     var dPct = v2 && Number.isFinite(v2.dPct) ? v2.dPct : (Number.isFinite(orbitals.d) ? Math.abs(orbitals.d) : 0);
     var fAnomaly = v2 && Number.isFinite(v2.fAnomaly) ? v2.fAnomaly : 1.0;
+    var rawOEQ = Number.isFinite(orbitals.oeq) ? orbitals.oeq / 5 : 0;
+
+    // ── Asset-Specific Pre-Processing ──────────────────────────────
+    if (sym === 'BNB' || sym === 'XRP') {
+      var gSigma = garchUpdate(_garchState[sym], lastRet);
+      sigma = Math.max(gSigma, 0.0001); // Normalize against GARCH volatility
+    }
+    
+    if (sym === 'SOL' || sym === 'HYPE') {
+      var energy = haarWaveletEnergy(rets);
+      if (energy > 0.0005) { // Arbitrary burst threshold
+        fAnomaly *= (1 + energy * 100); // Exaggerate anomaly to force state change
+      }
+    }
 
     var featureVec = [
       clamp(normalizeZ(lastRet, drift, sigma || 0.0005), -1, 1),
       clamp(normalizeZ(pPct / 100, 0, Math.max(sigma, 0.0005)), -1, 1),
       clamp(normalizeZ(dPct / 100, 0, Math.max(sigma, 0.0005)), -1, 1),
       clamp((fAnomaly - 1) / 2, -1, 1),
-      clamp(Number.isFinite(orbitals.oeq) ? orbitals.oeq / 5 : 0, -1, 1),
+      clamp(rawOEQ, -1, 1),
     ];
+
+    // ── Asset-Specific Quantization ────────────────────────────────
+    if (sym === 'BTC' || sym === 'ETH') {
+      _historyMEQ[sym].push(rawOEQ);
+      if (_historyMEQ[sym].length > 100) _historyMEQ[sym].shift();
+      featureVec[4] = clamp(meqQuantize(rawOEQ, _historyMEQ[sym], QSP_BIN_COUNT), -1, 1);
+    } else if (sym === 'DOGE') {
+      _historyLloyd[sym].push(rawOEQ);
+      if (_historyLloyd[sym].length > 100) _historyLloyd[sym].shift();
+      featureVec[4] = clamp(lloydMaxQuantize(rawOEQ, _historyLloyd[sym], QSP_BIN_COUNT), -1, 1);
+    }
+
     var quant = probabilisticQuantize(featureVec, QSP_BIN_COUNT);
 
     var runOrbitalLayer =
@@ -378,6 +482,11 @@
   var _positions = {};
   var _lastResult = {};
   var _volBuffers = {};  // rolling volume buffers per asset for f_anomaly
+  
+  // Advanced Quantization States
+  var _historyMEQ = {};
+  var _garchState = {};
+  var _historyLloyd = {};
 
   ASSETS.forEach(function (sym) {
     _lambdas[sym] = DEFAULT_LAMBDA[sym] || 1.0;
@@ -390,6 +499,9 @@
       peakPrice: null,      // for d-orbital price-level trailing stop
     };
     _volBuffers[sym] = [];
+    _historyMEQ[sym] = [];
+    _garchState[sym] = { sigma2: null };
+    _historyLloyd[sym] = [];
     _lastResult[sym] = null;
   });
 
@@ -675,7 +787,7 @@
     // OEQ v2: volume-aware formula (cross-chain nuclear model).
     var fAnomalyVol = computeFAnomalyVol(sym, candles15m);
     var v2 = computeOEQv2(closes, lambda, fAnomalyVol);
-    var qsp = buildQspState(closes, orbitals, v2);
+    var qsp = buildQspState(sym, closes, orbitals, v2);
     var effectiveOrbitals = applyQspToOrbitals(orbitals, qsp);
 
     var position = _ensurePosition(sym);

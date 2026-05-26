@@ -22,6 +22,7 @@
     coingecko: 'CoinGecko',
     localproxy: 'LocalProxy',
     bybit: 'Bybit',
+    bullish: 'Bullish',
     etherscan: 'Etherscan',
     bscscan: 'BSCScan',
     binance: 'Binance',
@@ -111,6 +112,7 @@
     if (host.includes('crypto.com')) return 'Crypto.com';
     if (host.includes('binance')) return 'Binance';
     if (host.includes('bybit')) return 'Bybit';
+    if (host.includes('bullish')) return 'Bullish';
     return host || 'Network';
   }
 
@@ -140,6 +142,13 @@
     const status = Number(detail.status || 0);
     const failureClass = String(detail.failureClass || '').toLowerCase();
     const text = `${detail.error || ''} ${detail.statusText || ''} ${detail.reason || ''}`.toLowerCase();
+
+    if (text.includes('all_connections_down')) {
+      return {
+        bucket: 'network/transport',
+        bucketReason: detail.reason || detail.error || 'all_connections_down (auto-reconnect in progress)',
+      };
+    }
 
     if (/credential|kalshi-api-key\.txt not found|auth-header-failed|signature generation|requires node ws|browser websocket cannot send/.test(text)) {
       return {
@@ -172,9 +181,13 @@
       ['dns-fail', 'tls-fail', 'handshake-fail', 'timeout', 'route-change', 'socket-reset', 'network-fail'].includes(failureClass) ||
       /dns|tls|ssl|cert|handshake|upgrade|timeout|abort|route|network|econnreset|socket hang up|websocket|wss/.test(text)
     ) {
+      let finalReason = detail.error || detail.reason || detail.statusText || 'network transport failure';
+      if (finalReason.includes('signal is aborted without reason')) {
+        finalReason = detail.provider ? `${detail.provider} timed out` : 'signal timed out';
+      }
       return {
         bucket: 'network/transport',
-        bucketReason: detail.error || detail.reason || detail.statusText || 'network transport failure',
+        bucketReason: finalReason,
       };
     }
     return {
@@ -184,7 +197,7 @@
   }
 
   function isOptionalProvider(provider) {
-    return new Set(['Alternative.me', 'CoinMarketCap', 'CoinGecko', 'Blockscout', 'LocalProxy']).has(provider);
+    return new Set(['Alternative.me', 'CoinMarketCap', 'CoinGecko', 'Blockscout', 'LocalProxy', 'Bullish']).has(provider);
   }
 
   function healthStatusFor(entry) {

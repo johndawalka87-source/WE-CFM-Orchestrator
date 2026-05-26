@@ -156,6 +156,15 @@
       }
     }
 
+    // Fallback to CoinMarketCap (Zero-cost if cached from background poller)
+    if (window._cmcProFeed) {
+      const cmcQuote = window._cmcProFeed.getCachedQuote(sym);
+      if (cmcQuote && cmcQuote.price) {
+        console.log(`[HR] ${sym} price from CoinMarketCap: ${cmcQuote.price}`);
+        return cmcQuote.price;
+      }
+    }
+
     // Fallback to cached prediction market data
     const pred = window._predictions?.[sym];
     if (pred?.price) {
@@ -309,117 +318,63 @@
     return true;
   }
 
-  function buildRangesFromContracts(markets) {
-    const contracts = (Array.isArray(markets) ? markets : []).map(m => {
-      const floor = toFiniteNumber(m.floor_strike) ?? toFiniteNumber(m.floor_price);
-      const cap = toFiniteNumber(m.cap_strike) ?? toFiniteNumber(m.cap_price);
-      const strike = floor ?? cap ?? parseStrikeFromTicker(m.ticker);
-      const yesPriceRaw = parseContractPrice(
-        m.yes_price_dollars,
-        m.yes_price,
-        m.yes_ask_dollars,
-        m.last_price_dollars,
-        m.last_price
-      );
-      const noPriceRaw = parseContractPrice(
-        m.no_price_dollars,
-        m.no_price,
-        m.no_ask_dollars
-      );
-      const yesPrice = Number.isFinite(yesPriceRaw) ? yesPriceRaw : 0;
-      const noPrice = Number.isFinite(noPriceRaw) ? noPriceRaw : (yesPrice <= 1 ? (1 - yesPrice) : (100 - yesPrice));
-      const rawProb = yesPrice > 1 ? yesPrice / 100 : yesPrice;
-      const prob = clamp01(rawProb);
-      return {
-        ticker: m.ticker,
-        status: m.status || 'unknown',
-        closeTime: m.close_time,
-        floor,
-        cap,
-        strike,
-        yesPrice,
-        noPrice,
-        prob,
-        yesIsAbove: isYesAboveContract(m),
-      };
-    });
-
-    // 1) Native bounded contracts (floor + cap) if present.
-    const bounded = contracts
-      .filter(c => Number.isFinite(c.floor) && Number.isFinite(c.cap) && c.cap > c.floor)
-      .map(c => ({
-        ticker: c.ticker,
-        low: c.floor,
-        high: c.cap,
-        yesPrice: c.yesPrice,
-        noPrice: c.noPrice,
-        prob: c.prob,
-        closeTime: c.closeTime,
-        status: c.status,
-      }));
-    if (bounded.length) return bounded;
-
-    // 2) Threshold ladders (-Tstrike): synthesize bounded bands from adjacent strikes.
-    const thresholds = contracts
-      .filter(c => Number.isFinite(c.strike))
-      .sort((a, b) => a.strike - b.strike);
-    if (thresholds.length < 2) return [];
-
-    const strikes = thresholds.map(t => t.strike);
-    const step = estimateStepFromStrikes(strikes);
-    const exceedance = thresholds.map(t => {
-      const pYes = clamp01(t.prob);
-      if (pYes == null) return null;
-      return t.yesIsAbove ? pYes : (1 - pYes);
-    });
-
+  function buildRangesFromContracts(contracts) {
+    const src = Array.isArray(contracts) ? contracts : [];
+    if (!src.length) return [];
+    
     const synthetic = [];
-    // Lower tail: P(price < first strike)
-    const firstEx = exceedance[0];
-    if (firstEx != null) {
-      synthetic.push({
-        ticker: `${thresholds[0].ticker}|tail-lower`,
-        low: thresholds[0].strike - step,
-        high: thresholds[0].strike,
-        yesPrice: thresholds[0].yesPrice,
-        noPrice: thresholds[0].noPrice,
-        prob: clamp01(1 - firstEx),
-        closeTime: thresholds[0].closeTime,
-        status: thresholds[0].status,
-      });
+    for (const c of src) {
+      const priceYes = Number(c.yes_ask_dollars || c.last_price_dollars || 0);
+      const priceNo = Number(c.no_ask_dollars || (1 - priceYes));
+      
+      if (c.strike_type === 'between') {
+        synthetic.push({
+          ticker: c.ticker + '|band',
+          low: Number(c.floor_strike),
+          high: Number(c.cap_strike),
+          yesPrice: priceYes,
+          noPrice: priceNo,
+          prob: clamp01(priceYes),
+          closeTime: c.close_time,
+          status: c.status
+        });
+      } else if (c.strike_type === 'less') {
+        synthetic.push({
+          ticker: c.ticker + '|tail-lower',
+          low: Number(c.cap_strike) - (src[0]?.price_ranges?.[0]?.step || 100),
+          high: Number(c.cap_strike),
+          yesPrice: priceYes,
+          noPrice: priceNo,
+          prob: clamp01(priceYes),
+          closeTime: c.close_time,
+          status: c.status,
+          isLowerTail: true
+        });
+      } else if (c.strike_type === 'greater') {
+        synthetic.push({
+          ticker: c.ticker + '|tail-upper',
+          low: Number(c.floor_strike),
+          high: Number(c.floor_strike) + (src[0]?.price_ranges?.[0]?.step || 100),
+          yesPrice: priceYes,
+          noPrice: priceNo,
+          prob: clamp01(priceYes),
+          closeTime: c.close_time,
+          status: c.status,
+          isUpperTail: true
+        });
+      }
     }
-
-    for (let i = 0; i < thresholds.length - 1; i++) {
-      const lowC = thresholds[i];
-      const highC = thresholds[i + 1];
-      const pLow = exceedance[i];
-      const pHigh = exceedance[i + 1];
-      synthetic.push({
-        ticker: `${lowC.ticker}|band`,
-        low: lowC.strike,
-        high: highC.strike,
-        yesPrice: lowC.yesPrice,
-        noPrice: lowC.noPrice,
-        prob: (pLow != null && pHigh != null) ? clamp01(pLow - pHigh) : clamp01(lowC.prob),
-        closeTime: lowC.closeTime || highC.closeTime,
-        status: lowC.status,
-      });
-    }
-
-    // Upper tail: P(price >= last strike)
-    const last = thresholds[thresholds.length - 1];
-    const lastEx = exceedance[exceedance.length - 1];
-    if (lastEx != null) {
-      synthetic.push({
-        ticker: `${last.ticker}|tail-upper`,
-        low: last.strike,
-        high: last.strike + step,
-        yesPrice: last.yesPrice,
-        noPrice: last.noPrice,
-        prob: clamp01(lastEx),
-        closeTime: last.closeTime,
-        status: last.status,
-      });
+    
+    synthetic.sort((a, b) => a.low - b.low);
+    if (synthetic.length > 1) {
+      if (synthetic[0].isLowerTail) {
+        synthetic[0].low = synthetic[0].high - (synthetic[1].high - synthetic[1].low);
+      }
+      const last = synthetic[synthetic.length - 1];
+      if (last.isUpperTail) {
+        const prev = synthetic[synthetic.length - 2];
+        last.high = last.low + (prev.high - prev.low);
+      }
     }
     return synthetic;
   }
@@ -466,10 +421,11 @@
         
         try {
           let markets = [];
-          const url = `${KALSHI_PUBLIC_BASE}/markets?series_ticker=${seriesTicker}&status=open&limit=1000`;
+          const url = `${KALSHI_PUBLIC_BASE}/events?series_ticker=${seriesTicker}&status=open&with_nested_markets=true`;
           const data = await proxyFetch(url);
           let payload = (data && data.success && data.data) ? data.data : data;
-          markets = Array.isArray(payload?.markets) ? payload.markets : [];
+          const events = Array.isArray(payload?.events) ? payload.events : [];
+          markets = events.flatMap(e => Array.isArray(e.markets) ? e.markets : []);
           
           if (markets.length > 0) {
             window._hourlyContractCache = window._hourlyContractCache || {};
@@ -479,6 +435,7 @@
           return [];
         } catch (e) {
           console.warn(`[HR] fetchSeriesMarkets error for ${seriesTicker}:`, e.message);
+          window._hrLastError = e.message || String(e);
           return [];
         }
       };
@@ -675,7 +632,7 @@
   // ── Build range ladder with color coding ──────────────────────
   function buildRangeLadder(sym, ranges, currentPrice, maxRanges = TARGET_BUCKET_DEFAULT) {
     if (!ranges || ranges.length === 0) {
-      return `<div class="hr-ladder-empty">No ranges available…</div>`;
+      return `<div class="hr-ladder-empty">No ranges available</div>`;
     }
 
     const normalizedRanges = normalizeRangeLikelihoods(ranges, currentPrice);
@@ -683,7 +640,7 @@
     // Show focused actionable targets (3–6 buckets) instead of overloaded ladders.
     const filteredRanges = selectTargetBuckets(normalizedRanges, currentPrice, maxRanges);
     if (filteredRanges.length === 0) {
-      return `<div class="hr-ladder-empty">No ranges available…</div>`;
+      return `<div class="hr-ladder-empty">No ranges available</div>`;
     }
 
     const currentBucket = Number.isFinite(currentPrice)

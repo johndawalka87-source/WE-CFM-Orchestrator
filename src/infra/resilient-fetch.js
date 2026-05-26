@@ -16,7 +16,10 @@
 
   function resolveRuntimeKey(name) {
     try {
-      if (typeof window !== 'undefined' && window.__env && window.__env[name]) return window.__env[name];
+      if (typeof window !== 'undefined') {
+        if (window.__env && window.__env[name]) return window.__env[name];
+        if (window.desktopApp?.publicEnv && window.desktopApp.publicEnv[name]) return window.desktopApp.publicEnv[name];
+      }
     } catch (_) { }
     try {
       if (typeof localStorage !== 'undefined') {
@@ -155,23 +158,11 @@
     if (typeof url !== 'string' || !url) {
       throw new Error('Invalid URL passed to tryUrl');
     }
-    let timeoutId = null;
     try {
-      // Create abort controller for timeout (default 5s)
-      const controller = new AbortController();
-      timeoutId = setTimeout(() => {
-        try {
-          controller.abort(new Error('timeout'));
-        } catch (_) {
-          controller.abort();
-        }
-      }, TIMEOUT_MS);
-      const requestOptions = { ...options, signal: options.signal || controller.signal };
-
       const fetchImpl = typeof window.throttledFetch === 'function'
         ? window.throttledFetch.bind(window)
         : window.fetch.bind(window);
-      const res = await fetchImpl(url, requestOptions);
+      const res = await fetchImpl(url, options);
 
       if (res.ok || res.status < 500) return res; // Accept 2xx, 3xx, 4xx; retry on 5xx
 

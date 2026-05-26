@@ -42,11 +42,13 @@
     'api.crypto.com',
     'clob.polymarket.com',
     'gamma-api.polymarket.com',
+    'api.bitvavo.com',
   ]);
 
   // ── Bucket B: rate-limited public APIs — proxy for headroom ─────────────
   const RATE_LIMITED = new Set([
     'api.coingecko.com',
+    'pro-api.coingecko.com',
     'api.dexscreener.com',
     'api.blockchair.com',
     'hypurrscan.io',

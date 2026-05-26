@@ -41,7 +41,13 @@
   async function fetchPythPrices() {
     try {
       const ctrl = new AbortController();
-      const timeout = setTimeout(() => ctrl.abort(), 7000);
+      const timeout = setTimeout(() => {
+        try {
+          ctrl.abort(new DOMException('Pyth Hermes timed out after 7000ms', 'TimeoutError'));
+        } catch (_) {
+          try { ctrl.abort(); } catch (_) { }
+        }
+      }, 7000);
       
       const resp = await fetch(PYTH_HERMES, { signal: ctrl.signal });
       clearTimeout(timeout);

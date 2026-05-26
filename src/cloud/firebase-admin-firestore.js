@@ -300,13 +300,43 @@ async function appendInferenceRecord(record = {}) {
   }
 }
 
-async function getInferenceRecords(limit = 30) {
+async function getSystemWeights() {
+  const init = await ensureInitialized();
+  if (!init.success || !firestore) {
+    return { success: false, weights: null, error: init.error || 'Firestore unavailable' };
+  }
+  try {
+    const doc = await firestore.collection('wecrypto_config').doc('system_weights').get();
+    if (!doc.exists) return { success: true, weights: null };
+    return { success: true, weights: doc.data().weights };
+  } catch (error) {
+    return { success: false, weights: null, error: error.message };
+  }
+}
+
+async function updateSystemWeights(weights) {
+  const init = await ensureInitialized();
+  if (!init.success || !firestore) {
+    return { success: false, error: init.error || 'Firestore unavailable' };
+  }
+  try {
+    await firestore.collection('wecrypto_config').doc('system_weights').set({
+      weights,
+      updatedAt: firebaseAdmin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+async function getInferenceRecords(limitCount = 30) {
   const init = await ensureInitialized();
   if (!init.success || !firestore) {
     throw new Error(init.error || 'Firestore unavailable');
   }
 
-  const cappedLimit = normalizeLimit(limit);
+  const cappedLimit = normalizeLimit(limitCount);
   const snapshot = await firestore
     .collection(collectionName())
     .orderBy('createdAtMs', 'desc')
@@ -331,4 +361,6 @@ module.exports = {
   startupCheck,
   appendInferenceRecord,
   getInferenceRecords,
+  getSystemWeights,
+  updateSystemWeights,
 };

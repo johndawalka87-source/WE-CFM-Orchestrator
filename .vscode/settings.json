@@ -24,5 +24,8 @@
     },
     "markdown.validate.enabled": true,
     "files.autoSave": "afterDelay",
-    "editor.codeActions.triggerOnFocusChange": true
+    "editor.codeActions.triggerOnFocusChange": true,
+    "[jsonc]": {
+        "editor.defaultFormatter": "vscode.json-language-features"
+    }
 }

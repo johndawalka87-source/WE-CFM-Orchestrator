@@ -21,7 +21,13 @@
   // ── Fetch with AbortController timeout ──────────────────────────────────
   function fetchWithTimeout(url, ms = 8000, opts = {}) {
     const ctrl = new AbortController();
-    const tid = setTimeout(() => ctrl.abort(), ms);
+    const tid = setTimeout(() => {
+      try {
+        ctrl.abort(new DOMException(`CFM fetch timed out after ${ms}ms`, 'TimeoutError'));
+      } catch (_) {
+        try { ctrl.abort(); } catch (_) { }
+      }
+    }, ms);
     const fetchImpl = window.throttledFetch || fetch;
     return fetchImpl(url, { ...opts, signal: ctrl.signal })
       .then(r => { clearTimeout(tid); return r; })
@@ -52,7 +58,55 @@
     HYP: { budget: 20, used: 0, resetAt: 0, label: 'Hyperliquid', color: '#5ee7b0' },
     BIF: { budget: 60, used: 0, resetAt: 0, label: 'Binance Futures', color: '#f0b90b' },
     BYB: { budget: 30, used: 0, resetAt: 0, label: 'Bybit', color: '#f7a600' },
+    UPB: { budget: 120, used: 0, resetAt: 0, label: 'Upbit', color: '#093687' },
+    BIT: { budget: 60, used: 0, resetAt: 0, label: 'Bitget', color: '#00d2b4' },
+    BNX: { budget: 60, used: 0, resetAt: 0, label: 'BingX', color: '#1052fb' },
+    BTV: { budget: 120, used: 0, resetAt: 0, label: 'Bitvavo', color: '#1f48ed' },
+    GEM: { budget: 60, used: 0, resetAt: 0, label: 'Gemini', color: '#00dcfa' },
+    CNW: { budget: 60, used: 0, resetAt: 0, label: 'CoinW', color: '#f5c642' },
+    LBK: { budget: 60, used: 0, resetAt: 0, label: 'LBank', color: '#14b18c' },
+    BSP: { budget: 60, used: 0, resetAt: 0, label: 'Bitstamp', color: '#00cc66' },
+    BTO: { budget: 60, used: 0, resetAt: 0, label: 'Bitso', color: '#00c853' },
+    BUL: { budget: 60, used: 0, resetAt: 0, label: 'Bullish', color: '#2b2b2b' },
+    WHB: { budget: 60, used: 0, resetAt: 0, label: 'WhiteBIT', color: '#ffb11a' },
+    OUR: { budget: 60, used: 0, resetAt: 0, label: 'Ourbit', color: '#444444' },
+    WEX: { budget: 60, used: 0, resetAt: 0, label: 'WEEX', color: '#ff5500' },
   };
+
+  const SRC_TO_REGISTRY = {
+    CDC: 'CDC',
+    CB: 'COINBASE',
+    GKO: null,
+    DEX: null,
+    BIN: 'BINANCE',
+    OKX: 'OKX',
+    KRK: 'KRAKEN',
+    HYP: null,
+    BIF: 'BINANCE',
+    BYB: 'BYBIT',
+    UPB: 'UPBIT',
+    BIT: 'BITGET',
+    BNX: 'BINGX',
+    BTV: 'BITVAVO',
+    GEM: 'GEMINI',
+    CNW: 'COINW',
+    LBK: 'LBANK',
+    BSP: 'BITSTAMP',
+    BTO: 'BITSO',
+    BUL: 'BULLISH',
+    WHB: 'WHITEBIT',
+    OUR: 'OURBIT',
+    WEX: 'WEEX',
+  };
+
+  function getSourceWeight(srcKey) {
+    const regId = SRC_TO_REGISTRY[srcKey];
+    if (!regId) return 0.5; // default for GKO, DEX, HYP
+    const reg = window.ExchangeRegistry?.getById(regId);
+    if (!reg) return 0.5;
+    const orbital = window.ExchangeRegistry.ORBITALS[reg.orbital];
+    return orbital ? orbital.weight : 0.5;
+  }
 
   // DexScreener search queries per coin
   const DEX_QUERIES = {
@@ -87,6 +141,7 @@
 
   // State
   const sampleBuf = {};  // sym → [ { t, sources:{CDC,CB,GKO,DEX}, vol, bid, ask } ]
+  const anomalyMonitors = {};
   window._cfm = {};
   window._fundingRateCache = window._fundingRateCache || {};
   // Funding rates from perp sources — stored separately so they survive the
@@ -356,7 +411,13 @@
     if (!can('HYP')) return [];
     try {
       const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 8000);
+      const tid = setTimeout(() => {
+        try {
+          ctrl.abort(new DOMException('Hyperliquid fetch timed out after 8000ms', 'TimeoutError'));
+        } catch (_) {
+          try { ctrl.abort(); } catch (_) { }
+        }
+      }, 8000);
       const res = await fetch('https://api.hyperliquid.xyz/info', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -692,9 +753,15 @@
       if (!pSamples.length) { parts.push({ vwm: null, n: 0, i: i + 1 }); continue; }
 
       const trades = pSamples.map(s => {
-        const prices = Object.values(s.sources);
+        const prices = Object.entries(s.sources);
         if (!prices.length) return null;
-        return { price: prices.reduce((a, b) => a + b, 0) / prices.length, vol: s.vol || 1 };
+        let wSum = 0, weightTotal = 0;
+        prices.forEach(([src, p]) => {
+          const w = getSourceWeight(src);
+          wSum += p * w;
+          weightTotal += w;
+        });
+        return { price: wSum / weightTotal, vol: s.vol || 1 };
       }).filter(Boolean);
 
       parts.push({ vwm: volumeWeightedMedian(trades), n: trades.length, i: i + 1 });
@@ -706,9 +773,15 @@
     // VWAP
     let vN = 0, vD = 0;
     useSamples.forEach(s => {
-      const pp = Object.values(s.sources);
+      const pp = Object.entries(s.sources);
       if (!pp.length) return;
-      const avg = pp.reduce((a, b) => a + b, 0) / pp.length;
+      let wSum = 0, weightTotal = 0;
+      pp.forEach(([src, p]) => {
+        const w = getSourceWeight(src);
+        wSum += p * w;
+        weightTotal += w;
+      });
+      const avg = wSum / weightTotal;
       const v = s.vol || 1;
       vN += avg * v; vD += v;
     });
@@ -716,8 +789,15 @@
 
     // TWAP
     const allP = useSamples.map(s => {
-      const pp = Object.values(s.sources);
-      return pp.length > 0 ? pp.reduce((a, b) => a + b, 0) / pp.length : null;
+      const pp = Object.entries(s.sources);
+      if (!pp.length) return null;
+      let wSum = 0, weightTotal = 0;
+      pp.forEach(([src, p]) => {
+        const w = getSourceWeight(src);
+        wSum += p * w;
+        weightTotal += w;
+      });
+      return wSum / weightTotal;
     }).filter(Boolean);
     const twap15 = allP.length > 0 ? allP.reduce((a, b) => a + b, 0) / allP.length : cfmRate;
 
@@ -761,8 +841,26 @@
     // DEX metadata
     const dexMeta = latest.meta?.dex || null;
 
+    // Anomaly Detection
+    if (!anomalyMonitors[sym]) {
+      if (typeof window.ExchangeAnomalyMonitor !== 'undefined') {
+        anomalyMonitors[sym] = new window.ExchangeAnomalyMonitor(sym, 20);
+      }
+    }
+    
+    let isAnomalous = false;
+    let anomalyReasons = [];
+    if (anomalyMonitors[sym]) {
+      const spreadLiquidity = bidAsk > 0 ? (1 / (bidAsk / 100)) : null;
+      const vol = latest.vol || 0;
+      const anomalyCheck = anomalyMonitors[sym].updateAndCheck(cfmRate, latest.ask, latest.bid, vol, spreadLiquidity);
+      isAnomalous = anomalyCheck.elevatePriority;
+      anomalyReasons = anomalyCheck.alerts;
+    }
+
     return {
       cfmRate, vwap15, twap15, spread, convergence, bidAsk, momentum, trend,
+      isAnomalous, anomalyReasons,
       partitions: parts,
       sources: sourceDetail,
       sourceCount: Object.keys(sourceDetail).length,

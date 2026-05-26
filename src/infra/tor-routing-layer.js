@@ -49,6 +49,7 @@
             /api\.kucoin\.com/i,
             /api-pub\.bitfinex\.com/i,
             /api\.coincap\.io/i,
+            /rest\.coincap\.io/i,
             /api\.kraken\.com/i,
             /wss:\/\//,  // WebSockets
             /elections\.kalshi\.com/i,  // Critical settlement API

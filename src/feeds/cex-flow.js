@@ -62,6 +62,11 @@
       OKX: 'OKX',
       KuCoin: 'KUCOIN',
       'Gate.io': 'GATE',
+      Upbit: 'UPBIT',
+      Bitget: 'BITGET',
+      BingX: 'BINGX',
+      Bitstamp: 'BITSTAMP',
+      Bitvavo: 'BITVAVO',
     };
     const provider = providerMap[exchange];
     if (!provider || !window.ExchangeWS?.getTicker) return null;
@@ -176,14 +181,14 @@
             requestMethod: 'GET',
             requestPath: `api.coinbase.com/api/v3/brokerage/products/${sym}-USD/ticker` // Note: limit is not part of the signature URI
           });
-          if (res1 && res1.success) jwtStrTrades = res1.jwt;
+          if (res1 && res1.success && res1.jwt) jwtStrTrades = res1.jwt;
           else console.warn(`[CEX] CB JWT 1 failed for ${sym}:`, res1?.error || 'unknown');
           
           const res2 = await window.desktopApp.generateCoinbaseJWT({
             requestMethod: 'GET',
             requestPath: `api.coinbase.com/api/v3/brokerage/products/${sym}-USD`
           });
-          if (res2 && res2.success) jwtStrTicker = res2.jwt;
+          if (res2 && res2.success && res2.jwt) jwtStrTicker = res2.jwt;
           else console.warn(`[CEX] CB JWT 2 failed for ${sym}:`, res2?.error || 'unknown');
         }
       } catch(e) { console.warn('[CEX] CB JWT failed:', e.message); }
@@ -193,9 +198,6 @@
 
       const url1 = `https://api.coinbase.com/api/v3/brokerage/products/${sym}-USD/ticker?limit=100`;
       const url2 = `https://api.coinbase.com/api/v3/brokerage/products/${sym}-USD`;
-      
-      console.log(`[CEX DEBUG] Requesting ${url1} with headers:`, tradesOpts.headers);
-      console.log(`[CEX DEBUG] Requesting ${url2} with headers:`, tickerOpts.headers);
 
       const [tradesRes, tickerRes] = await Promise.allSettled([
         getJson(url1, tradesOpts).catch(async (e) => {
@@ -416,8 +418,112 @@
     return { exchange, available: false, reason: 'WS unavailable' };
   }
 
+
+  const UPBIT_SYMS = { BTC: 'USDT-BTC', ETH: 'USDT-ETH', SOL: 'USDT-SOL', XRP: 'USDT-XRP', DOGE: 'USDT-DOGE' };
+  async function fetchUpbit(sym) {
+    const exchange = 'Upbit';
+    const ws = wsSnapshot(exchange, sym);
+    if (ws) return ws;
+    const upbitSym = UPBIT_SYMS[sym];
+    if (!upbitSym) return { exchange, available: false, reason: 'Not listed' };
+    try {
+      const list = await getJson(`https://api.upbit.com/v1/trades/ticks?market=${upbitSym}&count=100`);
+      let buyQty = 0, sellQty = 0;
+      for (const t of list) {
+        const qty = parseFloat(t.trade_volume || 0);
+        if (t.ask_bid === 'BID') buyQty += qty;
+        else sellQty += qty;
+      }
+      const totalQty = buyQty + sellQty;
+      const buyPct = totalQty > 0 ? (buyQty / totalQty) * 100 : 50;
+      const sellPct = 100 - buyPct;
+      const { signal, color } = computeSignal(buyPct, sellPct, null, null);
+      return { exchange, buyPct, sellPct, volMult: null, fundingPct: null, signal, color, available: true };
+    } catch (e) {
+      return { exchange, available: false, reason: e.message.slice(0, 60) };
+    }
+  }
+
+  const BITGET_SYMS = { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', BNB: 'BNBUSDT', DOGE: 'DOGEUSDT', HYPE: 'HYPEUSDT' };
+  async function fetchBitget(sym) {
+    const exchange = 'Bitget';
+    const ws = wsSnapshot(exchange, sym);
+    if (ws) return ws;
+    const bitgetSym = BITGET_SYMS[sym];
+    if (!bitgetSym) return { exchange, available: false, reason: 'Not listed' };
+    try {
+      const res = await getJson(`https://api.bitget.com/api/v2/spot/market/tickers?symbol=${bitgetSym}`);
+      const t = res?.data?.[0];
+      const vol24h = parseFloat(t?.usdtVol || 0);
+      const volKey = `${exchange}_${sym}`;
+      pushVolHistory(volKey, vol24h);
+      const volMult = vol24h != null ? rollingVolMult(volKey, vol24h) : null;
+      const { signal, color } = computeSignal(50, 50, volMult, null);
+      return { exchange, buyPct: 50, sellPct: 50, volMult, fundingPct: null, signal, color, available: true };
+    } catch (e) { return { exchange, available: false, reason: e.message.slice(0, 60) }; }
+  }
+
+  const BINGX_SYMS = { BTC: 'BTC-USDT', ETH: 'ETH-USDT', SOL: 'SOL-USDT', XRP: 'XRP-USDT', BNB: 'BNB-USDT', DOGE: 'DOGE-USDT', HYPE: 'HYPE-USDT' };
+  async function fetchBingX(sym) {
+    const exchange = 'BingX';
+    const ws = wsSnapshot(exchange, sym);
+    if (ws) return ws;
+    const bingxSym = BINGX_SYMS[sym];
+    if (!bingxSym) return { exchange, available: false, reason: 'Not listed' };
+    try {
+      const data = await getJson(`https://open-api.bingx.com/openApi/spot/v1/ticker/trade?symbol=${bingxSym}&limit=100`);
+      const list = data?.data ?? [];
+      let buyQty = 0, sellQty = 0;
+      for (const t of list) {
+        const qty = parseFloat(t.qty || 0);
+        if (!t.isBuyerMaker) buyQty += qty;
+        else sellQty += qty;
+      }
+      const totalQty = buyQty + sellQty;
+      const buyPct = totalQty > 0 ? (buyQty / totalQty) * 100 : 50;
+      const sellPct = 100 - buyPct;
+      const { signal, color } = computeSignal(buyPct, sellPct, null, null);
+      return { exchange, buyPct, sellPct, volMult: null, fundingPct: null, signal, color, available: true };
+    } catch (e) {
+      return { exchange, available: false, reason: e.message.slice(0, 60) };
+    }
+  }
+
+  async function fetchBitstamp(sym) {
+    const exchange = 'Bitstamp';
+    const ws = wsSnapshot(exchange, sym);
+    if (ws) return ws;
+    try {
+      const bitstampSym = sym.toLowerCase() + 'usd';
+      const res = await getJson(`https://www.bitstamp.net/api/v2/ticker/${bitstampSym}/`);
+      const vol24h = parseFloat(res?.volume || 0);
+      const volKey = `${exchange}_${sym}`;
+      pushVolHistory(volKey, vol24h);
+      const volMult = vol24h != null ? rollingVolMult(volKey, vol24h) : null;
+      const { signal, color } = computeSignal(50, 50, volMult, null);
+      return { exchange, buyPct: 50, sellPct: 50, volMult, fundingPct: null, signal, color, available: true };
+    } catch (e) { return { exchange, available: false, reason: e.message.slice(0, 60) }; }
+  }
+
+  async function fetchBitvavo(sym) {
+    const exchange = 'Bitvavo';
+    const ws = wsSnapshot(exchange, sym);
+    if (ws) return ws;
+    try {
+      const bitvavoSym = sym.toUpperCase() + '-EUR'; // Bitvavo primarily uses EUR
+      const res = await getJson(`https://api.bitvavo.com/v2/ticker/24h?market=${bitvavoSym}`);
+      const vol24h = parseFloat(res?.volume || 0);
+      const volKey = `${exchange}_${sym}`;
+      pushVolHistory(volKey, vol24h);
+      const volMult = vol24h != null ? rollingVolMult(volKey, vol24h) : null;
+      const { signal, color } = computeSignal(50, 50, volMult, null);
+      return { exchange, buyPct: 50, sellPct: 50, volMult, fundingPct: null, signal, color, available: true };
+    } catch (e) { return { exchange, available: false, reason: e.message.slice(0, 60) }; }
+  }
+
   // ── aggregate ─────────────────────────────────────────────────────
-  const WEIGHTS = { Binance: 0.25, Bybit: 0.20, OKX: 0.15, Coinbase: 0.12, Kraken: 0.10, KuCoin: 0.10, 'Gate.io': 0.08 };
+
+  const WEIGHTS = { Binance: 0.22, Bybit: 0.16, OKX: 0.14, Upbit: 0.12, Bitget: 0.08, BingX: 0.06, Coinbase: 0.08, Kraken: 0.06, KuCoin: 0.02, 'Gate.io': 0.02, Bitstamp: 0.02, Bitvavo: 0.02 };
 
   function computeAggregate(exchanges) {
     let score = 0;
@@ -488,6 +594,11 @@
       fetchOkx(sym),
       fetchKuCoin(sym),
       fetchGate(sym),
+      fetchUpbit(sym),
+      fetchBitget(sym),
+      fetchBingX(sym),
+      fetchBitstamp(sym),
+      fetchBitvavo(sym),
     ]);
 
     const exchanges = results.map(r =>

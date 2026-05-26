@@ -192,7 +192,8 @@ if (
     'cmc-quotes': ['cmc', 'coinbase', 'binance', 'blockchainraw', 'cache'],
     'kalshi-settlement': ['kalshi', 'cache'],
     'polymarket-markets': ['kalshi', 'cache'],
-    'market-data': ['coinbase', 'okx', 'binance', 'blockchainraw', 'coingecko', 'cache'],
+    'market-data': ['coinbase', 'okx', 'binance', 'blockchainraw', 'coingecko', 'cmc', 'cache'],
+    'coingecko': ['coingecko', 'cmc', 'coinbase', 'cache'],
   };
 
   // ── CACHE TTL CONFIGURATION ────────────────────────────────────
@@ -910,6 +911,7 @@ if (
         skipCache = false,
         fallbackChain = null,
         retries = 2,
+        requestOptions = {},
       } = options;
       const endpoint = endpointOpt || inferEndpointFromUrl(url);
 
@@ -956,7 +958,7 @@ if (
             result = await this.fallback.sources[endpoint].handler({ url, options }, endpoint);
           } else {
             // HTTP endpoint
-            result = await this._executeFetch(url, endpoint, limiter, retries);
+            result = await this._executeFetch(url, endpoint, limiter, retries, requestOptions);
           }
         } else {
           // Use fallback chain (mixed HTTP/gRPC)
@@ -964,7 +966,7 @@ if (
             if (this.fallback.sources[ep] && this.fallback.sources[ep].type === 'grpc') {
               return await this.fallback.sources[ep].handler({ url, options }, ep);
             } else {
-              return await this._executeFetch(url, ep, this.rateLimiters[ep], retries);
+              return await this._executeFetch(url, ep, this.rateLimiters[ep], retries, requestOptions);
             }
           }, { url, options });
           result = result.result;
@@ -999,7 +1001,7 @@ if (
     /**
      * Internal: Execute fetch with rate limiting and retry
      */
-    async _executeFetch(url, endpoint, limiter, retries = 2) {
+    async _executeFetch(url, endpoint, limiter, retries = 2, requestOptions = {}) {
       let lastErr;
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
@@ -1007,14 +1009,52 @@ if (
           // Use batcher to deduplicate
           return await this.batcher.batch(url, { endpoint }, async () => {
             limiter.lastRequestTime = Date.now();
+            let fetchUrl = (endpoint === 'coingecko' || /coingecko/i.test(String(url))) && typeof window !== 'undefined' && typeof window.coinGeckoUrl === 'function'
+              ? window.coinGeckoUrl(url)
+              : url;
             const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
             const timer = setTimeout(() => {
-              try { if (controller) controller.abort(); } catch (_) { }
+              try {
+                if (controller) {
+                  controller.abort(new DOMException(
+                    `[ProxyOrchestrator] ${endpoint} timeout after ${cascadeWindow.timeoutMs}ms`,
+                    'TimeoutError'
+                  ));
+                }
+              } catch (_) {
+                try { if (controller) controller.abort(); } catch (_) { }
+              }
             }, cascadeWindow.timeoutMs);
             let res;
             try {
-              res = await fetch(url, {
-                headers: { Accept: 'application/json' },
+              const isGecko = endpoint === 'coingecko' || /coingecko/i.test(String(url));
+              const headers = { Accept: 'application/json', ...(requestOptions.headers || {}) };
+              if (endpoint === 'binance' || /binance/i.test(String(url))) {
+                const binanceKey = window.resolveRuntimeKey('BINANCE_API_KEY');
+                if (binanceKey) headers['X-MBX-APIKEY'] = binanceKey;
+              } else if ((endpoint === 'cmc' || /coinmarketcap/i.test(String(url))) && !/\/trial-pro-api\//i.test(String(fetchUrl))) {
+                const cmcKey = window.resolveRuntimeKey('CMC_PRO_API_KEY') || window.resolveRuntimeKey('COINMARKETCAP_API_KEY');
+                if (cmcKey && !headers['X-CMC_PRO_API_KEY'] && !headers['x-cmc_pro-api-key']) {
+                  headers['X-CMC_PRO_API_KEY'] = cmcKey;
+                }
+              } else if (isGecko) {
+                const cgKey = window.resolveRuntimeKey('COINGECKO_API_KEY');
+                if (cgKey) {
+                  const host = (() => {
+                    try { return new URL(String(fetchUrl)).hostname.toLowerCase(); } catch (_) { return ''; }
+                  })();
+                  const tier = String(window.resolveRuntimeKey('COINGECKO_API_TIER') || '').trim().toLowerCase();
+                  const usePro = /^(pro|paid|enterprise)$/.test(tier) || host.includes('pro-api.coingecko.com');
+                  const headerName = usePro ? 'x-cg-pro-api-key' : 'x-cg-demo-api-key';
+                  headers[headerName] = cgKey;
+                }
+              }
+              const requestWithAuth = isGecko && typeof window !== 'undefined' && typeof window.withCoinGeckoAuth === 'function'
+                ? window.withCoinGeckoAuth(fetchUrl, { headers })
+                : { headers };
+
+              res = await fetch(fetchUrl, {
+                headers: requestWithAuth.headers || headers,
                 signal: controller ? controller.signal : undefined,
               });
             } finally {

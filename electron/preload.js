@@ -10,6 +10,227 @@ function safeRequire(name) {
 
 const crypto = safeRequire('crypto');
 const ws = safeRequire('ws');
+const fs = safeRequire('fs');
+const path = safeRequire('path');
+
+function stripEnvValue(value) {
+  let v = String(value ?? '').trim();
+  if (!v) return '';
+  const quote = v[0];
+  if ((quote === '"' || quote === "'" || quote === '`') && v[v.length - 1] === quote) {
+    v = v.slice(1, -1);
+  } else {
+    v = v.replace(/\s+#.*$/, '').trim();
+  }
+  return v.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').trim();
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function readRawEnvValue(raw, name) {
+  const re = new RegExp(`(?:^|\\r?\\n)\\s*${escapeRegExp(name)}\\s*=\\s*([^\\r\\n]*)`, 'i');
+  const match = raw.match(re);
+  return match ? stripEnvValue(match[1]) : '';
+}
+
+function envFileCandidates() {
+  if (!fs || !path) return [];
+  const appData = process.env.APPDATA || '';
+  const localAppData = process.env.LOCALAPPDATA || '';
+  const candidates = [
+    path.join(path.dirname(process.execPath || __filename), '.env'),
+    appData && path.join(appData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', '.env'),
+    appData && path.join(appData, 'we-cfm-orchestrator', '.env'),
+    appData && path.join(appData, 'WECRYP', '.env'),
+    localAppData && path.join(localAppData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', '.env'),
+    localAppData && path.join(localAppData, 'we-cfm-orchestrator', '.env'),
+    localAppData && path.join(localAppData, 'WECRYP', '.env'),
+    path.join(__dirname, '..', '.env'),
+    path.join(process.resourcesPath || '', '..', '.env'),
+    path.join(process.cwd(), '.env'),
+  ].filter(Boolean);
+  const seen = new Set();
+  return candidates.filter((candidate) => {
+    try {
+      const normalized = path.resolve(candidate);
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return fs.existsSync(normalized);
+    } catch (_) {
+      return false;
+    }
+  });
+}
+
+function readEnvValue(names) {
+  for (const name of names) {
+    const value = process.env?.[name];
+    if (value != null && String(value).trim()) return stripEnvValue(value);
+  }
+  if (!fs) return '';
+  for (const envPath of envFileCandidates()) {
+    try {
+      const raw = fs.readFileSync(envPath, 'utf8');
+      for (const name of names) {
+        const value = readRawEnvValue(raw, name);
+        if (value) return value;
+      }
+    } catch (_) {
+      // keep looking
+    }
+  }
+  return '';
+}
+
+function decodeJsonStringFragment(value) {
+  try {
+    return JSON.parse(`"${String(value).replace(/"/g, '\\"')}"`);
+  } catch (_) {
+    return String(value || '').replace(/\\"/g, '"').replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
+  }
+}
+
+function secretDirCandidates() {
+  if (!fs || !path) return [];
+  const appData = process.env.APPDATA || '';
+  const localAppData = process.env.LOCALAPPDATA || '';
+  const candidates = [
+    path.join(path.dirname(process.execPath || __filename), 'secrets'),
+    path.join(__dirname, '..', 'secrets'),
+    path.join(process.resourcesPath || '', '..', 'secrets'),
+    path.join(process.cwd(), 'secrets'),
+    localAppData && path.join(localAppData, 'WE-CRYPTO', 'user-data', 'secrets'),
+    appData && path.join(appData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', 'secrets'),
+    'G:\\WECRYP\\secrets',
+    'F:\\WECRYP\\secrets',
+    'E:\\WECRYP\\secrets',
+  ].filter(Boolean);
+  const seen = new Set();
+  return candidates.filter((candidate) => {
+    try {
+      const normalized = path.resolve(candidate);
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return fs.existsSync(normalized);
+    } catch (_) {
+      return false;
+    }
+  });
+}
+
+function readSecretScalar(raw) {
+  const lines = String(raw || '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return '';
+
+  for (const line of lines) {
+    const kv = line.match(/^\s*([A-Za-z0-9_.-]+)\s*=\s*(.+)$/);
+    if (kv && /coingecko|coin.?gecko|gecko|^cg_|^x[-_]?cg/i.test(kv[1])) {
+      return stripEnvValue(kv[2]);
+    }
+  }
+
+  const jsonKey = String(raw).match(/"(?:COINGECKO_API_KEY|COINGECKO_PRO_API_KEY|COINGECKO_DEMO_API_KEY|apiKey|key)"\s*:\s*"((?:\\.|[^"])*)"/i);
+  if (jsonKey) return stripEnvValue(decodeJsonStringFragment(jsonKey[1]));
+
+  return stripEnvValue(lines.reduce((longest, line) => line.length > longest.length ? line : longest, ''));
+}
+
+function readSecretFileValue(fileNames) {
+  if (!fs || !path) return { value: '', path: '' };
+  for (const dir of secretDirCandidates()) {
+    for (const fileName of fileNames) {
+      const p = path.join(dir, fileName);
+      try {
+        if (!fs.existsSync(p)) continue;
+        const value = readSecretScalar(fs.readFileSync(p, 'utf8'));
+        if (value) return { value, path: p };
+      } catch (_) {
+        // keep looking
+      }
+    }
+  }
+  return { value: '', path: '' };
+}
+
+function inferCoinGeckoTier(key, sourcePath = '') {
+  const source = String(sourcePath || '').toLowerCase();
+  const value = String(key || '').trim();
+  if (!value) return '';
+  if (/demo|free/.test(source)) return 'demo';
+  if (/pro|paid/.test(source)) return 'pro';
+  if (/^CG-/i.test(value)) return 'demo';
+  return value.length > 80 ? 'pro' : 'demo';
+}
+
+function readCoinGeckoSecret() {
+  return readSecretFileValue([
+    'CoinGECKOAPIKEY.txt',
+    'COINGECKOAPIKEY.txt',
+    'COINGECKO-API-KEY.txt',
+    'COINGECKO_API_KEY.txt',
+    'COINGECKO-PRO-API-KEY.txt',
+    'COINGECKO_PRO_API_KEY.txt',
+    'COINGECKO-DEMO-API-KEY.txt',
+    'COINGECKO_DEMO_API_KEY.txt',
+    'CG-API-KEY.txt',
+    'CG_API_KEY.txt',
+  ]);
+}
+
+function readCMCSecret() {
+  return readSecretFileValue([
+    'CoinMarketCapAPIKEY.txt',
+    'CMC_API_KEY.txt',
+    'COINMARKETCAP_API_KEY.txt'
+  ]);
+}
+
+function readPublicEnv() {
+  const secret = readCoinGeckoSecret();
+  const secretTier = inferCoinGeckoTier(secret.value, secret.path);
+  const proKey = readEnvValue(['COINGECKO_PRO_API_KEY', 'CG_PRO_API_KEY', 'COINGECKO_PAID_API_KEY', 'X_CG_PRO_API_KEY', 'x_cg_pro_api_key', 'x-cg-pro-api-key'])
+    || (secretTier === 'pro' ? secret.value : '');
+  const demoKey = readEnvValue(['COINGECKO_DEMO_API_KEY', 'CG_DEMO_API_KEY', 'COINGECKO_FREE_API_KEY', 'X_CG_DEMO_API_KEY', 'x_cg_demo_api_key', 'x-cg-demo-api-key'])
+    || (secretTier === 'demo' ? secret.value : '');
+  const genericKey = readEnvValue(['COINGECKO_API_KEY', 'COINGECKO_KEY', 'COIN_GECKO_API_KEY', 'GECKO_API_KEY', 'CG_API_KEY', 'CG_KEY'])
+    || (!secretTier ? secret.value : '');
+  const tierRaw = readEnvValue(['COINGECKO_API_TIER', 'COINGECKO_TIER', 'COINGECKO_PLAN', 'CG_API_TIER']);
+  const tier = /^(pro|paid|enterprise)$/i.test(tierRaw)
+    ? 'pro'
+    : (/^demo|free$/i.test(tierRaw) ? 'demo' : (proKey ? 'pro' : 'demo'));
+  const out = {};
+  const key = proKey || demoKey || genericKey;
+  if (key) out.COINGECKO_API_KEY = key;
+  if (tier) out.COINGECKO_API_TIER = tier;
+  
+  const cmcSecret = readCMCSecret();
+  const cmcKey = readEnvValue(['CMC_PRO_API_KEY', 'COINMARKETCAP_API_KEY', 'CMC_API_KEY']) || cmcSecret.value;
+  if (cmcKey) {
+    out.CMC_PRO_API_KEY = cmcKey;
+    out.COINMARKETCAP_API_KEY = cmcKey;
+  }
+  
+  return out;
+}
+
+const publicEnv = readPublicEnv();
+
+function resolveRuntimeKey(name) {
+  try {
+    if (publicEnv && publicEnv[name]) return publicEnv[name];
+  } catch (_) { }
+  try {
+    if (window.__env && window.__env[name]) return window.__env[name];
+  } catch (_) { }
+  return '';
+}
 
 function createWebSocketBridge(url, options = {}) {
   if (!ws) throw new Error('ws module unavailable in preload');
@@ -103,6 +324,7 @@ function createWebSocketBridge(url, options = {}) {
 
 contextBridge.exposeInMainWorld('desktopApp', {
   isElectron: true,
+  publicEnv,
   // Expose optional Node modules when available in preload context.
   crypto: crypto,
   ws: ws,
@@ -110,6 +332,7 @@ contextBridge.exposeInMainWorld('desktopApp', {
   hasNodeCrypto: !!crypto,
   hasNodeWs: !!ws,
   proxyPort: () => ipcRenderer.invoke('proxy:port'),
+  getPublicEnv: () => ipcRenderer.invoke('env:getPublicConfig'),
   loadKalshiCredentials: () => ipcRenderer.invoke('kalshi:loadCredentials'),
   getKalshiWsAuthHeaders: () => ipcRenderer.invoke('kalshi:wsAuthHeaders'),
   generateCoinbaseJWT: (opts) => ipcRenderer.invoke('coinbase:generate-jwt', opts || {}),
@@ -117,6 +340,12 @@ contextBridge.exposeInMainWorld('desktopApp', {
   getDrives: () => ipcRenderer.invoke('storage:getDrives'),
   networkError: (type, details) => ipcRenderer.invoke('network:logError', type, details),
 });
+
+contextBridge.exposeInMainWorld('resolveRuntimeKey', resolveRuntimeKey);
+
+contextBridge.exposeInMainWorld('resolveRuntimeKey', resolveRuntimeKey);
+
+contextBridge.exposeInMainWorld('resolveRuntimeKey', resolveRuntimeKey);
 
 contextBridge.exposeInMainWorld('electron', {
   invoke: ipcRenderer.invoke.bind(ipcRenderer),
@@ -182,6 +411,12 @@ contextBridge.exposeInMainWorld('wecryp', {
   },
   getInferences: async (options) => {
     return await ipcRenderer.invoke('firebase:getInferences', options || {});
+  },
+  getSystemWeights: async () => {
+    return await ipcRenderer.invoke('firebase:getSystemWeights');
+  },
+  updateSystemWeights: async (weights) => {
+    return await ipcRenderer.invoke('firebase:updateSystemWeights', weights);
   },
 });
 

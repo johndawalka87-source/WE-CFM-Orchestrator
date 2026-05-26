@@ -54,6 +54,7 @@
     ],
     google_drive: [
       // Google Drive via Backup and Sync
+      'Z:\\My Drive',
       'C:\\Users\\' + (process.env.USERNAME || 'user') + '\\Google Drive',
       'C:\\Users\\' + (process.env.USERNAME || 'user') + '\\My Drive',
       'G:\\My Drive',

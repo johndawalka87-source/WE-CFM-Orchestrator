@@ -324,6 +324,14 @@ Return ONLY valid JSON with this exact structure:
     "decrease_weight": [],
     "notes": ""
   },
+  "ai_wording": {
+    "primary_rationale": "",
+    "wait_rationale": "",
+    "high_confidence_rationale": "",
+    "scalp_setups": [
+      { "label": "", "ai_description": "" }
+    ]
+  },
   "warnings": []
 }
 
@@ -354,9 +362,14 @@ function generateUserPrompt(snapshot) {
   const vNum = Number(volatility || 0);
   const obImbalance = Number(orderbook?.imbalance || 0);
   const obBuyPressure = Number(orderbook?.buyPressure || 0);
+  const verdictDir = String(snapshot.verdictDir || 'wait');
+  const compositeEdge = Number(snapshot.compositeEdge || 0);
+  const setupsText = (snapshot.setups || []).map(s => `- ${s.label} (${s.cls}): ${s.desc}`).join('\n') || "NONE";
+  const contrarianSetupsText = (snapshot.contrarianSetups || []).map(s => `- ${s.label} (${s.cls}): ${s.desc}`).join('\n') || "NONE";
 
   let prompt = `Current market snapshot:
 Coin: ${coin}
+Verdict: ${verdictDir.toUpperCase()} (Edge: ${compositeEdge.toFixed(3)})
 Volatility: ${vNum.toFixed(3)} (${classifyVolatilityRegime(vNum)})
 Timestamp: ${new Date().toISOString()}
 
@@ -373,6 +386,12 @@ ${JSON.stringify(weights || {}, null, 2)}
 Recent accuracy:
 ${JSON.stringify(recentAccuracy || {}, null, 2)}
 
+Live Scalp Setups Fired:
+${setupsText}
+
+Contrarian Setups Fired:
+${contrarianSetupsText}
+
 Conflicts:
 ${(conflicts && conflicts.length) ? conflicts.join(", ") : "NONE"}
 
@@ -381,6 +400,7 @@ Task:
 2. Set confidence (0.0-1.0).
 3. Recommend conservative weight nudges only.
 4. Flag anomalies and reversal risk.
+5. Provide specific AI UI wording for the primary rationale, wait rationale (if applicable), and rewrite the descriptions for the triggered Scalp/Contrarian setups to give real-time advice.
 
 Return strict JSON only in the required schema.`;
 

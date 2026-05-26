@@ -56,6 +56,7 @@
       this.providerState = new Map();
       this.pendingDedupe = new Map();
       this.sourceSnapshots = new Map();
+      this.boundaryState = new Map();
       this.sequence = 0;
     }
 
@@ -71,14 +72,26 @@
       }
 
       const promise = new Promise((resolve, reject) => {
+        const requestedDelayMs = Math.max(0, Number(options.delayMs) || 0);
+        const adaptiveBoundary = options.boundary
+          ? this.computeAdaptiveBoundary({
+            ...options.boundary,
+            laneGapMs: this.lanes[laneName]?.gapMs || 0,
+          })
+          : null;
+        const effectiveDelayMs = adaptiveBoundary
+          ? Math.max(0, Number(adaptiveBoundary.recommendedDelayMs) || 0)
+          : requestedDelayMs;
+
         const job = {
           id: ++this.sequence,
           work,
           options,
           provider: options.provider || 'default',
-          earliestAt: now() + Math.max(0, Number(options.delayMs) || 0),
+          earliestAt: now() + effectiveDelayMs,
           priority: Number(options.priorityBoost) || 0,
           createdAt: now(),
+          boundary: adaptiveBoundary,
           resolve,
           reject,
         };
@@ -94,6 +107,85 @@
       }
 
       return promise;
+    }
+
+    computeAdaptiveBoundary(boundary = {}) {
+      const nowTs = now();
+      const baseIntervalMs = Math.max(250, Number(boundary.baseIntervalMs) || Number(boundary.laneGapMs) || 1500);
+      const minIntervalMs = Math.max(100, Number(boundary.minIntervalMs) || 150);
+      const maxIntervalMs = Math.max(minIntervalMs, Number(boundary.maxIntervalMs) || 120000);
+
+      const cumulativeVolume = Math.max(0, Number(boundary.cumulativeVolume) || 0);
+      const volumeThreshold = Math.max(0, Number(boundary.volumeThreshold) || 0);
+      const txCount = Math.max(0, Number(boundary.txCount) || 0);
+      const txThreshold = Math.max(0, Number(boundary.txThreshold) || 0);
+      const volumeProgress = Math.max(
+        volumeThreshold > 0 ? cumulativeVolume / volumeThreshold : 0,
+        txThreshold > 0 ? txCount / txThreshold : 0
+      );
+      const volumeTickTriggered = volumeProgress >= 1;
+
+      const sigmaMean = Math.max(1e-9, Number(boundary.sigmaMean) || Number(boundary.sigmaAvg) || 0);
+      const sigmaNow = Math.max(1e-9, Number(boundary.sigmaNow) || Number(boundary.sigmaLocal) || 0);
+      const hasVolatilityWindow = sigmaMean > 0 && sigmaNow > 0;
+      const volatilityRatio = hasVolatilityWindow ? sigmaMean / sigmaNow : 1;
+      let elasticIntervalMs = hasVolatilityWindow
+        ? baseIntervalMs * volatilityRatio
+        : baseIntervalMs;
+
+      const expiryTs = Number(boundary.expiryTs) || Number(boundary.contractExpiryTs) || 0;
+      const remainingMs = expiryTs > nowTs ? expiryTs - nowTs : null;
+      let decayMultiplier = 1;
+      if (remainingMs != null) {
+        if (remainingMs <= 1 * 60 * 1000) decayMultiplier = 0.08;
+        else if (remainingMs <= 5 * 60 * 1000) decayMultiplier = 0.16;
+        else if (remainingMs <= 15 * 60 * 1000) decayMultiplier = 0.34;
+        else if (remainingMs <= 30 * 60 * 1000) decayMultiplier = 0.56;
+        else if (remainingMs <= 60 * 60 * 1000) decayMultiplier = 0.78;
+      }
+
+      elasticIntervalMs *= decayMultiplier;
+      if (volumeTickTriggered) {
+        elasticIntervalMs = Math.min(elasticIntervalMs, Math.max(minIntervalMs, baseIntervalMs * 0.2));
+      }
+
+      const blockIntervalMs = Math.max(0, Number(boundary.blockIntervalMs) || Number(boundary.slotIntervalMs) || 0);
+      const lastBlockTs = Number(boundary.lastBlockTs) || Number(boundary.lastFinalityTs) || 0;
+      let blockAlignedDelayMs = null;
+      if (blockIntervalMs > 0) {
+        const anchor = lastBlockTs > 0 ? lastBlockTs : nowTs;
+        const elapsed = Math.max(0, nowTs - anchor);
+        const remainder = elapsed % blockIntervalMs;
+        blockAlignedDelayMs = remainder === 0 ? 0 : (blockIntervalMs - remainder);
+      }
+
+      let recommendedDelayMs = elasticIntervalMs;
+      if (blockAlignedDelayMs != null) recommendedDelayMs = Math.min(recommendedDelayMs, blockAlignedDelayMs);
+      recommendedDelayMs = Math.max(minIntervalMs, Math.min(maxIntervalMs, Math.round(recommendedDelayMs)));
+
+      const volPressure = hasVolatilityWindow ? Math.min(3, Math.max(0, sigmaNow / sigmaMean)) : 1;
+      const kineticPressure = Math.max(0, (Math.min(2, volumeProgress) * 0.55) + (volPressure * 0.45));
+      const orbitalTier = kineticPressure >= 1.6 ? 'f'
+        : kineticPressure >= 1.25 ? 'd'
+          : kineticPressure >= 0.85 ? 'p'
+            : 's';
+
+      return {
+        mode: blockAlignedDelayMs != null ? 'network_elastic' : 'kinetic_elastic',
+        recommendedDelayMs,
+        baseIntervalMs,
+        minIntervalMs,
+        maxIntervalMs,
+        volumeTickTriggered,
+        volumeProgress: Number(volumeProgress.toFixed(4)),
+        volatilityRatio: Number(volatilityRatio.toFixed(4)),
+        decayMultiplier: Number(decayMultiplier.toFixed(4)),
+        blockAlignedDelayMs,
+        orbitalTier,
+        kineticPressure: Number(kineticPressure.toFixed(4)),
+        remainingMs,
+        computedAt: nowTs,
+      };
     }
 
     inferLaneFromUrl(url, fallback = 'background') {
@@ -158,6 +250,7 @@
           failures: state.failures,
           cooldownUntil: state.cooldownUntil,
           circuitUntil: state.circuitUntil,
+          adaptiveBoundary: this.boundaryState.get(name) || null,
         };
       });
       return { lanes, providers, dedupe: this.pendingDedupe.size };
@@ -213,6 +306,7 @@
       }
 
       try {
+        if (job.boundary) this.boundaryState.set(providerName, job.boundary);
         const timeoutMs = Number(job.options.timeoutMs) || Number(lane?.maxJobMs) || 0;
         const result = timeoutMs > 0
           ? await this._withTimeout(job.work, timeoutMs, job.options.tag)

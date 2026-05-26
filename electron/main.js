@@ -1,3 +1,4 @@
+const { startOrbitalSystem, shutdownOrbitalSystem } = require('../src/infra/orbital-startup-orchestrator');
 const { app, BrowserWindow, Menu, shell, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -39,6 +40,31 @@ try {
   console.warn('[Startup] Affinity binding error:', err);
 }
 
+// --- Set WECRYP_ROOT for Orbital System ---
+if (!process.env.WECRYP_ROOT) {
+  // Detect workspace: check common locations
+  const candidates = [
+    process.cwd(),
+    path.join(__dirname, '..'),
+    'G:\\WECRYP',
+    'F:\\WECRYP',
+    'E:\\WECRYP'
+  ];
+  
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, 'docker-compose.yml'))) {
+      process.env.WECRYP_ROOT = candidate;
+      console.log(`[Startup] WECRYP_ROOT auto-detected: ${candidate}`);
+      break;
+    }
+  }
+  
+  if (!process.env.WECRYP_ROOT) {
+    process.env.WECRYP_ROOT = path.join(__dirname, '..');
+    console.warn(`[Startup] WECRYP_ROOT not found; using fallback: ${process.env.WECRYP_ROOT}`);
+  }
+}
+
 // Prevent startup crashes when stdout/stderr pipes are unavailable (EPIPE)
 function _isBrokenPipe(err) {
   return err && (err.code === 'EPIPE' || /broken pipe/i.test(String(err.message || '')));
@@ -74,16 +100,345 @@ if (process.stderr && typeof process.stderr.on === 'function') {
   });
 }
 
+let loadedEnvPath = null;
+
+function uniqueExistingPaths(pathsToCheck) {
+  const seen = new Set();
+  const out = [];
+  for (const p of pathsToCheck.filter(Boolean)) {
+    const normalized = path.resolve(p);
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function getEnvFileCandidates() {
+  const exeDir = path.dirname(process.execPath || __filename);
+  let userDataDir = '';
+  try {
+    userDataDir = app.getPath('userData');
+  } catch (_) {
+    userDataDir = '';
+  }
+  const appData = process.env.APPDATA || '';
+  const localAppData = process.env.LOCALAPPDATA || '';
+  return uniqueExistingPaths([
+    loadedEnvPath,
+    path.join(exeDir, '.env'),
+    userDataDir && path.join(userDataDir, '.env'),
+    appData && path.join(appData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', '.env'),
+    appData && path.join(appData, 'we-cfm-orchestrator', '.env'),
+    appData && path.join(appData, 'WECRYP', '.env'),
+    localAppData && path.join(localAppData, 'WE-CRYPTO-Kalshi-15m-v2.15.5', '.env'),
+    localAppData && path.join(localAppData, 'we-cfm-orchestrator', '.env'),
+    localAppData && path.join(localAppData, 'WECRYP', '.env'),
+    path.join(__dirname, '..', '.env'),
+    path.join(process.resourcesPath || '', '..', '.env'),
+    path.join(process.cwd(), '.env'),
+  ]);
+}
+
+function stripEnvValue(value) {
+  let v = String(value ?? '').trim();
+  if (!v) return '';
+  const quote = v[0];
+  if ((quote === '"' || quote === "'" || quote === '`') && v[v.length - 1] === quote) {
+    v = v.slice(1, -1);
+  } else {
+    v = v.replace(/\s+#.*$/, '').trim();
+  }
+  return v.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').trim();
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function readRawEnvValue(raw, name) {
+  const re = new RegExp(`(?:^|\\r?\\n)\\s*${escapeRegExp(name)}\\s*=\\s*([^\\r\\n]*)`, 'i');
+  const match = raw.match(re);
+  return match ? stripEnvValue(match[1]) : '';
+}
+
+function readEnvValue(names) {
+  for (const name of names) {
+    const envValue = process.env[name];
+    if (envValue != null && String(envValue).trim()) return stripEnvValue(envValue);
+  }
+  for (const envPath of getEnvFileCandidates()) {
+    try {
+      if (!fs.existsSync(envPath)) continue;
+      const raw = fs.readFileSync(envPath, 'utf8');
+      for (const name of names) {
+        const value = readRawEnvValue(raw, name);
+        if (value) return value;
+      }
+    } catch (_) {
+      // keep looking
+    }
+  }
+  return '';
+}
+
+function getSecretDirCandidates() {
+  const exeDir = path.dirname(process.execPath || __filename);
+  let userDataDir = '';
+  try {
+    userDataDir = app.getPath('userData');
+  } catch (_) {
+    userDataDir = '';
+  }
+  return uniqueExistingPaths([
+    userDataDir && path.join(userDataDir, 'secrets'),
+    path.join(exeDir, 'secrets'),
+    path.join(process.resourcesPath || '', '..', 'secrets'),
+    path.join(__dirname, '..', 'secrets'),
+    path.join(process.cwd(), 'secrets'),
+    'G:\\WECRYP\\secrets',
+    'F:\\WECRYP\\secrets',
+    'E:\\WECRYP\\secrets',
+  ]);
+}
+
+function readSecretScalar(raw) {
+  const lines = String(raw || '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return '';
+
+  for (const line of lines) {
+    const kv = line.match(/^\s*([A-Za-z0-9_.-]+)\s*=\s*(.+)$/);
+    if (kv && /coingecko|coin.?gecko|gecko|^cg_|^x[-_]?cg/i.test(kv[1])) {
+      return stripEnvValue(kv[2]);
+    }
+  }
+
+  const jsonKey = String(raw).match(/"(?:COINGECKO_API_KEY|COINGECKO_PRO_API_KEY|COINGECKO_DEMO_API_KEY|apiKey|key)"\s*:\s*"((?:\\.|[^"])*)"/i);
+  if (jsonKey) return stripEnvValue(decodeJsonStringFragment(jsonKey[1]));
+
+  return stripEnvValue(lines.reduce((longest, line) => line.length > longest.length ? line : longest, ''));
+}
+
+function readSecretFileValue(fileNames) {
+  for (const dir of getSecretDirCandidates()) {
+    for (const fileName of fileNames) {
+      const p = path.join(dir, fileName);
+      try {
+        if (!fs.existsSync(p)) continue;
+        const value = readSecretScalar(fs.readFileSync(p, 'utf8'));
+        if (value) return { value, path: p };
+      } catch (_) {
+        // keep looking
+      }
+    }
+  }
+  return { value: '', path: '' };
+}
+
+function inferCoinGeckoTier(key, sourcePath = '') {
+  const source = String(sourcePath || '').toLowerCase();
+  const value = String(key || '').trim();
+  if (!value) return '';
+  if (/demo|free/.test(source)) return 'demo';
+  if (/pro|paid/.test(source)) return 'pro';
+  if (/^CG-/i.test(value)) return 'demo';
+  return value.length > 80 ? 'pro' : 'demo';
+}
+
+function readCoinGeckoSecret() {
+  return readSecretFileValue([
+    'CoinGECKOAPIKEY.txt',
+    'COINGECKOAPIKEY.txt',
+    'COINGECKO-API-KEY.txt',
+    'COINGECKO_API_KEY.txt',
+    'COINGECKO-PRO-API-KEY.txt',
+    'COINGECKO_PRO_API_KEY.txt',
+    'COINGECKO-DEMO-API-KEY.txt',
+    'COINGECKO_DEMO_API_KEY.txt',
+    'CG-API-KEY.txt',
+    'CG_API_KEY.txt',
+  ]);
+}
+
+function readCMCSecret() {
+  return readSecretFileValue([
+    'CoinMarketCapAPIKEY.txt',
+    'CMC_API_KEY.txt',
+    'COINMARKETCAP_API_KEY.txt'
+  ]);
+}
+
+function decodeJsonStringFragment(value) {
+  try {
+    return JSON.parse(`"${String(value).replace(/"/g, '\\"')}"`);
+  } catch (_) {
+    return String(value || '').replace(/\\"/g, '"').replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
+  }
+}
+
+function coinbaseCredentialFromObject(obj, source) {
+  if (!obj || typeof obj !== 'object') return null;
+  const name = stripEnvValue(obj.name || obj.keyName || obj.key_name || obj.apiKeyName);
+  const privateKey = stripEnvValue(obj.privateKey || obj.private_key || obj.CDP_API_KEY_PRIVATE_KEY);
+  if (!name || !privateKey) return null;
+  return { name, privateKey, source };
+}
+
+function readCoinbaseCredentialFromRawEnv() {
+  for (const envPath of getEnvFileCandidates()) {
+    try {
+      if (!fs.existsSync(envPath)) continue;
+      const raw = fs.readFileSync(envPath, 'utf8');
+
+      const jsonMatches = raw.match(/\{[\s\S]*?"privateKey"\s*:[\s\S]*?\}/g) || [];
+      for (const candidate of jsonMatches) {
+        try {
+          const parsed = JSON.parse(candidate);
+          const credential = coinbaseCredentialFromObject(parsed, `raw-env-json:${path.basename(envPath)}`);
+          if (credential) return credential;
+        } catch (_) {
+          // fall back to targeted field extraction below
+        }
+      }
+
+      const nameMatch = raw.match(/"name"\s*:\s*"((?:\\.|[^"])*)"/);
+      const keyMatch = raw.match(/"privateKey"\s*:\s*"((?:\\.|[^"])*)"/);
+      if (nameMatch && keyMatch) {
+        const credential = coinbaseCredentialFromObject({
+          name: decodeJsonStringFragment(nameMatch[1]),
+          privateKey: decodeJsonStringFragment(keyMatch[1]),
+        }, `raw-env-fields:${path.basename(envPath)}`);
+        if (credential) return credential;
+      }
+    } catch (_) {
+      // keep looking
+    }
+  }
+  return null;
+}
+
+function loadCoinbaseCredential() {
+  const jsonEnv = readEnvValue([
+    'CDP_API_KEY_JSON',
+    'COINBASE_CDP_API_KEY_JSON',
+    'COINBASE_API_KEY_JSON',
+  ]);
+  if (jsonEnv) {
+    try {
+      const credential = coinbaseCredentialFromObject(JSON.parse(jsonEnv), 'env-json');
+      if (credential) return credential;
+    } catch (_) {
+      // fall through to field-based formats
+    }
+  }
+
+  const name = readEnvValue([
+    'CDP_API_KEY_NAME',
+    'COINBASE_CDP_API_KEY_NAME',
+    'COINBASE_API_KEY_NAME',
+    'COINBASE_KEY_NAME',
+  ]);
+  const privateKey = readEnvValue([
+    'CDP_API_KEY_PRIVATE_KEY',
+    'COINBASE_CDP_PRIVATE_KEY',
+    'COINBASE_API_PRIVATE_KEY',
+    'COINBASE_PRIVATE_KEY',
+    'COINBASE_API_KEY_PRIVATE_KEY',
+  ]);
+  const envCredential = coinbaseCredentialFromObject({ name, privateKey }, 'env-fields');
+  if (envCredential) return envCredential;
+
+  const filePath = readEnvValue([
+    'CDP_API_KEY_FILE',
+    'COINBASE_CDP_API_KEY_FILE',
+    'COINBASE_API_KEY_FILE',
+  ]);
+  if (filePath) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.resolve(filePath), 'utf8'));
+      const credential = coinbaseCredentialFromObject(parsed, 'env-file');
+      if (credential) return credential;
+    } catch (_) {
+      // fall through to raw .env and legacy file locations
+    }
+  }
+
+  const rawEnvCredential = readCoinbaseCredentialFromRawEnv();
+  if (rawEnvCredential) return rawEnvCredential;
+
+  const legacyCandidates = [
+    path.join(app.getAppPath(), '..', '..', 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'),
+    path.join(app.getAppPath(), 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'),
+    'F:\\WECRYP\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json',
+    'G:\\WECRYP\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json',
+    'g:\\WECRYP\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json',
+  ];
+  for (const p of legacyCandidates) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const credential = coinbaseCredentialFromObject(JSON.parse(fs.readFileSync(p, 'utf8')), `legacy-file:${p}`);
+      if (credential) return credential;
+    } catch (_) {
+      // keep looking
+    }
+  }
+  return null;
+}
+
+function normalizeCoinbaseJwtUri(method, requestPath) {
+  if (!method || !requestPath) return '';
+  const verb = String(method).trim().toUpperCase();
+  let target = String(requestPath).trim();
+  try {
+    if (/^https?:\/\//i.test(target)) {
+      const u = new URL(target);
+      target = `${u.hostname}${u.pathname}`;
+    }
+  } catch (_) {
+    // keep original target
+  }
+  target = target.replace(/^\/+/, '');
+  if (/^api\/v3\//i.test(target)) target = `api.coinbase.com/${target}`;
+  if (!/^[a-z0-9.-]+\/api\/v3\//i.test(target)) target = `api.coinbase.com/${target}`;
+  return `${verb} ${target}`;
+}
+
+function resolveCoinGeckoPublicConfig() {
+  const secret = readCoinGeckoSecret();
+  const secretTier = inferCoinGeckoTier(secret.value, secret.path);
+  const proKey = readEnvValue(['COINGECKO_PRO_API_KEY', 'CG_PRO_API_KEY', 'COINGECKO_PAID_API_KEY', 'X_CG_PRO_API_KEY', 'x_cg_pro_api_key', 'x-cg-pro-api-key'])
+    || (secretTier === 'pro' ? secret.value : '');
+  const demoKey = readEnvValue(['COINGECKO_DEMO_API_KEY', 'CG_DEMO_API_KEY', 'COINGECKO_FREE_API_KEY', 'X_CG_DEMO_API_KEY', 'x_cg_demo_api_key', 'x-cg-demo-api-key'])
+    || (secretTier === 'demo' ? secret.value : '');
+  const genericKey = readEnvValue(['COINGECKO_API_KEY', 'COINGECKO_KEY', 'COIN_GECKO_API_KEY', 'GECKO_API_KEY', 'CG_API_KEY', 'CG_KEY'])
+    || (!secretTier ? secret.value : '');
+  const tierRaw = readEnvValue(['COINGECKO_API_TIER', 'COINGECKO_TIER', 'COINGECKO_PLAN', 'CG_API_TIER']);
+  const tier = /^(pro|paid|enterprise)$/i.test(tierRaw)
+    ? 'pro'
+    : (/^demo|free$/i.test(tierRaw) ? 'demo' : (proKey ? 'pro' : 'demo'));
+  const key = proKey || demoKey || genericKey;
+  const out = {};
+  if (key) out.COINGECKO_API_KEY = key;
+  if (tier) out.COINGECKO_API_TIER = tier;
+  
+  const cmcSecret = readCMCSecret();
+  const cmcKey = readEnvValue(['CMC_PRO_API_KEY', 'COINMARKETCAP_API_KEY', 'CMC_API_KEY']) || cmcSecret.value;
+  if (cmcKey) {
+    out.CMC_PRO_API_KEY = cmcKey;
+    out.COINMARKETCAP_API_KEY = cmcKey;
+  }
+  
+  return out;
+}
+
 // Load .env — check next to .exe (packaged) then repo root (dev)
 try {
   const dotenv = require('dotenv');
-  const exeDir = path.dirname(app.getPath ? process.execPath : __filename);
-  const candidates = [
-    path.join(exeDir, '.env'),                  // next to .exe (packaged)
-    path.join(__dirname, '..', '.env'),          // repo root (dev)
-    path.join(process.resourcesPath || '', '..', '.env'), // resources sibling
-  ];
-  let loadedEnvPath = null;
+  const candidates = getEnvFileCandidates();
   for (const p of candidates) {
     if (require('fs').existsSync(p)) {
       dotenv.config({ path: p, quiet: true });
@@ -170,11 +525,12 @@ let proxyHealthy = false;
 let webServiceHealth = { started: false, mode: 'stopped', protocol: 'http', port: 3443 };
 const LAZER_FEED_IDS = [1, 2, 6, 10, 13, 14, 15, 110]; // BTC,ETH,SOL,DOGE,F13,XRP,BNB,F110
 const LAZER_ID_MAP = { 1: 'BTCUSD', 2: 'ETHUSD', 6: 'SOLUSD', 10: 'DOGEUSD', 14: 'XRPUSD', 15: 'BNBUSD' };
-const PYTH_FALLBACK_TIMEOUT_MS = Number(process.env.PYTH_FALLBACK_TIMEOUT_MS || 2500); // default 2.5s to reduce false DOWN on jitter
-const PYTH_FALLBACK_GRACE_MS = Number(process.env.PYTH_FALLBACK_GRACE_MS || 350); // jitter tolerance
-const PYTH_TIMEOUT_CONSECUTIVE_LIMIT = Number(process.env.PYTH_TIMEOUT_CONSECUTIVE_LIMIT || 2);
-const PYTH_FALLBACK_EVENT_COOLDOWN_MS = Number(process.env.PYTH_FALLBACK_EVENT_COOLDOWN_MS || 5000);
+const PYTH_FALLBACK_TIMEOUT_MS = Number(process.env.PYTH_FALLBACK_TIMEOUT_MS || 6000);
+const PYTH_FALLBACK_GRACE_MS = Number(process.env.PYTH_FALLBACK_GRACE_MS || 2000);
+const PYTH_TIMEOUT_CONSECUTIVE_LIMIT = Number(process.env.PYTH_TIMEOUT_CONSECUTIVE_LIMIT || 3);
+const PYTH_FALLBACK_EVENT_COOLDOWN_MS = Number(process.env.PYTH_FALLBACK_EVENT_COOLDOWN_MS || 30000);
 const PYTH_LAZER_CHANNEL = process.env.PYTH_LAZER_CHANNEL || 'fixed_rate@1000ms';
+const PYTH_LIVE_FEED_BACKOFF_MS = Math.max(0, Number(process.env.PYTH_LIVE_FEED_BACKOFF_MS || 5));
 
 function configureCachePaths() {
   try {
@@ -220,12 +576,20 @@ async function startPythLazerService(win) {
 
   const MAX_RETRIES = 3;
   const RETRY_DELAY_MS = 2000;
+  const channelCandidates = Array.from(new Set(
+    [PYTH_LAZER_CHANNEL, 'real_time', 'fixed_rate@1000ms']
+      .map((s) => String(s || '').trim())
+      .filter(Boolean)
+  ));
+  let channelIndex = 0;
+  let reconnectInFlight = false;
   let retries = 0;
 
-  async function createClientWithRetry() {
+  async function createClientWithRetry(channel) {
     try {
       retries++;
-      console.log(`[PythLazer] Connecting (attempt ${retries}/${MAX_RETRIES})...`);
+      const activeChannel = channel || channelCandidates[channelIndex] || PYTH_LAZER_CHANNEL;
+      console.log(`[PythLazer] Connecting (attempt ${retries}/${MAX_RETRIES}, channel=${activeChannel})...`);
 
       const { PythLazerClient } = require('@pythnetwork/pyth-lazer-sdk');
       pythLazerClient = await PythLazerClient.create({
@@ -247,7 +611,7 @@ async function startPythLazerService(win) {
           'publisherCount', 'feedUpdateTimestamp', 'marketSession',
           'fundingRate', 'fundingTimestamp', 'fundingRateInterval'],
         formats: ['solana', 'leUnsigned', 'leEcdsa', 'evm'],
-        channel: PYTH_LAZER_CHANNEL,
+        channel: activeChannel,
         deliveryFormat: 'json',
         jsonBinaryEncoding: 'hex',
         parsed: true,
@@ -262,7 +626,7 @@ async function startPythLazerService(win) {
       // ★ STRICT TIMEOUT WATCHER: If no data arrives within 1000ms, trigger fallback
       function resetPythTimeout() {
         if (pythTimeoutHandle) clearTimeout(pythTimeoutHandle);
-        const timeoutBudgetMs = PYTH_FALLBACK_TIMEOUT_MS + PYTH_FALLBACK_GRACE_MS;
+        const timeoutBudgetMs = PYTH_FALLBACK_TIMEOUT_MS + PYTH_FALLBACK_GRACE_MS + PYTH_LIVE_FEED_BACKOFF_MS;
         pythTimeoutHandle = setTimeout(() => {
           const now = Date.now();
           const elapsedMs = pythLazerStatus.lastDataTs ? (now - pythLazerStatus.lastDataTs) : timeoutBudgetMs;
@@ -281,7 +645,7 @@ async function startPythLazerService(win) {
             return;
           }
 
-          console.warn(`[PythLazer] ⚠️ TIMEOUT: no data for ${elapsedMs}ms (target=${PYTH_FALLBACK_TIMEOUT_MS}ms, grace=${PYTH_FALLBACK_GRACE_MS}ms) — fallback triggered`);
+          console.warn(`[PythLazer] ⚠️ TIMEOUT: no data for ${elapsedMs}ms (target=${PYTH_FALLBACK_TIMEOUT_MS}ms, grace=${PYTH_FALLBACK_GRACE_MS}ms, backoff=${PYTH_LIVE_FEED_BACKOFF_MS}ms) — fallback triggered`);
           if (!win.isDestroyed()) {
             if (now - pythLastFallbackEventTs >= PYTH_FALLBACK_EVENT_COOLDOWN_MS) {
               pythLastFallbackEventTs = now;
@@ -349,13 +713,43 @@ async function startPythLazerService(win) {
 
       pythLazerClient.addAllConnectionsDownListener(() => {
         console.error('[PythLazer] ⚠️ All WebSocket connections down — auto-reconnect triggered');
+        if (pythTimeoutHandle) {
+          clearTimeout(pythTimeoutHandle);
+          pythTimeoutHandle = null;
+        }
         // Renderer will gracefully degrade to other data sources
         if (!win.isDestroyed()) {
-          win.webContents.send('pyth:connection-lost', { reason: 'all_connections_down' });
+          win.webContents.send('pyth:connection-lost', {
+            reason: 'all_connections_down',
+            channel: activeChannel,
+          });
+        }
+        if (!reconnectInFlight) {
+          reconnectInFlight = true;
+          setTimeout(async () => {
+            try {
+              if (pythLazerClient) {
+                try { pythLazerClient.unsubscribe(1); } catch (_) { }
+                try { await pythLazerClient.shutdown(); } catch (_) { }
+                pythLazerClient = null;
+              }
+
+              if (channelIndex < channelCandidates.length - 1) {
+                channelIndex++;
+              }
+
+              retries = 0;
+              const nextChannel = channelCandidates[channelIndex] || activeChannel;
+              console.warn(`[PythLazer] Reconnecting with fallback channel=${nextChannel}`);
+              await createClientWithRetry(nextChannel);
+            } finally {
+              reconnectInFlight = false;
+            }
+          }, 500);
         }
       });
 
-      console.log('[PythLazer] ✅ Client started — feeds:', LAZER_FEED_IDS.join(','));
+      console.log(`[PythLazer] ✅ Client started — feeds: ${LAZER_FEED_IDS.join(',')} (channel=${activeChannel})`);
       return true;
 
     } catch (e) {
@@ -365,7 +759,7 @@ async function startPythLazerService(win) {
       if (retries < MAX_RETRIES) {
         console.log(`[PythLazer] Retrying in ${RETRY_DELAY_MS}ms... (${retries}/${MAX_RETRIES})`);
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-        return createClientWithRetry();
+        return createClientWithRetry(channel);
       } else {
         console.error(`[PythLazer] ❌ Max retries (${MAX_RETRIES}) reached. Pyth Lazer disabled.`);
         console.error('[PythLazer] → Renderer will use alternative price feeds (Crypto.com, CoinGecko, etc.)');
@@ -377,7 +771,7 @@ async function startPythLazerService(win) {
     }
   }
 
-  return createClientWithRetry();
+  return createClientWithRetry(channelCandidates[channelIndex] || PYTH_LAZER_CHANNEL);
 }
 
 function logStartupHealth(tag = 'snapshot') {
@@ -703,29 +1097,19 @@ ipcMain.handle('kalshi:wsAuthHeaders', async () => {
   return result;
 });
 
+// ── IPC: public runtime env for renderer-only API keys ─────────────────────
+ipcMain.handle('env:getPublicConfig', async () => resolveCoinGeckoPublicConfig());
+
 // ── IPC: Coinbase Authentication ───────────────────────────────────────────
 ipcMain.handle('coinbase:generate-jwt', async (_, options = {}) => {
   try {
     const crypto = require('crypto');
-    const path = require('path');
-    const fs = require('fs');
-    const candidates = [
-      path.join(app.getAppPath(), '..', '..', 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'),
-      path.join(app.getAppPath(), 'secrets', 'cdp_api_key-WECRYPTO-ECDSA.json'),
-      'F:\\WECRYP\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json',
-      'G:\\WECRYP\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json',
-      'g:\\WECRYP\\secrets\\cdp_api_key-WECRYPTO-ECDSA.json',
-    ];
-    let keyPath = null;
-    for (const p of candidates) {
-      if (fs.existsSync(p)) { keyPath = p; break; }
-    }
-    if (!keyPath) {
-      console.error('[Coinbase] CDP API Key not found in candidates:', candidates);
-      return { success: false, error: 'CDP API Key not found in secrets directory' };
+    const keyData = loadCoinbaseCredential();
+    if (!keyData) {
+      console.error('[Coinbase] CDP API Key not found in .env or legacy secrets directory');
+      return { success: false, error: 'CDP API Key not found in .env or secrets directory' };
     }
 
-    const keyData = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
     if (!keyData.name || !keyData.privateKey) return { success: false, error: 'Invalid CDP key format' };
 
     const header = {
@@ -743,7 +1127,7 @@ ipcMain.handle('coinbase:generate-jwt', async (_, options = {}) => {
     };
     
     if (options.requestMethod && options.requestPath) {
-      payload.uri = options.requestMethod + ' ' + options.requestPath;
+      payload.uri = normalizeCoinbaseJwtUri(options.requestMethod, options.requestPath);
     }
     
     const b64u = (str) => Buffer.from(str).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -759,7 +1143,7 @@ ipcMain.handle('coinbase:generate-jwt', async (_, options = {}) => {
     const signatureRaw = sign.sign({ key: keyData.privateKey, dsaEncoding: 'ieee-p1363' });
     const encodedSignature = signatureRaw.toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
     
-    return { success: true, jwt: `${token}.${encodedSignature}` };
+    return { success: true, jwt: `${token}.${encodedSignature}`, source: keyData.source };
   } catch (e) {
     console.error('[Coinbase] JWT Generation failed:', e);
     return { success: false, error: e.message };
@@ -1057,6 +1441,30 @@ function dedupePaths(paths) {
   return unique;
 }
 
+function enumerateReadableDriveRoots() {
+  const roots = [];
+  for (let code = 67; code <= 90; code++) {
+    const letter = String.fromCharCode(code);
+    const root = normalizeCachePath(`${letter}:\\`);
+    try {
+      fs.accessSync(root, fs.constants.R_OK);
+      roots.push(root);
+    } catch (_) { }
+  }
+  return dedupePaths(roots);
+}
+
+function buildDynamicCloudDriveCandidates(driveRoots = []) {
+  const candidates = [];
+  for (const root of driveRoots || []) {
+    const base = normalizeCachePath(root).replace(/\\$/, '');
+    if (!base) continue;
+    candidates.push(`${base}\\My Drive`);
+    candidates.push(`${base}\\Google Drive`);
+  }
+  return dedupePaths(candidates);
+}
+
 function buildStaticContractCacheFiles(home) {
   return dedupePaths([
     // Primary working drives
@@ -1092,6 +1500,10 @@ function buildStaticContractCacheFiles(home) {
     `${home}\\My Drive\\WE-CRYPTO-CACHE\\contract-cache.json`,
     `${home}\\My Drive\\WECRYP\\contract-cache-2h.json`,
     `${home}\\My Drive\\WECRYP\\contract-cache.json`,
+    'Z:\\My Drive\\WE-CRYPTO-CACHE\\contract-cache-2h.json',
+    'Z:\\My Drive\\WE-CRYPTO-CACHE\\contract-cache.json',
+    'Z:\\My Drive\\WECRYP\\contract-cache-2h.json',
+    'Z:\\My Drive\\WECRYP\\contract-cache.json',
     'G:\\My Drive\\WE-CRYPTO-CACHE\\contract-cache-2h.json',
     'G:\\My Drive\\WE-CRYPTO-CACHE\\contract-cache.json',
 
@@ -1113,6 +1525,8 @@ function buildStaticContractCacheFiles(home) {
 function buildAutoDiscoveryDirectories(home) {
   const dirs = [];
   const rootCandidates = new Set();
+  const driveRoots = enumerateReadableDriveRoots();
+  const dynamicCloudRoots = buildDynamicCloudDriveCandidates(driveRoots);
 
   // Cloud roots from env vars (machine-specific, robust when using 2+ machines)
   [
@@ -1129,17 +1543,14 @@ function buildAutoDiscoveryDirectories(home) {
     'G:\\My Drive',
     'Z:\\My Drive',
     'Y:\\My Drive',
+    process.env.GOOGLE_DRIVE_PATH || null,
+    ...dynamicCloudRoots,
   ].forEach((p) => { if (p) rootCandidates.add(normalizeCachePath(p)); });
 
-  // Enumerate local/mapped drives C-Z and include root-level cache folders
-  for (let code = 67; code <= 90; code++) {
-    const letter = String.fromCharCode(code);
-    const root = normalizeCachePath(`${letter}:\\`);
-    try {
-      fs.accessSync(root, fs.constants.R_OK);
-      rootCandidates.add(root);
-      rootCandidates.add(`${root}\\My Drive`);
-    } catch (_) { }
+  // Enumerate local/mapped drives and include drive roots in discovery.
+  for (const root of driveRoots) {
+    if (!root) continue;
+    rootCandidates.add(root);
   }
 
   // Discover OneDrive folder variants under home (e.g., OneDrive - org)
@@ -1501,13 +1912,12 @@ ipcMain.handle('storage:getDrives', async (_event, options = {}) => {
   }
 
   const found = [];
+  const localRoots = enumerateReadableDriveRoots();
 
   // ── Local / mapped drive letters C-Z ─────────────────────────────────────
-  for (let code = 67; code <= 90; code++) {        // 'C' … 'Z'
-    const letter = String.fromCharCode(code);
-    const root = `${letter}:\\`;
-    try { fs.accessSync(root, fs.constants.R_OK); found.push({ type: 'local', letter, root }); }
-    catch (_) { }
+  for (const root of localRoots) {
+    const letter = typeof root === 'string' && /^[A-Za-z]:\\$/.test(root) ? root[0].toUpperCase() : null;
+    found.push({ type: 'local', letter, root });
   }
 
   // ── Network / UNC shares via `net use` ────────────────────────────────────
@@ -1524,13 +1934,18 @@ ipcMain.handle('storage:getDrives', async (_event, options = {}) => {
 
   // ── Cloud sync folders (OneDrive / Google Drive) ──────────────────────────
   const home = process.env.USERPROFILE || '';
+  const dynamicCloudCandidates = buildDynamicCloudDriveCandidates(localRoots);
   const cloudCandidates = [
     `${home}\\OneDrive`,
     `${home}\\OneDrive - Personal`,
     `${home}\\OneDrive - ctstate.edu`,
     `${home}\\OneDrive - Azure ctstate.edu`,
+    'Z:\\My Drive',
+    'G:\\My Drive',
     `${home}\\Google Drive`,
     `${home}\\My Drive`,
+    process.env.GOOGLE_DRIVE_PATH || null,
+    ...dynamicCloudCandidates,
   ];
   try {
     if (home && fs.existsSync(home)) {
@@ -1543,6 +1958,7 @@ ipcMain.handle('storage:getDrives', async (_event, options = {}) => {
     }
   } catch (_) { }
   for (const p of cloudCandidates) {
+    if (!p) continue;
     try { if (fs.existsSync(p)) found.push({ type: 'cloud', letter: null, root: p }); }
     catch (_) { }
   }
@@ -2012,11 +2428,19 @@ function createWindow() {
   });
   global.WECRYPTO_MAIN_WINDOW = win;
 
-  win.once('ready-to-show', () => {
+  let visibleOnce = false;
+  const showMainWindow = (reason) => {
+    if (visibleOnce || win.isDestroyed()) return;
+    visibleOnce = true;
     win.show();
+    console.log(`[Window] shown (${reason})`);
     if (process.env.WECRYPTO_OPEN_DEVTOOLS === '1') {
       win.webContents.openDevTools({ mode: 'detach' });
     }
+  };
+
+  win.once('ready-to-show', () => {
+    showMainWindow('ready-to-show');
 
     // --- CPU Core Affinity Binding for Renderer ---
     // The Floating Orchestrator and WASM SIMD Tensor Math loops run here.
@@ -2036,6 +2460,8 @@ function createWindow() {
       console.warn('[Startup] Could not determine Renderer PID for affinity binding:', err);
     }
   });
+  win.webContents.once('did-finish-load', () => showMainWindow('did-finish-load'));
+  setTimeout(() => showMainWindow('startup-timeout'), 5000);
 
   win.on('unresponsive', () => {
     console.warn('[Window] renderer became unresponsive');
@@ -2076,21 +2502,23 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  // Strip 'file://' Origins to prevent 400/502 API rejections in production builds
-  const { session } = require('electron');
-  session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    let headers = { ...details.requestHeaders };
-    if (headers['Origin'] && headers['Origin'].startsWith('file://')) {
-      delete headers['Origin'];
-    }
-    if (headers['Referer'] && headers['Referer'].startsWith('file://')) {
-      delete headers['Referer'];
-    }
-    callback({ cancel: false, requestHeaders: headers });
-  });
+
 
   await startProxy();
-  await startKalshiWorker({ bootTimeoutMs: 12000, pollMs: 150 });  // Start Kalshi worker with explicit readiness budget
+  await startKalshiWorker({ bootTimeoutMs: 12000, pollMs: 150 });
+  
+  // --- Orbital Matrix (Redpanda Orchestration + Ingestion & Sync) ---
+  (async () => {
+    try {
+      const workspacePath = process.env.WECRYP_ROOT || path.join(__dirname, '..');
+      await startOrbitalSystem(workspacePath);
+      console.log('[Main] Orbital Matrix architecture online.');
+    } catch (err) {
+      console.error('[Main] Orbital Matrix failed to start:', err.message);
+      // Non-fatal: app continues, but orbital services are unavailable
+    }
+  })();
+  
   Menu.setApplicationMenu(null);
   await waitForProxy();   // give proxy ~3s to bind before renderer fires fetchAll
 
@@ -2098,31 +2526,41 @@ app.whenReady().then(async () => {
   webServiceHealth = startWebService() || webServiceHealth;
   console.log(`[Main] Web service bootstrap on ${webServiceHealth.protocol}://localhost:${webServiceHealth.port} (auto-port-failover enabled)`);
 
-  if (FirebaseAdminFirestore && typeof FirebaseAdminFirestore.startupCheck === 'function') {
-    const firebaseEnabled = FirebaseAdminFirestore.envFlagEnabled
-      ? FirebaseAdminFirestore.envFlagEnabled(process.env.WECRYPTO_FIREBASE_ENABLED || '0')
-      : true;
-    const firebaseRequired = FirebaseAdminFirestore.envFlagEnabled
-      ? FirebaseAdminFirestore.envFlagEnabled(process.env.WECRYPTO_FIREBASE_REQUIRED || '0')
-      : false;
-    if (firebaseEnabled || firebaseRequired) {
-      try {
-        const fb = await FirebaseAdminFirestore.startupCheck({ required: firebaseRequired, probe: true });
-        if (fb.success) {
-          console.log(`[FirebaseAdmin] Ready (project=${fb.projectId}, saHash=${fb.clientEmailHash})`);
-        } else {
-          console.warn('[FirebaseAdmin] Disabled/not ready:', fb.error || 'unknown');
-        }
-      } catch (error) {
-        console.error('[FirebaseAdmin] FAIL-CLOSED:', error.message);
-        app.exit(78);
-        return;
-      }
-    }
-  }
-
   createWindow();
   logStartupHealth('post-bootstrap');
+
+  // Optional cloud checks must not block the desktop window from opening.
+  (async () => {
+    if (FirebaseAdminFirestore && typeof FirebaseAdminFirestore.startupCheck === 'function') {
+      const firebaseEnabled = FirebaseAdminFirestore.envFlagEnabled
+        ? FirebaseAdminFirestore.envFlagEnabled(process.env.WECRYPTO_FIREBASE_ENABLED || '0')
+        : true;
+      const firebaseRequired = FirebaseAdminFirestore.envFlagEnabled
+        ? FirebaseAdminFirestore.envFlagEnabled(process.env.WECRYPTO_FIREBASE_REQUIRED || '0')
+        : false;
+      if (firebaseEnabled || firebaseRequired) {
+        try {
+          const timeoutMs = Number(process.env.WECRYPTO_FIREBASE_STARTUP_TIMEOUT_MS || 5000);
+          const fb = await Promise.race([
+            FirebaseAdminFirestore.startupCheck({ required: firebaseRequired, probe: true }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error(`Firebase startup check timed out after ${timeoutMs}ms`)), timeoutMs)),
+          ]);
+          if (fb.success) {
+            console.log(`[FirebaseAdmin] Ready (project=${fb.projectId}, saHash=${fb.clientEmailHash})`);
+          } else {
+            console.warn('[FirebaseAdmin] Disabled/not ready:', fb.error || 'unknown');
+          }
+        } catch (error) {
+          if (firebaseRequired) {
+            console.error('[FirebaseAdmin] FAIL-CLOSED:', error.message);
+            app.exit(78);
+            return;
+          }
+          console.warn('[FirebaseAdmin] Startup check skipped:', error.message);
+        }
+      }
+    }
+  })();
 
   // Start Pyth Lazer with proper error handling
   (async () => {
@@ -2142,11 +2580,30 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on('window-all-closed', () => {
+app.on('window-all-closed', async () => {
   stopProxy();
   stopKalshiWorker();
   if (pythLazerClient) { try { pythLazerClient.shutdown(); } catch (_) { } pythLazerClient = null; }
+  
+  // Gracefully shutdown Orbital System (Docker Compose, Redpanda, ingestor, processor)
+  try {
+    await shutdownOrbitalSystem();
+  } catch (err) {
+    console.warn('[Main] Error during orbital shutdown:', err.message);
+  }
+  
   if (process.platform !== 'darwin') {
     app.quit();
   }
 });
+
+// Graceful shutdown on app quit (safety net)
+app.on('before-quit', async (event) => {
+  try {
+    await shutdownOrbitalSystem();
+  } catch (err) {
+    console.warn('[Main] Error during orbital shutdown in before-quit:', err.message);
+  }
+});
+
+

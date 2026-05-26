@@ -42,7 +42,13 @@ function resolveRuntimeBaseDir() {
 async function probeWorkerHealth(timeoutMs = 800) {
   try {
     const ctrl = new AbortController();
-    const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
+    const timeout = setTimeout(() => {
+      try {
+        ctrl.abort(new DOMException(`Kalshi worker health timeout after ${timeoutMs}ms`, 'TimeoutError'));
+      } catch (_) {
+        try { ctrl.abort(); } catch (_) { }
+      }
+    }, timeoutMs);
     const res = await fetch(`${kalshiWorkerUrl}/health`, { signal: ctrl.signal });
     clearTimeout(timeout);
     return !!res.ok;

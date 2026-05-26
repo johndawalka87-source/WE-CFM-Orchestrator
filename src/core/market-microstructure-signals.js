@@ -44,7 +44,13 @@
     const sym = `${String(symbol || '').toUpperCase()}USDT`;
     const url = `https://api.bybit.com/v5/market/funding/history?category=linear&symbol=${sym}&limit=1`;
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    const timer = controller ? setTimeout(() => {
+      try {
+        controller.abort(new DOMException(`Bybit funding fetch timed out after ${timeoutMs}ms`, 'TimeoutError'));
+      } catch (_) {
+        try { controller.abort(); } catch (_) { }
+      }
+    }, timeoutMs) : null;
     try {
       const response = await fetch(url, controller ? { signal: controller.signal } : undefined);
       const data = await response.json();

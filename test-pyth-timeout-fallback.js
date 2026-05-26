@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Pyth Lazer 1000ms Timeout Fallback Verification Script
+ * Pyth Lazer timeout fallback verification script
  * Tests strict timeout enforcement and fallback chain execution
  * 
  * Usage:
@@ -11,19 +11,21 @@ const fs = require('fs');
 const path = require('path');
 
 console.log('═══════════════════════════════════════════════════════════════');
-console.log('Pyth Lazer 1000ms Timeout & Fallback Verification');
+console.log('Pyth Lazer Timeout & Fallback Verification');
 console.log('═══════════════════════════════════════════════════════════════\n');
 
-// ── Check 1: Verify fixed_rate@1000ms channel in main.js
-console.log('✓ CHECK 1: Verify fixed_rate@1000ms channel configuration');
+// ── Check 1: Verify fixed_rate channel/backoff-tolerance config in main.js
+console.log('✓ CHECK 1: Verify fixed_rate channel and timeout backoff configuration');
 const mainJsPath = path.join(__dirname, 'electron', 'main.js');
 const mainJsContent = fs.readFileSync(mainJsPath, 'utf8');
 
-const hasFixedRate = mainJsContent.includes('fixed_rate@1000ms');
+const hasFixedRate = mainJsContent.includes('fixed_rate@');
+const hasBackoff = mainJsContent.includes('PYTH_LIVE_FEED_BACKOFF_MS');
 const hasTimeout = mainJsContent.includes('PYTH_FALLBACK_TIMEOUT_MS');
 const hasTimeoutWatcher = mainJsContent.includes('resetPythTimeout');
 
-console.log(`  ├─ fixed_rate@1000ms channel: ${hasFixedRate ? '✅' : '❌'}`);
+console.log(`  ├─ fixed_rate channel present: ${hasFixedRate ? '✅' : '❌'}`);
+console.log(`  ├─ PYTH_LIVE_FEED_BACKOFF_MS config: ${hasBackoff ? '✅' : '❌'}`);
 console.log(`  ├─ PYTH_FALLBACK_TIMEOUT_MS constant: ${hasTimeout ? '✅' : '❌'}`);
 console.log(`  └─ Timeout watcher function: ${hasTimeoutWatcher ? '✅' : '❌'}\n`);
 
@@ -94,7 +96,7 @@ console.log(`  └─ Monitor script loaded: ${hasMonitorScript ? '✅' : '❌'}
 // ── Summary
 console.log('═══════════════════════════════════════════════════════════════');
 const allChecks = [
-  hasFixedRate, hasTimeout, hasTimeoutWatcher,
+  hasFixedRate, hasBackoff, hasTimeout, hasTimeoutWatcher,
   hasStatusTracking, hasTimeoutIncrrement, hasFallbackNotify,
   hasStrictTimeout, hasFallback1, hasFallback2, hasFallback3, hasFallback4,
   hasOnStatus, hasOnTimeout, hasOnConnectionLost,

@@ -68,6 +68,19 @@
       return parts.join('\\').replace(/\\{2,}/g, '\\');
     }
 
+    _normalizePath(input) {
+      if (!input || typeof input !== 'string') return '';
+      const normalized = input.trim().replace(/[\\/]+/g, '\\').replace(/\\+$/, '');
+      return normalized;
+    }
+
+    _prioritizeZDrive(paths = []) {
+      const unique = [...new Set((paths || []).map(p => this._normalizePath(p)).filter(Boolean))];
+      const zFirst = unique.filter(p => /^Z:\\/i.test(p));
+      const remaining = unique.filter(p => !/^Z:\\/i.test(p));
+      return [...zFirst, ...remaining];
+    }
+
     async _initAsync() {
       await this._discoverNetworkDrives();
       await this._discoverCloudFolders();
@@ -112,8 +125,40 @@
           this.onedriveFolder = this.onedriveFolders[0];
         }
 
-        // Google Drive — check common mount points
-        for (const candidate of ['G:\\My Drive', 'Z:\\My Drive', 'G:\\']) {
+        // Google Drive — scan all mounted drives and prioritize Z:\My Drive
+        const googleCandidates = new Set([
+          'Z:\\My Drive',
+          'Z:\\Google Drive',
+          'G:\\My Drive',
+          'G:\\Google Drive',
+          'G:\\',
+          'Z:\\',
+        ]);
+        const driveRoots = new Set(['Z:\\', 'G:\\']);
+
+        if (window.desktopApp?.getDrives) {
+          try {
+            const drives = await window.desktopApp.getDrives();
+            for (const drive of drives || []) {
+              if (!drive?.root) continue;
+              const root = this._normalizePath(drive.root);
+              if (!root) continue;
+              const rootWithSlash = /^[A-Za-z]:$/i.test(root) ? `${root}\\` : root;
+              driveRoots.add(rootWithSlash);
+            }
+          } catch (e) {
+            console.warn('[MultiDriveCache] Drive scan for Google mounts failed:', e.message);
+          }
+        }
+
+        for (const root of driveRoots) {
+          const base = this._normalizePath(root).replace(/\\$/, '');
+          if (!base) continue;
+          googleCandidates.add(`${base}\\My Drive`);
+          googleCandidates.add(`${base}\\Google Drive`);
+        }
+
+        for (const candidate of this._prioritizeZDrive([...googleCandidates])) {
           const res = await window.dataStore.listDir(candidate);
           if (res?.ok) {
             this.googleDriveFolder = this._join(candidate, 'WE-CRYPTO-CACHE');

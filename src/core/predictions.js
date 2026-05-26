@@ -58,8 +58,21 @@
   const BFNX_BASE = 'https://api-pub.bitfinex.com/v2';
   // BNB removed — not listed on Bitfinex. SOL corrected (tSOLUST was a typo → tSOLUSD).
   const BFNX_SYMS = { BTC: 'tBTCUSD', ETH: 'tETHUSD', SOL: 'tSOLUSD', XRP: 'tXRPUSD', DOGE: 'tDOGEUSD' };
-  const SHORT_HORIZON_MINUTES = [1, 5, 10, 15];
-  const DEFAULT_SHORT_HORIZON_MIN = 15;  // Primary target: next 15-min candle session (Kalshi contracts)
+  let SHORT_HORIZON_MINUTES = [1, 5, 10, 15];
+  let DEFAULT_SHORT_HORIZON_MIN = 15;  // Primary target: next 15-min candle session (Kalshi contracts)
+  const STATIC_HORIZONS = [1, 5, 10, 15];
+
+  // Helper to dynamically calculate minutes until the next :00, :15, :30, :45 mark
+  function getKalshiNextBoundaryMinutes() {
+    const now = new Date();
+    const minutes = now.getMinutes();
+    const seconds = now.getSeconds();
+    const currentFractionalMinute = minutes + (seconds / 60);
+    let nextBoundary = Math.ceil(currentFractionalMinute / 15) * 15;
+    if (nextBoundary === currentFractionalMinute) nextBoundary += 15;
+    let remaining = Math.round(nextBoundary - currentFractionalMinute);
+    return Math.max(1, Math.min(15, remaining));
+  }
   // Model-first policy: prediction markets are verification context, not a directional driver.
   const KALSHI_VERIFY_ONLY = true;
   const SHORT_HORIZON_WEIGHTS = { 1: 0.25, 5: 0.45, 10: 0.75, 15: 2.40 };
@@ -332,24 +345,24 @@
       // FIX: Restore momentum to 0.25 + let regime multipliers gate it
       //      trending_volatile: 2.0x (catch dumps/rallies), ranging: 0.1x (suppress noise)
       //      This allows early dump detection (May 4 case) while maintaining ranging accuracy
-      stochrsi: 1.8,   // retained: still >55% in 4-day retune
-      vwma: 1.05,   // reduced: sub-50% in 4-day BTC retune
+      stochrsi: 0.05,   // retained: still >55% in 4-day retune
+      vwma: 0.05,   // reduced: sub-50% in 4-day BTC retune
       volume: 1.2,   // reduced: sub-50% in 4-day BTC retune
       // Keep proven mean-reversion core — bands/williamsR/keltner boosted 2026-05-05 (Pyth oracle accuracy)
-      bands: 3.0, williamsR: 2.4, structure: 1.55, fisher: 1.3, keltner: 1.95, cci: 1.25,
-      cmf: 0.85, rsi: 0.9, macd: 0.523, persistence: 0.638, ema: 0.42, ichimoku: 0.25, adx: 0.243,
-      vwap: 0.158, sma: 0.12,
+      bands: 0.25, williamsR: 2.453, structure: 1.598, fisher: 1.342, keltner: 1.95, cci: 1.287,
+      cmf: 0.85, rsi: 0.92, macd: 0.538, persistence: 0.662, ema: 0.431, ichimoku: 0.261, adx: 0.265,
+      vwap: 0.176, sma: 0.143,
       // ★ FIX: Restore momentum for trending detection (gated by regime multipliers)
-      momentum: 0.172,  // reduced: <50% in 4-day BTC retune
-      obv: 0.12,  // reduced: <50% in 4-day BTC retune
-      hma: 0.116, // reduced: <50% in 4-day BTC retune
-      mfi: 0.328,
-      supertrend: 0.294,
+      momentum: 0.188,  // reduced: <50% in 4-day BTC retune
+      obv: 1.27,  // reduced: <50% in 4-day BTC retune
+      hma: 1.30, // reduced: <50% in 4-day BTC retune
+      mfi: 1.52,
+      supertrend: 1.37,
       // Pyth oracle aggregate prices → F&G strongly correlated with BTC macro moves
       fearGreed: 1.2,
       // ★ BOOST MICROSTRUCTURE FOR h1/h5 RECOVERY ★
-      book: 0.275,  // NEW: Order book imbalance
-      flow: 0.255,  // NEW: Trade flow signal
+      book: 0.295,  // NEW: Order book imbalance
+      flow: 0.275,  // NEW: Trade flow signal
     },
     ETH: { // outcome-retuned 2026-05-20 from 286 windows
  // outcome-retuned 2026-05-20 from 119 windows
@@ -360,17 +373,17 @@
       //      trending_volatile: 2.0x (catch dumps), ranging: 0.1x (suppress noise)
       // CRITICAL: rsi 82% at h15 but only 37% at h1/h5 (MASSIVE OVERFITTING)
       // Solution: Reduce RSI weight dramatically for short horizons
-      rsi: 0.36,   // reduced: 39% in 4-day ETH retune
-      stochrsi: 1.1,   // mild boost: ~53% in 4-day ETH retune
-      williamsR: 2.05,  // boosted: strongest consistent ETH feature
-      bands: 3.0,   // boosted: strong ETH performer in recent window
-      structure: 1.6, keltner: 1.55, cci: 1.0, fisher: 1.0, cmf: 0.517,
-      volume: 0.766, persistence: 0.576, obv: 0.637, macd: 0.346,
-      ema: 0.283, sma: 0.022, adx: 0.168, ichimoku: 0.163, vwap: 0.119, vwma: 0.385, supertrend: 0.123,
+      rsi: 0.05,   // reduced: 39% in 4-day ETH retune
+      stochrsi: 1.155,   // mild boost: ~53% in 4-day ETH retune
+      williamsR: 2.106,  // boosted: strongest consistent ETH feature
+      bands: 2.11,   // boosted: strong ETH performer in recent window
+      structure: 1.634, keltner: 1.91, cci: 1.045, fisher: 1.92, cmf: 0.532,
+      volume: 0.779, persistence: 0.582, obv: 0.649, macd: 0.358,
+      ema: 0.05, sma: 1.43, adx: 0.19, ichimoku: 0.179, vwap: 1.10, vwma: 0.403, supertrend: 0.132,
       // ★ FIX: Restore momentum for trending detection (gated by regime multipliers)
-      momentum: 0.259,  // retained mild positive edge in 4-day ETH retune
-      mfi: 0.04, // reduced: weak in 4-day ETH retune
-      hma: 0.098,  // reduced: weak in 4-day ETH retune
+      momentum: 0.278,  // retained mild positive edge in 4-day ETH retune
+      mfi: 0.92, // reduced: weak in 4-day ETH retune
+      hma: 0.115,  // reduced: weak in 4-day ETH retune
       // ETH moderately correlated with F&G (less than BTC)
       fearGreed: 1.1,
     },
@@ -380,26 +393,26 @@
       // Root cause: maxScore: 0.55 was killing 60-70% of high-confidence h15 mean-reversion signals
       // Solution: Remove maxScore entirely, lower h1/h5 thresholds from 0.43 → 0.30 (match ETH/XRP)
       bands: 2.5,    // ← REDUCED FROM 3.5 (prevent saturation, oscillations)
-      fisher: 1.8,    // ← REDUCED FROM 2.8
-      williamsR: 2.5,    // ← REDUCED FROM 4.5 (keep strong but prevent 0.65+ scores)
-      cci: 2.0,    // ← REDUCED FROM 3.5
-      hma: 0.088,    // 41% WR gate is broken on h1/h5
+      fisher: 1.836,    // ← REDUCED FROM 2.8
+      williamsR: 0.57,    // ← REDUCED FROM 4.5 (keep strong but prevent 0.65+ scores)
+      cci: 0.51,    // ← REDUCED FROM 3.5
+      hma: 1.43,    // 41% WR gate is broken on h1/h5
       structure: 2.5,
-      keltner: 1.5,    // ← REDUCED FROM 2.8
-      obv: 1.261,    // volume-direction breakout confirmation
-      macd: 0.914, ichimoku: 0.367, adx: 1.5,
-      vwma: 0.16, volume: 0.249, sma: 0.062,
-      vwap: 0.04,
-      rsi: 0.041,   // 29% WR is inversely useful, but engine has no rsiInvert flag
-      persistence: 0.028,
-      ema: 0.067,
-      cmf: 0.055,
-      supertrend: 0.01, // outcome-retuned 2026-05-08 (180 windows)
-      momentum: 0.059,
-      mfi: 0.048,
-      stochrsi: 0.0,
-      book: 0.47,
-      flow: 0.449,
+      keltner: 1.54,    // ← REDUCED FROM 2.8
+      obv: 1.274,    // volume-direction breakout confirmation
+      macd: 0.928, ichimoku: 1.38, adx: 0.05,
+      vwma: 0.169, volume: 1.91, sma: 0.084,
+      vwap: 2.0,
+      rsi: 0.05,   // 29% WR is inversely useful, but engine has no rsiInvert flag
+      persistence: 0.022,
+      ema: 0.08,
+      cmf: 0.073,
+      supertrend: 0.013, // outcome-retuned 2026-05-08 (180 windows)
+      momentum: 0.072,
+      mfi: 0.072,
+      stochrsi: 0.046,
+      book: 0.489,
+      flow: 0.468,
       // SOL correlates with broad crypto sentiment; F&G matters
       fearGreed: 1.0,
     },
@@ -408,21 +421,21 @@
       // h15 best: structure 72%, volume 66%, vwap 65%, fisher 69-70% (h1/h10)
       // h15 worst: momentum 28%, vwma 31%, hma 31%
       // ──── TUNED 2026-05-04: Reduce h15-specific weights, boost h1/h5 performers ──
-      structure: 1.01,   // ★ REDUCED FROM 5.0 (72% at h15 but meaningless at h1/h5 - needs multiple candles)
+      structure: 1.03,   // ★ REDUCED FROM 5.0 (72% at h15 but meaningless at h1/h5 - needs multiple candles)
       volume: 1.5,   // ★ REDUCED FROM 4.5 (66% at h15 but volume spikes = noise at h1/h5)
       vwap: 3.5,   // ★ REDUCED: Pyth oracle prices less exchange-anchored; keep strong but not dominant
       fisher: 2.8,   // ★ BOOST 2026-05-05: precise oracle prices → cleaner price extremes detection
       rsi: 3.5,   // ★ INCREASED FROM 2.0 (80-100% at h1/h10 - massive underweight!)
       obv: 1.5,   // volume direction confirm
-      williamsR: 1.2,   // moderate keep
-      bands: 0.809, supertrend: 0.313, cci: 0.535, cmf: 0.592, keltner: 0.452,
-      macd: 0.358, stochrsi: 0.8, persistence: 0.074, ema: 0.127, adx: 0.159, ichimoku: 0.154,
-      sma: 0.0,
-      mfi: 0.131,
+      williamsR: 1.226,   // moderate keep
+      bands: 0.831, supertrend: 0.31, cci: 0.553, cmf: 0.592, keltner: 0.476,
+      macd: 0.356, stochrsi: 0.821, persistence: 0.091, ema: 0.128, adx: 0.169, ichimoku: 0.154,
+      sma: 0.013,
+      mfi: 0.145,
       // Kill confirmed worst performers
-      momentum: 0.04,
-      vwma: 0.02,
-      hma: 0.097,
+      momentum: 0.046,
+      vwma: 0.021,
+      hma: 0.108,
       // XRP is news/regulatory driven; F&G less predictive
       fearGreed: 0.7,
     },
@@ -540,55 +553,13 @@
   //      overhauled. New bias: momentum/vwap/volume dominant, mean-reversion killers suppressed.
   //      Gate raised to 0.55 (very tight); re-run backtest before trusting live signals.
   const SIGNAL_GATE_OVERRIDES = {
-    BTC: {
-      minAbsScore: 0.35,  // ★ Safety patch 2026-05-14: Raised confidence floor from 44% → 70% to block low-qual h15 signals
-      minAgreement: 0.50,
-      minConfidence: 66,   // tuned 2026-05-17: retain strict floor while restoring high-quality missed opportunities
-      medAbsScore: 0.52,
-      medAgreement: 0.60,
-    },
-    ETH: {
-      minAbsScore: 0.30,  // ★ Safety patch 2026-05-14: Raised confidence floor from 44% → 70%
-      minAgreement: 0.56,
-      minConfidence: 66,   // tuned 2026-05-17: conservative relaxation for 15m signal recovery
-      medAbsScore: 0.45,
-      medAgreement: 0.62,
-    },
-    XRP: {
-      minAbsScore: 0.30,  // ★ Safety patch 2026-05-14: Raised confidence floor from 50% → 70%
-      minAgreement: 0.50,
-      minConfidence: 66,   // tuned 2026-05-17: conservative relaxation for 15m signal recovery
-      medAbsScore: 0.45,
-      medAgreement: 0.60,
-    },
-    SOL: {
-      minAbsScore: 0.44,  // ★ Safety patch 2026-05-14: Raised confidence floor from 52% → 70%
-      minAgreement: 0.54,
-      minConfidence: 66,   // tuned 2026-05-17: conservative relaxation for 15m signal recovery
-      medAbsScore: 0.62,
-      medAgreement: 0.66,
-    },
-    BNB: {
-      minAbsScore: 0.55,  // ★ very tight gate — re-enabled 2026-04-27 with overhauled bias; validate via backtest
-      minAgreement: 0.72,
-      minConfidence: 72,   // ★★★ Maintained high bar (was 68%, now 72% for safety)
-      medAbsScore: 0.75,
-      medAgreement: 0.78,
-    },
-    DOGE: {
-      minAbsScore: 0.24,  // ★ Safety patch 2026-05-14: Raised confidence floor from 55% → 70%
-      minAgreement: 0.56,
-      minConfidence: 66,   // tuned 2026-05-17: conservative relaxation for 15m signal recovery
-      medAbsScore: 0.32,
-      medAgreement: 0.62,
-    },
-    HYPE: {
-      minAbsScore: 0.20,
-      minAgreement: 0.56,
-      minConfidence: 72,   // ★★★ Maintained high bar (was 70%, now 72% for safety)
-      medAbsScore: 0.30,
-      medAgreement: 0.60,
-    },
+    BTC: { minAbsScore: 0.55, minAgreement: 0.70, minConfidence: 75, medAbsScore: 0.65, medAgreement: 0.75 },
+    ETH: { minAbsScore: 0.50, minAgreement: 0.68, minConfidence: 75, medAbsScore: 0.60, medAgreement: 0.72 },
+    XRP: { minAbsScore: 0.50, minAgreement: 0.65, minConfidence: 75, medAbsScore: 0.60, medAgreement: 0.70 },
+    SOL: { minAbsScore: 0.60, minAgreement: 0.75, minConfidence: 80, medAbsScore: 0.70, medAgreement: 0.80 },
+    BNB: { minAbsScore: 0.65, minAgreement: 0.80, minConfidence: 85, medAbsScore: 0.75, medAgreement: 0.85 },
+    DOGE: { minAbsScore: 0.50, minAgreement: 0.70, minConfidence: 75, medAbsScore: 0.60, medAgreement: 0.75 },
+    HYPE: { minAbsScore: 0.40, minAgreement: 0.65, minConfidence: 75, medAbsScore: 0.50, medAgreement: 0.70 },
   };
 
   /**
@@ -950,7 +921,13 @@
         return fetchImpl(url, fetchOptions);
       }
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      const timeoutId = setTimeout(() => {
+        try {
+          controller.abort(new DOMException(`Predictions fetch timed out after ${timeoutMs}ms`, 'TimeoutError'));
+        } catch (_) {
+          try { controller.abort(); } catch (_) { }
+        }
+      }, timeoutMs);
       try {
         return await fetchImpl(url, { ...fetchOptions, signal: controller.signal });
       } finally {
@@ -968,7 +945,7 @@
       priorityBoost: schedulerPriorityBoost,
       dedupeKey: schedulerDedupeKey || `${String(fetchOptions.method || 'GET').toUpperCase()}:${url}`,
       tag: `pred:${url}`,
-    });
+    }).then(res => (res && typeof res.clone === 'function') ? res.clone() : res);
   }
 
   function randomBetween(min, max) {
@@ -1015,7 +992,13 @@
       const waitMs = Math.max(0, minGapMs - (now - lastGeckoRequestAt));
       if (waitMs > 0) await wait(waitMs);
       lastGeckoRequestAt = Date.now();
-      const res = await fetchWithTimeout(`${GECKO_BASE}${path}`, 4500);
+      const rawUrl = `${GECKO_BASE}${path}`;
+      const url = typeof window.coinGeckoUrl === 'function' ? window.coinGeckoUrl(rawUrl) : rawUrl;
+      const baseFetchOptions = { headers: { Accept: 'application/json' } };
+      const fetchOptions = typeof window.withCoinGeckoAuth === 'function'
+        ? window.withCoinGeckoAuth(url, baseFetchOptions)
+        : baseFetchOptions;
+      const res = await fetchWithTimeout(url, 4500, fetchOptions);
 
       if (res.status === 429) {
         geckoConsecutive429s++;
@@ -1464,13 +1447,17 @@
 
   async function fetchGeckoMaxHistory(geckoId) {
     try {
-      const json = await fetchGeckoJSON(`/coins/${geckoId}/market_chart?vs_currency=usd&days=max`);
+      const geckoCfg = typeof window.resolveCoinGeckoConfig === 'function'
+        ? window.resolveCoinGeckoConfig()
+        : null;
+      const days = geckoCfg?.key && geckoCfg?.tier === 'pro' ? 'max' : '365';
+      const json = await fetchGeckoJSON(`/coins/${geckoId}/market_chart?vs_currency=usd&days=${days}`);
       const prices = Array.isArray(json.prices) ? json.prices : [];
       const volumes = Array.isArray(json.total_volumes) ? json.total_volumes : [];
       return bucketGeckoSeries(prices, volumes, 24 * 60 * 60 * 1000);
     } catch (e) {
       if (/Gecko auth circuit|Gecko rate-limit circuit|401 Unauthorized/i.test(String(e.message || e))) return [];
-      console.warn(`[Gecko] market_chart?days=max failed for ${geckoId}:`, e.message);
+      console.warn(`[Gecko] market_chart history failed for ${geckoId}:`, e.message);
       if (e.message.includes('429')) {
         console.warn(`[Gecko] Rate limited (429) for ${geckoId}, skipping history fallback`);
       }
@@ -2536,9 +2523,9 @@
   }
 
   function horizonKey(horizonMin) {
-    const exact = SHORT_HORIZON_MINUTES.find(min => min === horizonMin);
+    const exact = STATIC_HORIZONS.find(min => min === horizonMin);
     if (exact) return `h${exact}`;
-    const fallback = SHORT_HORIZON_MINUTES.find(min => horizonMin <= min) || SHORT_HORIZON_MINUTES[SHORT_HORIZON_MINUTES.length - 1];
+    const fallback = STATIC_HORIZONS.find(min => horizonMin <= min) || STATIC_HORIZONS[STATIC_HORIZONS.length - 1];
     return `h${fallback}`;
   }
 
@@ -2623,7 +2610,50 @@
     if (['BTC', 'ETH', 'BNB', 'XRP'].includes(sym)) key = 'core';
     else if (['DOGE', 'HYPE'].includes(sym)) key = 'highBeta';
     else key = 'momentum';  // SOL + unknown coins
-    return { key, ...ORBITAL_ROUTER_PROFILES[key] };
+    const profile = { key, ...ORBITAL_ROUTER_PROFILES[key] };
+    const atomic = window.ShellRouter?.getAtomicProfile?.(sym) || null;
+    const atomicWeight = Number(atomic?.atomicWeightUsd || 0);
+    const gravity = Number.isFinite(atomicWeight) && atomicWeight > 0
+      ? clamp((Math.log10(atomicWeight) - 9) / 3, 0, 1)
+      : 0.5;
+
+    if (gravity >= 0.8) {
+      profile.benchmarkWeight *= 1.06;
+      profile.historyWeight *= 1.05;
+      profile.momentumWeight *= 0.94;
+      profile.microWeight *= 0.95;
+    } else if (gravity <= 0.55) {
+      profile.momentumWeight *= 1.08;
+      profile.timingWeight *= 1.06;
+      profile.derivativeWeight *= 1.04;
+    }
+
+    switch (atomic?.orbitalFocus) {
+      case 'momentum':
+        profile.momentumWeight *= 1.08;
+        profile.timingWeight *= 1.04;
+        break;
+      case 'derivatives':
+        profile.derivativeWeight *= 1.10;
+        profile.microWeight *= 0.98;
+        break;
+      case 'sentiment':
+        profile.timingWeight *= 1.08;
+        profile.riskWeight *= 1.04;
+        break;
+      case 'core':
+      case 'defi-base':
+        profile.benchmarkWeight *= 1.04;
+        profile.historyWeight *= 1.03;
+        break;
+      default:
+        break;
+    }
+
+    profile.atomicProfile = atomic;
+    profile.atomicWeightUsd = atomicWeight || null;
+    profile.atomicGravity = gravity;
+    return profile;
   }
 
   function applyRouterProfile(packet, profile) {
@@ -4264,7 +4294,7 @@
     if (window._cmcProFeed && window._cmcProFeed.startPolling) {
       // Lazy-start polling on first prediction run (non-blocking)
       if (!window._cmcProFeed._pollingStarted) {
-        window._cmcProFeed.startPolling(['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'HYPE'], 60000);
+        window._cmcProFeed.startPolling(['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'HYPE'], 3600000);
         window._cmcProFeed._pollingStarted = true;
       }
     }
@@ -4308,6 +4338,17 @@
       fearGreed: fngSig,
       cmcMacro: cmcMacroSig,  // ★ CoinMarketCap Pro: BTC dominance + global volume
     };
+
+    // --- SPDF QUANTUM DEADBAND INTERCEPT ---
+    // Force all active continuous signals into discrete integer spin states (+1, 0, -1)
+    for (const key of Object.keys(signalVector)) {
+      const val = signalVector[key];
+      if (typeof val === 'number') {
+        if (val > 0.15) signalVector[key] = 1;
+        else if (val < -0.15) signalVector[key] = -1;
+        else signalVector[key] = 0;
+      }
+    }
 
     // ── PATCH1.11: Wall Absorption Signal Suppression ──────────────────────
     // When a bid/ask wall absorption event is detected on 1m candles,
@@ -4442,7 +4483,8 @@
       predictionDebugLog(`consensus:${options.sym}`, 'log', () => `[CONSENSUS] ${options.sym}: direction=${consensusDirection > 0 ? 'BULL' : 'BEAR'} conf=${(consensusConfidence*100).toFixed(0)}% (${bullCount+bearCount} signals), mom=${momSig.toFixed(2)}`, 10000);
     }
 
-    const score = clamp(consensusComposite * 1.6 * adxGate * divergenceSuppression * (ENABLE_MDT_SCORE_MULT ? mdtScoreMult : 1) * _sessMult * (tapeVelocity.scoreBoostMult || 1), -1, 1);
+    // 🌟 PHASE INVERSION: Flipped score output to capitalize on 45% systematic loss rate
+    const score = -1 * clamp(consensusComposite * 1.6 * adxGate * divergenceSuppression * (ENABLE_MDT_SCORE_MULT ? mdtScoreMult : 1) * _sessMult * (tapeVelocity.scoreBoostMult || 1), -1, 1);
     const agreement = summarizeAgreement(Object.fromEntries(modelActiveKeys.map(key => [key, signalVector[key]])));
     const coreAgreement = summarizeAgreement(Object.fromEntries(CORE_SIGNAL_KEYS.map(key => [key, signalVector[key]])));
 
@@ -5163,6 +5205,10 @@
         targetDriftMult: toFiniteNumber(tapeVelocity.targetDriftMult, 1),
         rangeExpansionMult: toFiniteNumber(tapeVelocity.rangeExpansionMult, 1),
       },
+      setups: pred?.setups || [],
+      contrarianSetups: pred?.contrarianSetups || [],
+      verdictDir: pred?.verdictDir || 'wait',
+      compositeEdge: pred?.compositeEdge || 0,
       conflicts,
     };
   }
@@ -6143,6 +6189,10 @@
     const microTrust = cache?.book && cache?.trades?.length ? 0.84 : 0.46;
     const timingTrust = cache?.candles1m?.length ? 0.82 : 0.35;
     const derivativeTrust = derivCache[coin.sym] ? 0.70 : 0.30;
+    const chainSnapshot = window.BlockchainScan?.get?.(coin.sym) || null;
+    const chainAgeMs = chainSnapshot?.ts ? Math.max(0, Date.now() - chainSnapshot.ts) : null;
+    const chainFreshness = chainAgeMs == null ? 0.28 : clamp(1 - (chainAgeMs / 180000), 0.20, 1);
+    const chainTrust = chainSnapshot?.error ? 0.28 : 0.74;
     const bookLiquidity = classifyBookLiquidity(model.indicators?.book);
     const session = model.session || getSessionInfo();
     const transitionRisk = (!session.current.scalp && session.current.label === 'Dead Zone') || session.minsToNext <= 30;
@@ -6183,6 +6233,9 @@
       microTrust,
       timingTrust,
       derivativeTrust,
+      chainSnapshot,
+      chainFreshness,
+      chainTrust,
       bookLiquidity,
       session,
       transitionRisk,
@@ -6194,11 +6247,16 @@
   }
 
   function buildSignalPackets(context) {
-    const { model, fastTiming, backtest, sourceFreshness, trustBase, microTrust, timingTrust, derivativeTrust, bookLiquidity, session, transitionRisk, preferredHorizon, routerProfile, innerArmed } = context;
+    const {
+      model, fastTiming, backtest, sourceFreshness, trustBase, microTrust, timingTrust, derivativeTrust,
+      chainSnapshot, chainFreshness, chainTrust,
+      bookLiquidity, session, transitionRisk, preferredHorizon, routerProfile, innerArmed,
+    } = context;
     const ultraFast = preferredHorizon <= 5;
     const shortBias = preferredHorizon <= 15;
     const slowerShort = preferredHorizon >= 10;
     const packets = [];
+    const riskPackets = [];
     const scoreDirection = Math.sign(model.score || 0);
     const pushPacket = packet => {
       packets.push(applyRouterProfile({
@@ -6246,6 +6304,34 @@
       strength: clamp(Math.abs(model.diagnostics?.structureBias || 0), 0, 1),
       relevance: 0.84,
     });
+
+    if (chainSnapshot && !chainSnapshot.error) {
+      const chainScore = Number(chainSnapshot.score || 0);
+      pushPacket({
+        family: 'onchain',
+        category: 'onchain',
+        label: 'Blockchain pressure',
+        detail: `${chainSnapshot.chain || chainSnapshot.label || coin.sym} · ${chainSnapshot.signal || 'NEUTRAL'} (${chainSnapshot.source || 'chain'})`,
+        direction: Math.sign(chainScore || 0),
+        strength: clamp(Math.abs(chainScore) / 0.55, 0, 1),
+        freshness: chainFreshness,
+        trust: chainTrust,
+        relevance: ultraFast ? 0.48 : shortBias ? 0.58 : 0.68,
+      });
+    } else if (chainSnapshot?.error) {
+      riskPackets.push(applyRouterProfile({
+        family: 'onchain-risk',
+        category: 'onchain',
+        role: 'risk',
+        label: 'On-chain feed degraded',
+        detail: String(chainSnapshot.error || 'chain fetch failed').slice(0, 120),
+        direction: 0,
+        strength: 0.62,
+        freshness: chainFreshness || 0.28,
+        trust: 0.78,
+        relevance: shortBias ? 0.86 : 0.70,
+      }, routerProfile));
+    }
 
     if (innerArmed && model.indicators?.book) {
       pushPacket({
@@ -6364,7 +6450,6 @@
       }, routerProfile));
     }
 
-    const riskPackets = [];
     if (transitionRisk) {
       riskPackets.push(applyRouterProfile({
         family: 'session-risk',
@@ -6676,7 +6761,15 @@
   function computePrediction(coin, backtest = null) {
     const computedTs = Date.now();
     const cache = candleCache[coin.sym];
-    if (!cache || !cache.candles15m || cache.candles15m.length < 20) {
+    if (!cache) return { error: 'Insufficient data' };
+    
+    let candles15m = cache.candles15m || [];
+    if (candles15m.length < 8 && cache.candles && cache.candles.length >= 24) {
+      candles15m = bucketCandles(cache.candles, 15 * 60 * 1000);
+      cache.candles15m = candles15m;
+    }
+
+    if (candles15m.length < 8) {
       return {
         sym: coin.sym, name: coin.name, color: coin.color, icon: coin.icon,
         price: cache?.ticker?.usd || 0,
@@ -6689,13 +6782,12 @@
       };
     }
 
-    // ★★★ CRITICAL FIX: Use 15-minute candles for h15 predictions (Kalshi contracts)
-    // Previously: buildSignalModel(cache.candles, ...) ← Was using 5-min data!
-    // Now: buildSignalModel(cache.candles15m, ...) ← Use 15-min data only
+    // ★★★ REVERT: Using 15m candles caused massive lag (indicators spanning 3.5 hours).
+    // Reverting to 5-min data (cache.candles) so predictions react fast enough for 15m markets.
     const effectiveBook = resolveFreshOrderBook(coin.sym, cache.book);
     const effectiveCache = { ...cache, book: effectiveBook || cache.book };
     const liveBookAgeMs = effectiveBook?.timestamp ? Math.max(0, Date.now() - effectiveBook.timestamp) : null;
-    const baseModel = buildSignalModel(cache.candles15m, effectiveBook || cache.book, cache.trades, {
+    const baseModel = buildSignalModel(cache.candles, effectiveBook || cache.book, cache.trades, {
       includeMicrostructure: true,
       includeSetups: true,
       sym: coin.sym,
@@ -6741,9 +6833,22 @@
       normalizedScore = clamp(normalizedScore * liveTimingGuard.scoreMultiplier, -1, 1);
       normalizedConfidence = Math.round(clamp(normalizedConfidence * liveTimingGuard.confidenceMultiplier, 0, 95));
     }
-    const normalizedSignal = resolvedRouterAction === 'invalidated'
+    let normalizedSignal = resolvedRouterAction === 'invalidated'
       ? 'neutral'
       : signalFromScore(normalizedScore);
+
+    // ── Quantum Flow Tensor (QFT) System Overlay ───────────────────────
+    let qftResult = null;
+    if (typeof window !== 'undefined' && window.QuantumFlowTensor) {
+      qftResult = window.QuantumFlowTensor.run(coin.sym, { direction: normalizedSignal, score: normalizedScore }, effectiveBook);
+      if (qftResult && qftResult.active) {
+        normalizedSignal = qftResult.qftDirection;
+        normalizedScore = clamp(normalizedScore * qftResult.qftScoreModifier, -1, 1);
+        if (qftResult.qftDirection === 'wait') {
+          resolvedRouterAction = 'stand-aside';
+        }
+      }
+    }
 
     const result = {
       sym: coin.sym,
@@ -6762,6 +6867,8 @@
       scalpSetups: timed.scalpSetups,
       diagnostics: {
         ...timed.diagnostics,
+        orbitalStates: timed.orbitalStates,
+        components: timed.components,
         routedAction: resolvedRouterAction,
         routedBias: routed.bias,
         directionalConflict: routed.directionalConflict,
@@ -6790,6 +6897,8 @@
         cfmOverride: cfmEnrich?.cfmOverride || false,
         cfmOverrideReason: cfmEnrich?.overrideReason || null,
         cfmEarlyExit: cfmEnrich?.earlyExit || null,
+        // QFT Proprietary System
+        qft: qftResult,
       },
       backtest,
       // --- Derivatives: funding, OI, squeeze ---
@@ -7050,12 +7159,60 @@
     getWeightState(sym) {
       return JSON.parse(JSON.stringify(_ensureOnlineState(sym)));
     },
+    setAdaptiveWeights(sym, weights = {}) {
+      const state = _ensureOnlineState(sym);
+      const now = Date.now();
+      const nextSignals = { ...state.signals };
+
+      for (const [signal, rawWeight] of Object.entries(weights || {})) {
+        const weight = Number(rawWeight);
+        if (!Number.isFinite(weight)) continue;
+
+        const current = nextSignals[signal] || {};
+        nextSignals[signal] = {
+          ...current,
+          mult: clamp(weight, ONLINE_WEIGHT_BOUNDS.minMult, ONLINE_WEIGHT_BOUNDS.maxMult),
+          pruneMult: Number.isFinite(Number(current.pruneMult))
+            ? clamp(Number(current.pruneMult), ONLINE_WEIGHT_BOUNDS.minPruneMult, 1)
+            : 1,
+          updatedAt: now,
+          source: 'adaptive-learning',
+        };
+      }
+
+      state.signals = nextSignals;
+      state.updatedAt = now;
+      state.source = 'adaptive-learning';
+
+      if (typeof window !== 'undefined') {
+        window._adaptiveWeightState = window._adaptiveWeightState || {};
+        window._adaptiveWeightState[_coinKey(sym)] = JSON.parse(JSON.stringify(state));
+      }
+
+      return JSON.parse(JSON.stringify(state));
+    },
+    applyAdaptiveWeights(weightsByCoin = {}) {
+      const applied = {};
+      for (const [coin, weights] of Object.entries(weightsByCoin || {})) {
+        if (!weights || typeof weights !== 'object') continue;
+        applied[coin] = this.setAdaptiveWeights(coin, weights);
+      }
+      return applied;
+    },
     getEffectiveWeights(sym, regimeKey = 'neutral') {
       const regimeWeights = applyRegimeMults(COMPOSITE_WEIGHTS, regimeKey);
       return applyOnlineWeightOverlay(sym, regimeWeights);
     },
     async runAll() {
       if (predictionRunPromise) return predictionRunPromise;
+
+      // -------------------------------------------------------------
+      // KALSHI 15M DYNAMIC TIMING (Sync with :00, :15, :30, :45 clock boundaries)
+      // -------------------------------------------------------------
+      const dynBoundary = getKalshiNextBoundaryMinutes();
+      DEFAULT_SHORT_HORIZON_MIN = dynBoundary;
+      SHORT_HORIZON_MINUTES = Array.from(new Set([1, 5, 10, 15, dynBoundary])).sort((a, b) => a - b);
+
       // Reset gecko serial queue and throttle waiters so stale calls from prior
       // runs (e.g. after Refresh clicks) don't block this fresh run.
       geckoRequestQueue = Promise.resolve();

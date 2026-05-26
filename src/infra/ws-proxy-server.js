@@ -9,8 +9,107 @@ const WebSocket = require('ws');
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
 const PythLazerWebSocketHandler = require('./pyth-lazer-websocket');
 
+function stripEnvValue(value) {
+  let v = String(value ?? '').trim();
+  if (!v) return '';
+  const quote = v[0];
+  if ((quote === '"' || quote === "'" || quote === '`') && v[v.length - 1] === quote) {
+    v = v.slice(1, -1);
+  } else {
+    v = v.replace(/\s+#.*$/, '').trim();
+  }
+  return v.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').trim();
+}
+
+function readEnvValue(names) {
+  for (const name of names) {
+    const value = process.env?.[name];
+    if (value != null && String(value).trim()) return stripEnvValue(value);
+  }
+  return '';
+}
+
+function coinbaseCredentialFromObject(obj, source) {
+  if (!obj || typeof obj !== 'object') return null;
+  const name = stripEnvValue(obj.name || obj.keyName || obj.key_name || obj.apiKeyName);
+  const privateKey = stripEnvValue(obj.privateKey || obj.private_key || obj.CDP_API_KEY_PRIVATE_KEY);
+  if (!name || !privateKey) return null;
+  return { name, privateKey, source };
+}
+
+function normalizeCoinbaseJwtUri(method, requestPath) {
+  if (!method || !requestPath) return '';
+  const verb = String(method).trim().toUpperCase();
+  let target = String(requestPath).trim();
+  try {
+    if (/^https?:\/\//i.test(target)) {
+      const u = new URL(target);
+      target = `${u.hostname}${u.pathname}`;
+    }
+  } catch (_) {
+    // keep original target
+  }
+  target = target.replace(/^\/+/, '');
+  if (/^api\/v3\//i.test(target)) target = `api.coinbase.com/${target}`;
+  if (!/^[a-z0-9.-]+\/api\/v3\//i.test(target)) target = `api.coinbase.com/${target}`;
+  return `${verb} ${target}`;
+}
+
+function loadCoinbaseCredential() {
+  const jsonEnv = readEnvValue([
+    'CDP_API_KEY_JSON',
+    'COINBASE_CDP_API_KEY_JSON',
+    'COINBASE_API_KEY_JSON',
+  ]);
+  if (jsonEnv) {
+    try {
+      const credential = coinbaseCredentialFromObject(JSON.parse(jsonEnv), 'env-json');
+      if (credential) return credential;
+    } catch (_) { }
+  }
+
+  const name = readEnvValue([
+    'CDP_API_KEY_NAME',
+    'COINBASE_CDP_API_KEY_NAME',
+    'COINBASE_API_KEY_NAME',
+    'COINBASE_KEY_NAME',
+  ]);
+  const privateKey = readEnvValue([
+    'CDP_API_KEY_PRIVATE_KEY',
+    'COINBASE_CDP_PRIVATE_KEY',
+    'COINBASE_API_PRIVATE_KEY',
+    'COINBASE_PRIVATE_KEY',
+    'COINBASE_API_KEY_PRIVATE_KEY',
+  ]);
+  const envCredential = coinbaseCredentialFromObject({ name, privateKey }, 'env-fields');
+  if (envCredential) return envCredential;
+
+  try {
+    const envContent = fs.readFileSync(path.join(__dirname, '../../.env'), 'utf-8');
+    const jsonMatch = envContent.match(/\{[\s\S]*?"privateKey"\s*:[\s\S]*?\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0].replace(/\\n/g, '\n'));
+      const credential = coinbaseCredentialFromObject(parsed, '.env');
+      if (credential) return credential;
+    }
+  } catch (_) { }
+
+  return null;
+}
+
+const coinbaseCredential = loadCoinbaseCredential();
+let CDP_KEY_NAME = coinbaseCredential?.name || null;
+let CDP_PRIVATE_KEY = coinbaseCredential?.privateKey || null;
+if (CDP_KEY_NAME && CDP_PRIVATE_KEY) {
+  console.log(`[Auth] Loaded Coinbase CDP credentials from ${coinbaseCredential.source}`);
+} else {
+  console.warn('[Auth] Could not load Coinbase CDP credentials');
+}
 const PORT = 3011;
 const WSS_PORT = 3012;
 
@@ -215,6 +314,53 @@ const proxy = new ProxyManager();
 
 // Create HTTP server (for upgrading to WebSocket)
 const server = http.createServer((req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  
+  // Cross-Origin configuration
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    return res.end();
+  }
+
+  if (url.pathname === '/jwt/coinbase') {
+    if (!CDP_KEY_NAME || !CDP_PRIVATE_KEY) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Coinbase credentials not configured in .env' }));
+    }
+
+    try {
+      const requestMethod = url.searchParams.get('method') || null;
+      const requestPath = url.searchParams.get('path') || null;
+
+      const algorithm = 'ES256';
+      const uri = normalizeCoinbaseJwtUri(requestMethod, requestPath);
+      
+      const payload = {
+        iss: 'coinbase-cloud',
+        nbf: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 120,
+        sub: CDP_KEY_NAME,
+      };
+
+      if (uri) {
+        payload.uri = uri;
+      }
+
+      const token = jwt.sign(payload, CDP_PRIVATE_KEY, { algorithm, header: { kid: CDP_KEY_NAME, nonce: crypto.randomBytes(16).toString('hex') } });
+      
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ token }));
+    } catch (e) {
+      console.error('[Auth] Error generating JWT:', e);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Failed to generate JWT' }));
+    }
+  }
+
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({
     status: 'WE-CRYPTO WebSocket Proxy',
@@ -245,8 +391,8 @@ wss.on('connection', (ws, req) => {
 });
 
 // Start listening with Port Cascading (3030 - 3035)
-let currentPort = 3030;
-const maxPort = 3035;
+let currentPort = 3010;
+const maxPort = 3020;
 
 function startServer(port) {
   server.listen(port, () => {
@@ -265,7 +411,7 @@ server.on('error', (e) => {
     if (currentPort <= maxPort) {
       setTimeout(() => startServer(currentPort), 100);
     } else {
-      log(`Could not find an open port between 3030 and ${maxPort}`, 'ERROR');
+      log(`Could not find an open port between 3010 and ${maxPort}`, 'ERROR');
       process.exit(1);
     }
   } else {

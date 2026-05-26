@@ -166,8 +166,40 @@
 
   // ─── Subscribe ──────────────────────────────────────────────────────────────
 
+  async function fetchCoinbaseJwt() {
+    try {
+      if (window.desktopApp?.generateCoinbaseJWT) {
+        const res = await window.desktopApp.generateCoinbaseJWT({
+          requestMethod: 'GET',
+          requestPath: 'api.coinbase.com/api/v3/brokerage/products',
+        });
+        if (res?.success && res.jwt) return res.jwt;
+        if (res?.error) console.warn('[CandleWS] Coinbase JWT failed:', res.error);
+      }
+    } catch (e) {
+      console.warn('[CandleWS] Coinbase JWT failed:', e.message);
+    }
+
+    try {
+      const qs = new URLSearchParams({
+        method: 'GET',
+        path: 'api.coinbase.com/api/v3/brokerage/products',
+      });
+      const res = await fetch(`http://localhost:3011/jwt/coinbase?${qs.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.token) return data.token;
+      }
+    } catch (_) {
+      // Local proxy is optional when Electron can sign through IPC.
+    }
+    return '';
+  }
+
   async function subscribe() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    
+    const jwt = await fetchCoinbaseJwt();
     
     const sub = (channel) => {
       const payload = {
@@ -175,6 +207,7 @@
         product_ids: PRODUCTS,
         channel
       };
+      if (jwt) payload.jwt = jwt;
       ws.send(JSON.stringify(payload));
     };
     

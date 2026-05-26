@@ -5,22 +5,11 @@
 // Two modes exposed on window:
 //   throttledFetch(url, options)  — concurrent cap, hard timeout per request
 //   queuedFetch(url)              — strict serial queue with 65ms breathing room between calls
-//
-// Load order: AFTER proxy-fetch.js (so throttle wraps the already-proxied fetch).
-//
-// WHY Promise.race instead of AbortController:
-//   proxy-fetch.js routes CF-protected domains through a local XHR proxy that
-//   does not forward AbortController signals — so requests through the proxy
-//   can hang forever.  Promise.race gives us a hard wall-clock deadline that
-//   fires regardless, properly releasing the slot via finally.
-
-(function () {
-  'use strict';
-
+(function() {
   // ── 1. CONCURRENT THROTTLE ────────────────────────────────────────────────
-  const MAX_CONCURRENT  = 20;     // allows 7-coin parallel fetch without queue build-up
-  const FETCH_TIMEOUT_MS = 15000; // hard deadline per request (15 s) — proxy sources need room
-  const SLOT_GAP_MS      = 30;    // breathing room between slot releases
+  const MAX_CONCURRENT   = 40;     // Balanced: high enough to avoid deadlock, low enough to protect proxy WSS
+  const FETCH_TIMEOUT_MS = 10000;  // hard deadline per request (10 s)
+  const SLOT_GAP_MS      = 25;     // breathing room between slots to protect proxy event loop
   const API_TIMEOUT_MS = {
     coingecko: 15000,
     coinbase: 15000,
@@ -36,7 +25,18 @@
     cryptocom: 15000,
     kalshi: 15000,
     polymarket: 15000,
-    blockchainraw: 15000,
+    upbit: 15000,
+    bitget: 15000,
+    bingx: 15000,
+    bitvavo: 15000,
+    gemini: 15000,
+    coinw: 15000,
+    lbank: 15000,
+    bitso: 15000,
+    bullish: 15000,
+    whitebit: 15000,
+    ourbit: 15000,
+    weex: 15000,
     default: FETCH_TIMEOUT_MS,
   };
 
@@ -62,11 +62,66 @@
       if (host.includes('polymarket')) return 'polymarket';
       if (host.includes('mempool.space') || host.includes('blockchair.com') || host.includes('etherscan.io') || host.includes('blockscout.com')) return 'blockchainraw';
       if (host.includes('blockcypher')) return 'blockcypher';
-      if (host.includes('blockscout')) return 'blockscout';
       if (host.includes('chain.so')) return 'chainso';
+      if (host.includes('upbit')) return 'upbit';
+      if (host.includes('bitget')) return 'bitget';
+      if (host.includes('bingx')) return 'bingx';
+      if (host.includes('bitvavo')) return 'bitvavo';
+      if (host.includes('gemini')) return 'gemini';
+      if (host.includes('coinw')) return 'coinw';
+      if (host.includes('lbkex') || host.includes('lbank')) return 'lbank';
+      if (host.includes('bitso')) return 'bitso';
+      if (host.includes('bullish')) return 'bullish';
+      if (host.includes('whitebit')) return 'whitebit';
+      if (host.includes('ourbit')) return 'ourbit';
+      if (host.includes('weex')) return 'weex';
       return null;
     } catch (_) {
       return null;
+    }
+  }
+
+  function resolveRuntimeKey(name) {
+    try {
+      if (typeof window.resolveRuntimeKey === 'function') return window.resolveRuntimeKey(name) || '';
+    } catch (_) { }
+    try {
+      return window.__env?.[name] || window.desktopApp?.publicEnv?.[name] || '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function withCoinGeckoAuth(url, options = {}) {
+    const key = String(resolveRuntimeKey('COINGECKO_API_KEY') || '').trim();
+    if (!key) return options;
+    const host = (() => {
+      try { return new URL(String(url), window.location.href).hostname.toLowerCase(); } catch (_) { return ''; }
+    })();
+    const tier = String(resolveRuntimeKey('COINGECKO_API_TIER') || '').trim().toLowerCase();
+    const usePro = /^(pro|paid|enterprise)$/.test(tier) || host.includes('pro-api.coingecko.com');
+    const headerName = usePro ? 'x-cg-pro-api-key' : 'x-cg-demo-api-key';
+    const headers = { ...(options.headers || {}) };
+    if (!headers[headerName] && !headers[headerName.toUpperCase()]) {
+      headers[headerName] = key;
+    }
+    return { ...options, headers };
+  }
+
+  function coinGeckoUrl(url) {
+    const key = String(resolveRuntimeKey('COINGECKO_API_KEY') || '').trim();
+    if (!key) return url;
+    const tier = String(resolveRuntimeKey('COINGECKO_API_TIER') || '').trim().toLowerCase();
+    const usePro = /^(pro|paid|enterprise)$/.test(tier);
+    if (!usePro) return url;
+    try {
+      const u = new URL(String(url), window.location.href);
+      if (u.hostname.includes('coingecko')) {
+        u.hostname = 'pro-api.coingecko.com';
+      }
+      return u.toString();
+    } catch (_) {
+      return url;
     }
   }
 
@@ -94,7 +149,12 @@
       if (apiName && window.ApiRateLimiter) {
         await window.ApiRateLimiter.acquireToken(apiName);
       }
-      const res = await Promise.race([fetch(url, options), hardTimeout]);
+      const finalUrl = apiName === 'coingecko' && typeof window.coinGeckoUrl === 'function'
+        ? window.coinGeckoUrl(url)
+        : url;
+      const finalOptions = apiName === 'coingecko' ? withCoinGeckoAuth(finalUrl, options) : options;
+      const fetchUrl = finalOptions._rewrittenUrl || finalUrl;
+      const res = await Promise.race([fetch(fetchUrl, finalOptions), hardTimeout]);
       return res;   // ← return raw Response; callers use .ok / .json() themselves
     } catch (err) {
       console.warn('[ThrottledFetch] timeout/error:', url.slice(0, 100));
@@ -151,6 +211,8 @@
   window.throttledFetch      = throttledFetch;
   window.queuedFetch         = queuedFetch;
   window.throttledFetchReset = throttledFetchReset;
+  window.withCoinGeckoAuth   = withCoinGeckoAuth;
+  window.coinGeckoUrl        = coinGeckoUrl;
 
   console.info(`[ThrottledFetch] v1.2 ready — concurrent: ${MAX_CONCURRENT} | timeout: ${FETCH_TIMEOUT_MS}ms | gap: ${SLOT_GAP_MS}ms`);
 })();

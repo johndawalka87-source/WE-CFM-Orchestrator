@@ -480,38 +480,50 @@
   function detectCoordinatedSell() {
     const sState = window.ShellRouter?.getShellState('s');
     const pState = window.ShellRouter?.getShellState('p');
+    const fState = window.ShellRouter?.getShellState('f');
     const preds = window._lastPrediction || {};
 
     // s-shell ionised downward = coordinated core sell (BTC/ETH/XRP/BNB)
     const sCoreIonized = sState?.ionized && sState.direction < 0;
     // p-shell itself selling (alt-led move or delayed resonance after s-shell)
     const pShellSelling = (pState?.velocity ?? 0) < -0.025;
+    // f-shell sentiment dump = externality shock / crowd unwind
+    const fShellSelling = fState?.ionized && fState.direction < 0;
 
-    if (!sCoreIonized && !pShellSelling) return null;
+    if (!sCoreIonized && !pShellSelling && !fShellSelling) return null;
 
-    // Only p-shell (momentum) coins with active UP predictions are at risk.
-    // Core coins protect themselves via their own per-coin detectEarlyExit path.
+    // Momentum/high-beta coins are most exposed to shell resonance; core coins
+    // still self-protect via their per-coin detectEarlyExit path.
     const pCoins = window.ShellRouter?.SHELLS?.p?.coins ?? ['SOL', 'HYPE'];
-    const atRisk = pCoins.filter(sym => preds[sym]?.direction === 'UP');
+    const fCoins = window.ShellRouter?.SHELLS?.f?.coins ?? ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'];
+    const atRisk = [
+      ...(sCoreIonized ? pCoins : []),
+      ...(pShellSelling ? pCoins : []),
+      ...(fShellSelling ? fCoins : []),
+    ].filter(sym => preds[sym]?.direction === 'UP');
     if (!atRisk.length) return null;
 
     const sVel = sState?.velocity ?? 0;
     const pVel = pState?.velocity ?? 0;
+    const fVel = fState?.velocity ?? 0;
     const pattern = sCoreIonized && pShellSelling ? 'simultaneous'
-      : sCoreIonized ? 'core_led'
-        : 'alt_led';
+      : fShellSelling ? 'sentiment_shock'
+        : sCoreIonized ? 'core_led'
+          : 'alt_led';
     const strength = Math.min(
       0.50
       + (sCoreIonized ? Math.min(Math.abs(sVel) / 0.08, 0.30) : 0)
       + (pShellSelling ? Math.min(Math.abs(pVel) / 0.10, 0.25) : 0),
       1.0
     );
+    const sentimentBoost = fShellSelling ? Math.min(Math.abs(fVel) / 0.10, 0.22) : 0;
+    const finalStrength = Math.min(strength + sentimentBoost, 1.0);
 
     return {
       atRisk,
-      dropping: [...(sCoreIonized ? ['s-shell'] : []), ...(pShellSelling ? ['p-shell'] : [])],
-      strength,
-      reason: `Shell wall (${pattern})  s=${sVel.toFixed(3)}%  p=${pVel.toFixed(3)}%`,
+      dropping: [...(sCoreIonized ? ['s-shell'] : []), ...(pShellSelling ? ['p-shell'] : []), ...(fShellSelling ? ['f-shell'] : [])],
+      strength: finalStrength,
+      reason: `Shell wall (${pattern})  s=${sVel.toFixed(3)}%  p=${pVel.toFixed(3)}%  f=${fVel.toFixed(3)}%`,
       pattern,
     };
   }

@@ -50,7 +50,9 @@ try {
 }
 
 const PORT = Number(process.env.WECRYPTO_WEB_PORT || 3450);
-const HOST = process.env.WECRYPTO_WEB_HOST || '0.0.0.0';
+// Local companion API for the Electron app. Bind loopback by default so stale
+// system-wide 0.0.0.0 listeners do not block startup or expose the service.
+const HOST = process.env.WECRYPTO_WEB_HOST || '127.0.0.1';
 const PORT_RETRY_LIMIT = Number(process.env.WECRYPTO_WEB_PORT_RETRY_LIMIT || 10);
 
 let app = null;

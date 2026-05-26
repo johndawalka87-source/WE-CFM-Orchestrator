@@ -766,8 +766,23 @@ function optimizeWeights(observations, initialBias, opts = {}) {
         score  += sig * (W[k] ?? 1);
         totalW += Math.abs(W[k] ?? 1);
       }
-      const norm = totalW > 0 ? score / totalW : 0;
-      if ((norm > 0 ? 'UP' : 'DOWN') === obs.actualDirection) correct++;
+      
+      // -------------------------------------------------------------
+      // SPDF ORBITAL QUANTIZATION & INVERSION (Synced 2026-05-24)
+      // -------------------------------------------------------------
+      let rawNorm = totalW > 0 ? score / totalW : 0;
+      const SCORE_AMPLIFIER = 1.6;
+      rawNorm = rawNorm * SCORE_AMPLIFIER;
+      
+      if (Math.abs(rawNorm) < 0.15) {
+        rawNorm = 0;
+      } else {
+        rawNorm = Math.sign(rawNorm);
+      }
+      const finalNorm = rawNorm * -1;
+      
+      const predDir = finalNorm > 0 ? 'UP' : (finalNorm < 0 ? 'DOWN' : 'NEUTRAL');
+      if (predDir === obs.actualDirection) correct++;
     }
     return observations.length > 0 ? correct / observations.length : 0;
   };
@@ -787,6 +802,10 @@ function optimizeWeights(observations, initialBias, opts = {}) {
         score  += sig * (weights[k] ?? 1);
         totalW += Math.abs(weights[k] ?? 1);
       }
+      
+      // INVERT SCORE for gradient descent (do NOT apply deadband to maintain differentiability)
+      score = score * -1;
+      
       const norm   = totalW > 0 ? score / totalW : 0;
       const pred   = Math.tanh(norm * 2.5);
       const target = obs.actualDirection === 'UP' ? 1 : -1;
