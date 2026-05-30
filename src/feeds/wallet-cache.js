@@ -402,7 +402,7 @@
 
   // ── Utilities ────────────────────────────────────────────────────
 
-  function _timedFetch(url, opts = {}, ms = 8000) {
+  function _timedFetch(url, opts = {}, ms = 30000) {
     const ctrl = new AbortController();
     const tid = setTimeout(() => {
       try {

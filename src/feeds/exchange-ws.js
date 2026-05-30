@@ -29,6 +29,60 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
   const STORE = {}; // provider -> sym -> snapshot
   const MEMPOOL = { btcUnconfirmed: 0, btcValue: 0, lastTxTs: 0 };
   const CONNECTIONS = {}; // name -> { ws, reconnectMs, timer, active, extra }
+  const DEFAULT_DISABLED_WS_PROVIDERS = new Set(['OURBIT', 'COINW', 'BULLISH']);
+
+  function flagEnabled(value) {
+    if (typeof value === 'boolean') return value;
+    return /^(1|true|yes|on|enabled)$/i.test(String(value || '').trim());
+  }
+
+  function runtimeFlag(name) {
+    try {
+      if (typeof window.resolveRuntimeKey === 'function') {
+        const value = window.resolveRuntimeKey(name);
+        if (value != null && value !== '') return value;
+      }
+    } catch (_) { }
+    try {
+      if (window.__env && window.__env[name] != null) return window.__env[name];
+    } catch (_) { }
+    try {
+      if (window.desktopApp?.publicEnv && window.desktopApp.publicEnv[name] != null) return window.desktopApp.publicEnv[name];
+    } catch (_) { }
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const value = localStorage.getItem(name);
+        if (value != null && value !== '') return value;
+      }
+    } catch (_) { }
+    try {
+      if (globalThis?.process?.env?.[name] != null) return globalThis.process.env[name];
+    } catch (_) { }
+    return '';
+  }
+
+  function splitRuntimeList(value) {
+    return String(value || '')
+      .split(/[\s,;|]+/)
+      .map((item) => item.trim().toUpperCase())
+      .filter(Boolean);
+  }
+
+  function isProviderExplicitlyOff(provider) {
+    if (flagEnabled(runtimeFlag(`WECRYPTO_DISABLE_WS_${provider}`))) return true;
+    return splitRuntimeList(runtimeFlag('WECRYPTO_DISABLED_WS_PROVIDERS')).includes(provider);
+  }
+
+  function isProviderConfiguredOff(name) {
+    const provider = String(name || '').trim().toUpperCase();
+    if (isProviderExplicitlyOff(provider)) return true;
+    if (!DEFAULT_DISABLED_WS_PROVIDERS.has(provider)) return false;
+    return !(
+      flagEnabled(runtimeFlag('WECRYPTO_ENABLE_OPTIONAL_WS')) ||
+      flagEnabled(runtimeFlag('WECRYPTO_ENABLE_HAR_FAILING_WS')) ||
+      flagEnabled(runtimeFlag(`WECRYPTO_ENABLE_WS_${provider}`))
+    );
+  }
 
   // Track failures and circuit breaker state per provider
   function getBreakerState(name) {
@@ -76,6 +130,7 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
   }
 
   function isProviderDisabled(name) {
+    if (isProviderConfiguredOff(name)) return true;
     const br = getBreakerState(name);
     if (br.open && Date.now() > br.openUntil) {
       // Auto-recover after cooldown
@@ -145,7 +200,7 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
 
   const MAP = {
     BINANCE: { BTC: 'btcusdt', ETH: 'ethusdt', SOL: 'solusdt', XRP: 'xrpusdt', BNB: 'bnbusdt', DOGE: 'dogeusdt', HYPE: 'hypeusdt' },
-    COINBASE: { BTC: 'BTC-USD', ETH: 'ETH-USD', SOL: 'SOL-USD', XRP: 'XRP-USD', DOGE: 'DOGE-USD' },
+    COINBASE: { BTC: 'BTC-USD', ETH: 'ETH-USD', SOL: 'SOL-USD', XRP: 'XRP-USD', DOGE: 'DOGE-USD', HYPE: 'HYPE-USD' },
     KRAKEN: { BTC: 'BTC/USD', ETH: 'ETH/USD', SOL: 'SOL/USD', XRP: 'XRP/USD', DOGE: 'DOGE/USD' },
     BYBIT: { BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', BNB: 'BNBUSDT', DOGE: 'DOGEUSDT' },
     HYPERLIQUID: { BTC: 'BTC', ETH: 'ETH', SOL: 'SOL', XRP: 'XRP', DOGE: 'DOGE', HYPE: 'HYPE' },
@@ -422,7 +477,9 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
       c.reconnectMs = RECONNECT_BASE_MS;
       recordSuccess('COINBASE');
       const products = Object.values(MAP.COINBASE);
+      c.ws.send(JSON.stringify({ type: 'subscribe', channel: 'heartbeats' }));
       c.ws.send(JSON.stringify({ type: 'subscribe', channel: 'ticker', product_ids: products }));
+      c.ws.send(JSON.stringify({ type: 'subscribe', channel: 'market_trades', product_ids: products }));
     };
     c.ws.onmessage = (ev) => {
       recordSuccess('COINBASE');
@@ -439,6 +496,22 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
               ask: parseNum(t.best_ask),
               vol24h: parseNum(t.volume_24_h),
               ts: now(),
+            });
+          }
+        }
+        return;
+      }
+      if (msg.channel === 'market_trades' && Array.isArray(msg.events)) {
+        for (const event of msg.events) {
+          const trades = Array.isArray(event.trades) ? event.trades : [];
+          for (const t of trades) {
+            const sym = Object.keys(MAP.COINBASE).find(k => MAP.COINBASE[k] === t.product_id);
+            if (!sym) continue;
+            updateTrade(PROVIDERS.COINBASE, sym, {
+              buy: String(t.side || '').toUpperCase() === 'BUY',
+              qty: parseNum(t.size) || 0,
+              price: parseNum(t.price),
+              ts: t.time ? Date.parse(t.time) || now() : now(),
             });
           }
         }
@@ -1444,8 +1517,11 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
   }
 
   function start() {
-    for (const name of ['BINANCE', 'COINBASE', 'KRAKEN', 'BYBIT', 'HYPERLIQUID', 'OKX', 'KUCOIN', 'GATE', 'UPBIT', 'BITGET', 'BINGX', 'BITVAVO', 'GEMINI', 'COINW', 'LBANK', 'BITSTAMP', 'BITSO', 'BULLISH', 'WHITEBIT', 'OURBIT', 'WEEX', 'BLOCKCHAIN_MEMPOOL']) {
-      conn(name).active = true;
+    const providerNames = ['BINANCE', 'COINBASE', 'KRAKEN', 'BYBIT', 'HYPERLIQUID', 'OKX', 'KUCOIN', 'GATE', 'UPBIT', 'BITGET', 'BINGX', 'BITVAVO', 'GEMINI', 'COINW', 'LBANK', 'BITSTAMP', 'BITSO', 'BULLISH', 'WHITEBIT', 'OURBIT', 'WEEX', 'BLOCKCHAIN_MEMPOOL'];
+    for (const name of providerNames) {
+      const c = conn(name);
+      c.active = !isProviderConfiguredOff(name);
+      if (!c.active) clearConnTimer(c);
     }
     connectBinance();
     connectCoinbase();
@@ -1571,6 +1647,7 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
   function getQualityGates(maxAgeMs = 30000) {
     const gates = {};
     for (const provider of Object.keys(MAP)) {
+      if (isProviderConfiguredOff(provider)) continue;
       const expected = Object.keys(MAP[provider] || {}).filter(sym => TRACKED_COINS.has(sym));
       const rows = STORE?.[provider] || {};
       const stale = [];
@@ -1616,6 +1693,11 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
     return gates;
   }
 
+  function getConfiguredOffProviders() {
+    return [...new Set([...Object.keys(PROVIDERS), 'BLOCKCHAIN_MEMPOOL'])]
+      .filter((provider) => isProviderConfiguredOff(provider));
+  }
+
   function getStatus() {
     const status = {};
     for (const [name, c] of Object.entries(CONNECTIONS)) {
@@ -1627,6 +1709,8 @@ const COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown
     }
     return {
       connections: status,
+      disabledByDefault: [...DEFAULT_DISABLED_WS_PROVIDERS].filter(isProviderConfiguredOff),
+      disabledByConfig: getConfiguredOffProviders(),
       sse: { active: SSE.active, lastError: SSE.lastError },
       providers: Object.keys(STORE),
       qualityGates: getQualityGates(),

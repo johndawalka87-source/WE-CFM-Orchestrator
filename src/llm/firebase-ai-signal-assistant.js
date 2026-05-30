@@ -104,7 +104,10 @@ function _init() {
 // ── Prompt builder ────────────────────────────────────────────────────────────
 function buildSignalPrompt(coin, pred) {
   const dir     = pred.direction || pred.predDir   || 'UNKNOWN';
-  const conf    = pred.confidence  != null ? `${(pred.confidence * 100).toFixed(0)}%` : 'n/a';
+  const confRaw = Number(pred.confidence);
+  const conf    = Number.isFinite(confRaw)
+    ? `${(confRaw <= 1 ? confRaw * 100 : confRaw).toFixed(0)}%`
+    : 'n/a';
   const h15     = pred.h15         || pred.horizon15 || {};
   const cfm     = pred.cfmRate     != null ? `$${Number(pred.cfmRate).toFixed(2)}` : 'n/a';
   const oeq     = pred.oeq         != null ? pred.oeq.toFixed(3) : 'n/a';
@@ -112,20 +115,50 @@ function buildSignalPrompt(coin, pred) {
   const rsi     = pred.rsi         != null ? pred.rsi.toFixed(1) : 'n/a';
   const ema     = pred.emaCross    || 'n/a';
   const kalshi  = pred.kalshiSide  || (dir === 'UP' ? 'YES' : dir === 'DOWN' ? 'NO' : 'NONE');
+  const preferredHorizon = pred.preferredHorizonMinutes != null ? pred.preferredHorizonMinutes : 15;
+  const kalshiProb = pred.kalshiProb != null ? `${(Number(pred.kalshiProb) * 100).toFixed(1)}%` : 'n/a';
+  const combinedProb = pred.combinedProb != null ? `${(Number(pred.combinedProb) * 100).toFixed(1)}%` : 'n/a';
+  const projectedTarget = pred.projectedTargetPrice != null ? Number(pred.projectedTargetPrice).toFixed(4) : 'n/a';
+  const projectedHigh = pred.projectedHighPrice != null ? Number(pred.projectedHighPrice).toFixed(4) : 'n/a';
+  const projectedLow = pred.projectedLowPrice != null ? Number(pred.projectedLowPrice).toFixed(4) : 'n/a';
+  const projectedMovePct = pred.projectedMovePct != null ? `${(Number(pred.projectedMovePct) * 100).toFixed(2)}%` : 'n/a';
+  const secondsToClose = pred.secondsToClose != null ? pred.secondsToClose : 'n/a';
+  const freshEntry = pred.freshEntry ? 'yes' : 'no';
+  const lateEntry = pred.lateEntry ? 'yes' : 'no';
+  const scalpSetups = Array.isArray(pred.setups) && pred.setups.length
+    ? pred.setups.map((setup) => `${setup.label || 'setup'}:${setup.cls || 'n/a'}`).join(', ')
+    : 'none';
+  const contrarianSetups = Array.isArray(pred.contrarianSetups) && pred.contrarianSetups.length
+    ? pred.contrarianSetups.map((setup) => `${setup.label || 'setup'}:${setup.cls || 'n/a'}`).join(', ')
+    : 'none';
 
   return (
     `You are a concise crypto trading signal narrator for the WE CFM Orchestrator. ` +
-    `Summarize the following 15-minute prediction signal in 2 sentences max. ` +
-    `Focus on: why the signal fired, its confidence level, and the recommended Kalshi action. ` +
+    `Summarize the following 15-minute Kalshi prediction signal in 2-3 sentences max. ` +
+    `Focus on: why the signal fired, the 15-minute confidence, whether the house price looks mispriced, whether the play is contrarian to the crowd or crowded to chase, and the recommended play. ` +
+    `State whether this is a fresh entry or a late entry inside the current 15-minute window. ` +
+    `If the setup supports buying now and selling early into repricing before settlement, say that explicitly. ` +
+    `If a crowd-fade, scalp, wait, or alternate advantageous play is better, say that explicitly too. ` +
     `Be direct — no filler words.\n\n` +
     `Asset: ${coin}\n` +
-    `Direction: ${dir}  (Kalshi: ${kalshi})\n` +
+    `Direction: ${dir}  (Kalshi side: ${kalshi})\n` +
     `Confidence: ${conf}\n` +
+    `Preferred horizon: ${preferredHorizon}m\n` +
     `CFM rate: ${cfm}\n` +
     `Regime: ${regime}\n` +
     `OEQ: ${oeq}\n` +
     `RSI(14): ${rsi}\n` +
     `EMA cross: ${ema}\n` +
+    `Kalshi / house probability: ${kalshiProb}\n` +
+    `Combined market probability: ${combinedProb}\n` +
+    `Projected 15m target: ${projectedTarget}\n` +
+    `Projected 15m high / low: ${projectedHigh} / ${projectedLow}\n` +
+    `Projected move in window: ${projectedMovePct}\n` +
+    `Seconds to close: ${secondsToClose}\n` +
+    `Fresh entry: ${freshEntry}\n` +
+    `Late entry: ${lateEntry}\n` +
+    `Live scalp setups: ${scalpSetups}\n` +
+    `Contrarian setups: ${contrarianSetups}\n` +
     (h15.signal ? `15m signal: ${h15.signal}\n` : '') +
     (pred.blockers && pred.blockers.length ? `Active blockers: ${pred.blockers.join(', ')}\n` : '')
   );

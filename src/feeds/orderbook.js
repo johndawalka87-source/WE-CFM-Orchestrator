@@ -20,6 +20,7 @@
   const LIQSNAP_MAX = 450;
   const DEPTH_WINDOWS = [10, 20];
   const IMBALANCE_WINDOW_MS = 15 * 60 * 1000;
+  const HL_FALLBACK_DELAY_MS = 8000;
   const WALL_BEEPS_PERMANENTLY_DISABLED = true;
 
   const books = {};   // sym → { bids, asks, mid, timestamp }
@@ -503,13 +504,13 @@
       Object.keys(BN_MAP).forEach(_initBookState);
       // Primary: HL single WebSocket covers all 7 coins including BNB
       connectHL();
-      // Binance fallback: starts after 4s — only fires if HL hasn't connected
+      // Binance fallback: starts after a short grace period if HL has not connected.
       setTimeout(() => {
         if (!_hlWs || _hlWs.readyState !== WebSocket.OPEN) {
-          console.warn('[OB] HL not ready after 4s — activating Binance fallback');
+          console.info(`[OB] HL not ready after ${Math.round(HL_FALLBACK_DELAY_MS / 1000)}s — activating Binance fallback`);
           Object.keys(BN_MAP).forEach(connectBinance);
         }
-      }, 4000);
+      }, HL_FALLBACK_DELAY_MS);
     },
     onAlert: (fn) => alertListeners.push(fn),
     onBook: (sym, fn) => {

@@ -1250,7 +1250,7 @@
       c: Number(row[4]),
       v: Number(row[5]),
     })).filter(c => Number.isFinite(c.t) && Number.isFinite(c.c)).sort((a, b) => a.t - b.t);
-    return candles.length ? candles : fetchBINCandles(sym, tf === '1m' ? '1m' : tf === '5m' ? '5m' : '15m', limit);
+    return candles.length ? candles : [];
   }
 
   async function fetchBybitBook(sym) {
@@ -1263,7 +1263,7 @@
     if (json.retCode !== 0 || !json.result) return fetchBINBook(sym);
     const bids = (json.result.b || []).map(l => ({ price: Number(l[0]), qty: Number(l[1]) })).filter(l => Number.isFinite(l.price) && l.qty > 0);
     const asks = (json.result.a || []).map(l => ({ price: Number(l[0]), qty: Number(l[1]) })).filter(l => Number.isFinite(l.price) && l.qty > 0);
-    if (!bids.length && !asks.length) return fetchBINBook(sym);
+    if (!bids.length && !asks.length) return null;
     return { bids, asks, source: 'bybit', timestamp: Date.now() };
   }
 
@@ -1281,7 +1281,7 @@
       side: t.side === 'Buy' ? 'buy' : 'sell',
       t: Number(t.time),
     })).filter(t => Number.isFinite(t.qty) && t.qty > 0);
-    return trades.length ? trades : fetchBINTrades(sym, limit);
+    return trades.length ? trades : [];
   }
 
   // ---------------------------------------------------------------
@@ -3148,6 +3148,88 @@
     return { detected: wallDetected, dir: wallDir, strength: wallStrength };
   }
 
+  // ── SMC: Smart Money Concepts Helpers ─────────────────────────────────────
+  function detectLiquidityPools(candles) {
+    const pools = { highs: [], lows: [] };
+    const n = candles.length;
+    if (n < 20) return pools;
+    
+    const pivots = { highs: [], lows: [] };
+    for (let i = 2; i < n - 2; i++) {
+      const c = candles[i];
+      if (c.h > candles[i-1].h && c.h > candles[i-2].h && c.h > candles[i+1].h && c.h > candles[i+2].h) {
+        pivots.highs.push({ price: c.h, index: i });
+      }
+      if (c.l < candles[i-1].l && c.l < candles[i-2].l && c.l < candles[i+1].l && c.l < candles[i+2].l) {
+        pivots.lows.push({ price: c.l, index: i });
+      }
+    }
+
+    const cluster = (pivotsArray, type) => {
+      const merged = [];
+      for (const p of pivotsArray) {
+        let found = false;
+        for (const m of merged) {
+          if (Math.abs(p.price - m.price) / m.price <= 0.001) {
+            m.touches++;
+            m.price = type === 'high' ? Math.max(m.price, p.price) : Math.min(m.price, p.price);
+            m.latestIndex = Math.max(m.latestIndex, p.index);
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          merged.push({ price: p.price, touches: 1, latestIndex: p.index });
+        }
+      }
+      return merged.filter(m => m.touches >= 2);
+    };
+
+    pools.highs = cluster(pivots.highs, 'high');
+    pools.lows = cluster(pivots.lows, 'low');
+    return pools;
+  }
+
+  function detectLiquiditySweeps(candles, pools) {
+    const sweeps = [];
+    const n = candles.length;
+    if (n < 5) return sweeps;
+    for (let i = n - 4; i < n - 1; i++) {
+      const c = candles[i];
+      for (const pool of pools.highs) {
+        if (c.h > pool.price && c.c < pool.price) {
+          sweeps.push({ dir: -1, pool: pool.price, index: i, type: 'mitigated' });
+        }
+      }
+      for (const pool of pools.lows) {
+        if (c.l < pool.price && c.c > pool.price) {
+          sweeps.push({ dir: 1, pool: pool.price, index: i, type: 'mitigated' });
+        }
+      }
+    }
+    return sweeps;
+  }
+
+  function detectFVGs(candles) {
+    const fvgs = [];
+    const n = candles.length;
+    if (n < 5) return fvgs;
+    for (let i = n - 5; i < n - 1; i++) {
+      const c1 = candles[i-1];
+      const c2 = candles[i];
+      const c3 = candles[i+1];
+      if (!c1 || !c2 || !c3) continue;
+
+      if (c1.h < c3.l && c2.c > c2.o) {
+        fvgs.push({ dir: 1, ce: (c1.h + c3.l) / 2, top: c3.l, bottom: c1.h, index: i });
+      }
+      if (c1.l > c3.h && c2.c < c2.o) {
+        fvgs.push({ dir: -1, ce: (c1.l + c3.h) / 2, top: c1.l, bottom: c3.h, index: i });
+      }
+    }
+    return fvgs;
+  }
+
   // ── detectReversalFlags: identify price/indicator divergences and exhaustion signals ──
   function detectReversalFlags(candles, rsi, macdResult, adxResult, obvSlope, mom) {
     const n = candles.length;
@@ -4364,8 +4446,41 @@
       const absorbBias = wallAbs.dir * sup * 0.65;
       signalVector.persistence = clamp(signalVector.persistence * 0.4 + absorbBias, -1, 1);
     }
+    // ── SMC: Evaluate Liquidity Sweeps + FVGs + Kalshi Edge ───────────
+    const smcPools = detectLiquidityPools(candles);
+    const smcSweeps = detectLiquiditySweeps(candles, smcPools);
+    const smcFVGs = detectFVGs(candles);
+    let smcFlags = [];
+
+    const kalshiProb = mktData?.combinedProb ?? 0.5;
+
+    for (const sweep of smcSweeps) {
+      const fvg = smcFVGs.find(f => f.dir === sweep.dir && f.index > sweep.index);
+      if (fvg) {
+        let aggressive = false;
+        if (sweep.dir === 1 && kalshiProb < 0.35) aggressive = true; 
+        if (sweep.dir === -1 && kalshiProb > 0.65) aggressive = true;
+
+        const lastC = candles[candles.length - 1];
+        const retraced = sweep.dir === 1 ? lastC.l <= fvg.ce : lastC.h >= fvg.ce;
+
+        if (aggressive || retraced) {
+          const bias = sweep.dir === 1 ? 'bullish' : 'bearish';
+          smcFlags.push({
+            id: 'SMC_SWEEP_FVG',
+            severity: 'critical',
+            bias: bias,
+            label: 'SMC Sweep + FVG',
+            desc: `Swept liquidity at ${sweep.pool.toFixed(2)}, formed ${bias} FVG. ${aggressive ? '(Aggressive Edge Entry)' : '(CE Retracement Entry)'}`,
+            strength: 0.95
+          });
+        }
+      }
+    }
+
     // ── MDT: Momentum Decision Tree (preemptive bias engine) ──────────────
     const reversalFlags = detectReversalFlags(candles, rsi, macdResult, adxResult, obvSlope, mom);
+    reversalFlags.push(...smcFlags);
     const mdt = runMomentumDecisionTree(candles, {
       rsi, emaCross, mom, vwapDevRolling, obvSlope,
       adxResult, macdResult, stochRsiResult, persistence, structure, reversalFlags,

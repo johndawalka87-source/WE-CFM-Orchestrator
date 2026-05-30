@@ -16,6 +16,7 @@ class PythSettlementValidator {
       XRP: 'ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8',
       DOGE: 'dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c',
       BNB: '2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f',
+      HYPE: '4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b',
     };
 
     // Price cache (avoid redundant API calls)
@@ -54,7 +55,7 @@ class PythSettlementValidator {
     }
 
     try {
-      const url = `${this.pythBase}/api/latest_price_feeds?ids[]=${feedId}`;
+      const url = `${this.pythBase}/v2/updates/price/latest?ids[]=${feedId}`;
       const response = await fetch(url, { timeout: 5000 });
 
       if (!response.ok) {

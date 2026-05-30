@@ -67,9 +67,9 @@
   }
 
   function krakenPairsToBinanceFallback(pairRaw) {
-    const symbols = String(pairRaw || '')
+    const symbols = decodeURIComponent(String(pairRaw || ''))
       .split(',')
-      .map((pair) => normalizeKrakenPairToBinanceSymbol(decodeURIComponent(pair)))
+      .map((pair) => normalizeKrakenPairToBinanceSymbol(pair))
       .filter(Boolean);
     if (!symbols.length) return '';
     if (symbols.length === 1) {
@@ -192,8 +192,6 @@
         return tryUrl(url, options, attemptNum + 1);
       }
       throw err; // Throw after all retries
-    } finally {
-      if (timeoutId) clearTimeout(timeoutId);
     }
   }
 

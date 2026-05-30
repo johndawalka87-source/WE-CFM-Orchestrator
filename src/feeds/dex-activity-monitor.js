@@ -80,7 +80,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sql }),
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(30000),
       });
 
       if (!res.ok) {
@@ -150,7 +150,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sql }),
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(30000),
       });
 
       if (!res.ok) return [];

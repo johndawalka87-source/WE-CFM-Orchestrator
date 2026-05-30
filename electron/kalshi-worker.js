@@ -17,21 +17,49 @@ const WebSocketModule = require('../src/kalshi/kalshi-ws.js');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { loadKalshiCredentials } = require('./kalshi-credentials.js');
 
 function parseCredentialFile(content) {
-  const rawLines = content.split(/\r?\n/);
-  const nonEmpty = rawLines.map(l => l.trim()).filter(Boolean);
-  const apiKeyId = nonEmpty[0] || null;
+  const rawLines = String(content || '').split(/\r?\n/);
+  const keys = [];
+  let currentKeyId = null;
+  let currentKeyPemLines = [];
 
-  const beginIdx = rawLines.findIndex(l => l.includes('-----BEGIN'));
-  const endIdx = rawLines.findIndex(l => l.includes('-----END'));
-  let privateKeyPem = null;
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i].trim();
+    if (!line) continue;
 
-  if (beginIdx !== -1 && endIdx !== -1 && endIdx >= beginIdx) {
-    privateKeyPem = rawLines.slice(beginIdx, endIdx + 1).join('\n').trim();
-  } else if (nonEmpty.length > 1) {
-    privateKeyPem = nonEmpty.slice(1).join('\n').trim();
+    if (line.includes('-----BEGIN')) {
+      currentKeyPemLines.push(rawLines[i]);
+    } else if (currentKeyPemLines.length > 0) {
+      currentKeyPemLines.push(rawLines[i]);
+      if (line.includes('-----END')) {
+        if (currentKeyId) {
+          keys.push({
+            apiKeyId: currentKeyId,
+            privateKeyPem: currentKeyPemLines.join('\n').trim()
+          });
+        }
+        currentKeyId = null;
+        currentKeyPemLines = [];
+      }
+    } else if (line.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      currentKeyId = line;
+    }
   }
+
+  if (keys.length > 0) {
+    return keys[keys.length - 1];
+  }
+
+  // Fallback to original simple parsing if no structured keys found
+  const nonEmpty = rawLines.map(line => line.trim()).filter(Boolean);
+  const apiKeyId = nonEmpty[0] || null;
+  const beginIdx = rawLines.findIndex(line => line.includes('-----BEGIN'));
+  const endIdx = rawLines.findIndex(line => line.includes('-----END'));
+  const privateKeyPem = beginIdx !== -1 && endIdx !== -1 && endIdx >= beginIdx
+    ? rawLines.slice(beginIdx, endIdx + 1).join('\n').trim()
+    : nonEmpty.slice(1).join('\n').trim();
 
   return { apiKeyId, privateKeyPem };
 }

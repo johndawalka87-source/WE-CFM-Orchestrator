@@ -99,22 +99,22 @@ const PER_COIN_INDICATOR_BIAS = {
     // h15 best: stochrsi 64%, vwma 62%, volume 60%
     // h15 worst: momentum 32%, obv 36%, hma 37%
     // ──── TUNED 2026-05-04: Reduce short-horizon overweights, boost microstructure ─
-    stochrsi: 0.05,   // retained: still >55% in 4-day retune
-    vwma: 0.05,  // reduced: sub-50% in 4-day BTC retune
+    stochrsi: 0.062,   // retained: still >55% in 4-day retune
+    vwma: 0.054,  // reduced: sub-50% in 4-day BTC retune
     volume:   1.2,   // reduced: sub-50% in 4-day BTC retune
     // Keep proven mean-reversion core
-    bands: 0.25, williamsR: 2.453, structure: 1.598, fisher: 1.342, keltner: 1.95, cci: 1.287,
-    cmf: 0.85, rsi: 0.92, macd: 0.538, persistence: 0.662, ema: 0.431, ichimoku: 0.261, adx: 0.265,
-    vwap: 0.176, sma: 0.143,
+    bands: 0.26, williamsR: 2.453, structure: 1.598, fisher: 1.342, keltner: 1.95, cci: 1.287,
+    cmf: 0.85, rsi: 0.92, macd: 0.538, persistence: 0.669, ema: 0.437, ichimoku: 0.261, adx: 0.273,
+    vwap: 0.18, sma: 0.15,
     // Kill worst performers
-    momentum: 0.188,   // reduced: <50% in 4-day BTC retune
+    momentum: 0.19,   // reduced: <50% in 4-day BTC retune
     obv: 1.27,    // reduced: <50% in 4-day BTC retune
     hma: 1.30,   // reduced: <50% in 4-day BTC retune
     mfi: 1.52,
-    supertrend: 1.37,
+    supertrend: 1.388,
     // ★ BOOST MICROSTRUCTURE FOR h1/h5 RECOVERY ★
-    book:     0.295,  // NEW: Order book imbalance
-    flow:     0.275,  // NEW: Trade flow signal
+    book:     0.299,  // NEW: Order book imbalance
+    flow:     0.279,  // NEW: Trade flow signal
   },
   ETH: { // outcome-retuned 2026-05-20 from 119 windows
     // h15 best: rsi 82%, stochrsi 56%, williamsR 55%
@@ -122,17 +122,17 @@ const PER_COIN_INDICATOR_BIAS = {
     // ──── TUNED 2026-05-04: Horizon-specific weights to fix h1/h5 bleeding ─────
     // CRITICAL: rsi 82% at h15 but only 37% at h1/h5 (MASSIVE OVERFITTING)
     // Solution: Reduce RSI weight dramatically for short horizons
-    rsi: 0.05,  // reduced: 39% in 4-day ETH retune
-    stochrsi: 1.155,   // mild boost: ~53% in 4-day ETH retune
-    williamsR: 2.106, // boosted: strongest consistent ETH feature
+    rsi: 0.059,  // reduced: 39% in 4-day ETH retune
+    stochrsi: 1.178,   // mild boost: ~53% in 4-day ETH retune
+    williamsR: 2.129, // boosted: strongest consistent ETH feature
     bands: 2.11,   // boosted: strong ETH performer in recent window
-    structure: 1.634, keltner: 1.91, cci: 1.045, fisher: 1.92, cmf: 0.532,
-    volume: 0.779, persistence: 0.582, obv: 0.649, macd: 0.358,
-    ema: 0.05, sma: 1.43, adx: 0.19, ichimoku: 0.179, vwap: 1.10, vwma: 0.403, supertrend: 0.132,
+    structure: 1.652, keltner: 1.91, cci: 1.062, fisher: 1.939, cmf: 0.532,
+    volume: 0.779, persistence: 0.591, obv: 0.649, macd: 0.347,
+    ema: 0.056, sma: 1.43, adx: 0.202, ichimoku: 0.179, vwap: 1.10, vwma: 0.403, supertrend: 0.148,
     // Kill worst performers
-    mfi: 0.92,   // reduced: weak in 4-day ETH retune
+    mfi: 0.93,   // reduced: weak in 4-day ETH retune
     momentum: 0.278,   // retained mild positive edge in 4-day ETH retune
-    hma:      0.115,   // reduced: weak in 4-day ETH retune
+    hma:      0.109,   // reduced: weak in 4-day ETH retune
   },
   SOL: { // outcome-retuned 2026-05-20 from 122 windows
     // ── Tuned 2026-04-30 & RETUNED 2026-05-04 for h1/h5 recovery ──────────────
@@ -144,24 +144,24 @@ const PER_COIN_INDICATOR_BIAS = {
     //      BOOST microstructure (flow/book) for momentum trading at short horizons
     bands:     2.0,   // ★ REDUCED FROM 6.5 (mean-reversion fails at h1/h5, noise dominates)
     fisher:    1.836,   // ★ REDUCED FROM 4.5 (extreme price levels hard to identify on h1)
-    williamsR: 0.57,   // Keep (proven oscillator, works across horizons)
+    williamsR: 0.578,   // Keep (proven oscillator, works across horizons)
     hma: 1.43,   // ★ REDUCED FROM 4.0 (CRITICAL: 41% accuracy = BROKEN quality gate at h1/h5)
     structure: 1.2,   // ★ REDUCED FROM 3.5 (support/resistance needs multiple candles to form)
-    cci: 0.51,   // Keep (solid oscillator)
+    cci: 0.515,   // Keep (solid oscillator)
     keltner:   1.54,   // ★ REDUCED FROM 3.0 (ATR bands too volatile at h1)
     obv:       1.274,   // Keep (volume direction mild signal)
-    macd:      0.928, ichimoku: 1.38, adx: 0.05,
-    vwma:      0.169, volume: 1.91, sma: 0.084,
+    macd:      0.928, ichimoku: 1.38, adx: 0.052,
+    vwma:      0.169, volume: 1.91, sma: 0.089,
     // Kill confirmed worst performers (all verified across 14-day run)
     vwap: 2.0,  // 37% worst
-    rsi: 0.05,  // 29% worst — mean-reversion makes RSI signals backwards
+    rsi: 0.052,  // 29% worst — mean-reversion makes RSI signals backwards
     persistence: 0.022,  // consistently worst
-    ema:       0.08,  // 36% worst
-    cmf:       0.073,  // consistently bad
-    supertrend: 0.013, // outcome-retuned 2026-05-08 (180 windows)
+    ema:       0.082,  // 36% worst
+    cmf:       0.076,  // consistently bad
+    supertrend: 0.011, // outcome-retuned 2026-05-08 (180 windows)
     momentum:  0.072,  // restored for regime-aware trending detection
-    mfi:       0.072,  // 21% worst
-    stochrsi:  0.046,  // 27% worst
+    mfi:       0.071,  // 21% worst
+    stochrsi:  0.047,  // 27% worst
     // ★ BOOST MICROSTRUCTURE FOR h1/h5 RECOVERY ★
     book:      0.489,  // NEW: Order book imbalance (momentum signal at h1/h5)
     flow:      0.468,  // NEW: Trade flow ratio (key momentum driver for SOL)
@@ -176,15 +176,15 @@ const PER_COIN_INDICATOR_BIAS = {
     fisher:    2.5,   // 70% at h1/h5 — strong signal, keep
     rsi:       3.5,   // ★ INCREASED FROM 2.0 (80-100% at h1/h10 - massive underweight!)
     obv:       1.5,   // volume direction confirm
-    williamsR: 1.226,   // moderate keep
-    bands:     0.831, supertrend: 0.31, cci: 0.553, cmf: 0.592, keltner: 0.476,
-    macd: 0.356, stochrsi: 0.821, persistence: 0.091, ema: 0.128, adx: 0.169, ichimoku: 0.154,
-    sma: 0.013,
-    mfi: 0.145,
+    williamsR: 1.241,   // moderate keep
+    bands:     0.84, supertrend: 0.332, cci: 0.56, cmf: 0.592, keltner: 0.486,
+    macd: 0.345, stochrsi: 0.835, persistence: 0.098, ema: 0.133, adx: 0.177, ichimoku: 0.157,
+    sma: 0.016,
+    mfi: 0.15,
     // Kill confirmed worst performers
-    momentum: 0.046,
-    vwma:     0.021,
-    hma:      0.108,
+    momentum: 0.048,
+    vwma:     0.023,
+    hma:      0.106,
   },
   HYPE: {
     // h15 best: williamsR 79%, fisher 77%, cci 75%, bands 78% (h1/h5)

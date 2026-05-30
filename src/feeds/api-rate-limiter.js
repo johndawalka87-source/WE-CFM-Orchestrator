@@ -38,9 +38,10 @@
         this.drainTimer = null;
         this._refill();
         while (this.tokens >= 1 && this.waitQueue.length > 0) {
+          const entry = this.waitQueue.shift();
+          if (entry.signal && entry.signal.aborted) continue;
           this.tokens -= 1;
-          const resolve = this.waitQueue.shift();
-          resolve();
+          entry.resolve();
         }
         this._scheduleDrain();
       }, Math.max(0, Math.ceil(waitTime)));
@@ -48,10 +49,12 @@
 
     /**
      * Acquire a token, waiting if necessary
+     * @param {AbortSignal} [signal]
      * @returns {Promise<void>}
      */
-    async acquire() {
-      return new Promise((resolve) => {
+    async acquire(signal) {
+      return new Promise((resolve, reject) => {
+        if (signal && signal.aborted) return reject(signal.reason || new DOMException('Aborted', 'AbortError'));
         this._refill();
 
         if (this.tokens >= 1) {
@@ -59,7 +62,20 @@
           this.tokens -= 1;
           resolve();
         } else {
-          this.waitQueue.push(resolve);
+          const entry = { resolve, reject, signal };
+          this.waitQueue.push(entry);
+          
+          if (signal) {
+            const onAbort = () => {
+              signal.removeEventListener('abort', onAbort);
+              const idx = this.waitQueue.indexOf(entry);
+              if (idx !== -1) {
+                this.waitQueue.splice(idx, 1);
+                reject(signal.reason || new DOMException('Aborted', 'AbortError'));
+              }
+            };
+            signal.addEventListener('abort', onAbort);
+          }
           this._scheduleDrain();
         }
       });
@@ -131,11 +147,12 @@
   /**
    * Acquire token from limiter, with automatic API name detection
    * @param {string} apiName - Name of API
+   * @param {AbortSignal} [signal] - Optional abort signal
    * @returns {Promise<void>}
    */
-  async function acquireToken(apiName) {
+  async function acquireToken(apiName, signal) {
     const limiter = getLimiter(apiName);
-    await limiter.acquire();
+    await limiter.acquire(signal);
   }
 
   /**

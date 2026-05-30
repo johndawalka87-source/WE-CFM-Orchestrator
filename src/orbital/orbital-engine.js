@@ -38,6 +38,9 @@
 
   // Orbital weight mixture used to compute OEQ.
   var OEQ_WEIGHTS = { s: 0.45, p: 0.25, d: 0.20, f: 0.10 };
+  var SPDF_OEQ_WEIGHTS = { s: 0.30, p: 0.45, f: 0.25 };
+  var SPDF_OVERLAY_LIMIT = 1.25;
+  var SPDF_MIN_RISK_DAMP = 0.65;
 
   // Entry / exit thresholds (OEQ units are post-lambda scaled).
   var ENTRY_OEQ = 1.0;
@@ -91,6 +94,19 @@
   function clamp(v, lo, hi) {
     if (!Number.isFinite(v)) return lo;
     return Math.max(lo, Math.min(hi, v));
+  }
+
+  function finiteNumber(value, fallback) {
+    var n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function firstFinite(values, fallback) {
+    for (var i = 0; i < values.length; i++) {
+      var n = Number(values[i]);
+      if (Number.isFinite(n)) return n;
+    }
+    return fallback;
   }
 
   function stdev(returns) {
@@ -549,6 +565,169 @@
     return clamp(latestVol / avgVol, F_ANOMALY_FLOOR, F_ANOMALY_CEIL);
   }
 
+  function signedKalshiEdge(kAlign) {
+    if (!kAlign) return null;
+    var modelYesPct = Number(kAlign.modelYesPct);
+    var kalshiYesPct = Number(kAlign.kalshiYesPct);
+    if (!Number.isFinite(modelYesPct) || !Number.isFinite(kalshiYesPct)) return null;
+    var yesDir = kAlign.strikeDir === 'below' ? -1 : 1;
+    var yesEdge = (modelYesPct - kalshiYesPct) / 100;
+    var noEdge = -yesEdge;
+    var useYes = yesEdge >= noEdge;
+    var entryPrice = useYes ? (kalshiYesPct / 100) : (1 - kalshiYesPct / 100);
+    return {
+      signed: (useYes ? yesDir : -yesDir) * Math.abs(useYes ? yesEdge : noEdge),
+      abs: Math.abs(useYes ? yesEdge : noEdge),
+      side: useYes ? 'YES' : 'NO',
+      entryPrice: clamp(entryPrice, 0.01, 0.99),
+      modelYesPct: modelYesPct,
+      kalshiYesPct: kalshiYesPct,
+    };
+  }
+
+  function weightedSignal(parts) {
+    var num = 0;
+    var den = 0;
+    for (var i = 0; i < parts.length; i++) {
+      var value = Number(parts[i].value);
+      var weight = Number(parts[i].weight);
+      if (!Number.isFinite(value) || !Number.isFinite(weight) || weight <= 0) continue;
+      num += clamp(value, -1, 1) * weight;
+      den += weight;
+    }
+    return den > 0 ? clamp(num / den, -1, 1) : 0;
+  }
+
+  function recomputeSpdfOeq(orbitals, risk) {
+    var core =
+      SPDF_OEQ_WEIGHTS.s * orbitals.s +
+      SPDF_OEQ_WEIGHTS.p * orbitals.p +
+      SPDF_OEQ_WEIGHTS.f * orbitals.f;
+    var riskDamp = clamp(1 - clamp(risk, 0, 1) * 0.35, SPDF_MIN_RISK_DAMP, 1);
+    return core * riskDamp;
+  }
+
+  function buildSpdfCoherence(sym, orbitals, context) {
+    var ctx = context || {};
+    var pred = ctx.prediction || ctx.pred || {};
+    var indicators = pred.indicators || {};
+    var diagnostics = pred.diagnostics || {};
+    var micro = indicators.microstructure || {};
+    var kAlign = ctx.kalshiAlign || (pred.projections && pred.projections.p15 && pred.projections.p15.kalshiAlign) || null;
+    var signalGate = ctx.signalGate || pred.gate || diagnostics.signalGate || null;
+    var executionGuard = ctx.executionGuard || diagnostics.executionGuard || null;
+    var liveBook = diagnostics.liveBook || {};
+
+    var anchorQuality = 1;
+    var anchorReasons = [];
+    var tickerAgeMs = firstFinite([ctx.tickerAgeMs, diagnostics.tickerAgeMs], null);
+    var bookAgeMs = firstFinite([ctx.liveBookAgeMs, liveBook.ageMs], null);
+    if (kAlign && kAlign.priceSource !== 'RTI') {
+      anchorQuality *= 0.92;
+      anchorReasons.push('non-rti-anchor');
+    }
+    if (Number.isFinite(tickerAgeMs) && tickerAgeMs > 8000) {
+      anchorQuality *= 0.75;
+      anchorReasons.push('ticker-stale');
+    }
+    if (Number.isFinite(bookAgeMs) && bookAgeMs > 15000) {
+      anchorQuality *= 0.82;
+      anchorReasons.push('book-stale');
+    }
+    if (signalGate && signalGate.gated) {
+      anchorQuality *= 0.70;
+      anchorReasons.push('signal-gated');
+    }
+    if (executionGuard && executionGuard.blocked) {
+      anchorQuality *= 0.65;
+      anchorReasons.push(executionGuard.reason || 'execution-guard');
+    }
+    anchorQuality = clamp(anchorQuality, 0.35, 1);
+
+    var flowPressure = weightedSignal([
+      { value: indicators.orderBookImbalance && indicators.orderBookImbalance.signal, weight: 0.26 },
+      { value: indicators.imbalanceVelocity && indicators.imbalanceVelocity.signal, weight: 0.20 },
+      { value: indicators.book && (indicators.book.signal != null ? indicators.book.signal : indicators.book.imbalance), weight: 0.18 },
+      { value: indicators.flow && indicators.flow.signal, weight: 0.16 },
+      { value: micro.composite, weight: 0.12 },
+      { value: indicators.liquidityVacuum && indicators.liquidityVacuum.signal, weight: 0.08 },
+    ]);
+
+    var toxicity = clamp(firstFinite([
+      micro.toxicity && (micro.toxicity.tox != null ? micro.toxicity.tox : micro.toxicity.proxy),
+      indicators.toxicity && Math.abs(indicators.toxicity.signal),
+    ], 0), 0, 1);
+    var vacuum = clamp(firstFinite([
+      micro.vacuum && micro.vacuum.severity,
+      indicators.liquidityVacuum && Math.abs(indicators.liquidityVacuum.signal),
+    ], 0), 0, 1);
+    var atrPct = finiteNumber(pred.volatility && pred.volatility.atrPct, 0);
+    var spreadRisk = clamp(firstFinite([
+      diagnostics.executionGuard && diagnostics.executionGuard.spreadBps ? diagnostics.executionGuard.spreadBps / 250 : null,
+      ctx.spreadBps ? ctx.spreadBps / 250 : null,
+    ], 0), 0, 1);
+    var liquidityRisk = clamp(firstFinite([
+      indicators.liquidityDepth && indicators.liquidityDepth.signal != null ? -indicators.liquidityDepth.signal * 3 : null,
+      liveBook.liquidityNotional20 ? 1 - Math.min(1, liveBook.liquidityNotional20 / 25000) : null,
+    ], 0), 0, 1);
+    var diffusionRisk = clamp(
+      toxicity * 0.32 +
+      vacuum * 0.26 +
+      clamp(atrPct / 3.5, 0, 1) * 0.22 +
+      spreadRisk * 0.12 +
+      liquidityRisk * 0.08,
+      0,
+      1
+    );
+
+    var edge = signedKalshiEdge(kAlign);
+    var marketEdge = 0;
+    var payoutQuality = 0;
+    if (edge) {
+      payoutQuality = clamp((0.66 - edge.entryPrice) / 0.26, 0, 1);
+      marketEdge = Math.sign(edge.signed) * clamp((edge.abs - 0.06) / 0.18, 0, 1) * payoutQuality;
+    }
+
+    var hasEvidence = !!(
+      edge ||
+      Math.abs(flowPressure) > 0.01 ||
+      diffusionRisk > 0.01 ||
+      anchorReasons.length
+    );
+
+    return {
+      hasEvidence: hasEvidence,
+      anchorQuality: parseFloat(anchorQuality.toFixed(4)),
+      flowPressure: parseFloat(flowPressure.toFixed(4)),
+      diffusionRisk: parseFloat(diffusionRisk.toFixed(4)),
+      marketEdge: parseFloat(marketEdge.toFixed(4)),
+      payoutQuality: parseFloat(payoutQuality.toFixed(4)),
+      edge: edge,
+      anchorReasons: anchorReasons,
+    };
+  }
+
+  function applySpdfCoherence(orbitals, coherence) {
+    if (!coherence || !coherence.hasEvidence) return orbitals;
+    var s = clamp(orbitals.s * coherence.anchorQuality, -10, 10);
+    var pNudge = clamp(coherence.flowPressure * SPDF_OVERLAY_LIMIT, -SPDF_OVERLAY_LIMIT, SPDF_OVERLAY_LIMIT);
+    var fNudge = clamp(coherence.marketEdge * SPDF_OVERLAY_LIMIT, -SPDF_OVERLAY_LIMIT, SPDF_OVERLAY_LIMIT);
+    var p = clamp(orbitals.p * 0.72 + pNudge, -10, 10);
+    var d = clamp(orbitals.d * 0.85 + coherence.diffusionRisk * SPDF_OVERLAY_LIMIT, 0, 10);
+    var f = clamp(orbitals.f * 0.55 + fNudge, -10, 10);
+    var adjusted = {
+      s: parseFloat(s.toFixed(4)),
+      p: parseFloat(p.toFixed(4)),
+      d: parseFloat(d.toFixed(4)),
+      f: parseFloat(f.toFixed(4)),
+      oeq: 0,
+      pDelta: parseFloat(p.toFixed(4)),
+      lastClose: orbitals.lastClose,
+    };
+    adjusted.oeq = parseFloat(recomputeSpdfOeq(adjusted, coherence.diffusionRisk).toFixed(4));
+    return adjusted;
+  }
+
   // ── OEQ v2 formula (cross-chain nuclear model) ────────────────────────────
   // oeq_v2 = (p_pct / d_pct) × tanh(λ × dist_pct / f_anomaly)
   //
@@ -775,20 +954,27 @@
     }
   }
 
-  function processInterval(sym, candles15m) {
+  function processInterval(sym, candles15m, context) {
     if (!sym || ASSETS.indexOf(sym) === -1) return null;
     var closes = extractCloses(candles15m, 60);
     if (closes.length < 3) return null;
 
     var lambda = _lambdas[sym] || DEFAULT_LAMBDA[sym] || 1.0;
-    var orbitals = _computeOrbitals(closes, lambda);
-    if (!orbitals) return null;
+    var baseOrbitals = _computeOrbitals(closes, lambda);
+    if (!baseOrbitals) return null;
+    var coherence = buildSpdfCoherence(sym, baseOrbitals, context);
+    var orbitals = applySpdfCoherence(baseOrbitals, coherence);
 
     // OEQ v2: volume-aware formula (cross-chain nuclear model).
     var fAnomalyVol = computeFAnomalyVol(sym, candles15m);
     var v2 = computeOEQv2(closes, lambda, fAnomalyVol);
     var qsp = buildQspState(sym, closes, orbitals, v2);
     var effectiveOrbitals = applyQspToOrbitals(orbitals, qsp);
+
+    var temporalEdge = null;
+    if (root.TemporalEdge && v2) {
+      temporalEdge = root.TemporalEdge.calculateTemporalEdge(Date.now(), v2.pPct, v2.dPct, v2.fAnomaly);
+    }
 
     var position = _ensurePosition(sym);
     var decision = _decideAction(effectiveOrbitals, position);
@@ -806,16 +992,24 @@
       f: effectiveOrbitals.f,
       oeq: effectiveOrbitals.oeq,
       pDelta: effectiveOrbitals.pDelta,
+      raw: {
+        s: baseOrbitals.s,
+        p: baseOrbitals.p,
+        d: baseOrbitals.d,
+        f: baseOrbitals.f,
+        oeq: baseOrbitals.oeq,
+      },
+      coherence: coherence,
       // OEQ v2 (volume-normalized nuclear model)
       oeqV2: v2 ? v2.oeqV2 : null,
       fAnomalyVol: v2 ? v2.fAnomaly : fAnomalyVol,
+      temporalEdge: temporalEdge,
       v2: v2,
       qsp: qsp,
       state: decision.state,
       action: decision.action,
       reason: decision.reason,
       fadeDirection: _fadeDirection(effectiveOrbitals.pDelta),
-      // Kalshi V2 execution payload (null unless action = EXECUTE_*)
       kalshiV2Payload: kalshiV2Payload,
       position: {
         side: position.side,
@@ -853,6 +1047,8 @@
       windowSize: WINDOW_SIZE,
       lambdaTargetSigma: LAMBDA_TARGET_SIGMA,
       lambdaBounds: [LAMBDA_FLOOR, LAMBDA_CEIL],
+      spdfWeights: Object.assign({}, SPDF_OEQ_WEIGHTS),
+      spdfOverlayLimit: SPDF_OVERLAY_LIMIT,
     };
   }
 

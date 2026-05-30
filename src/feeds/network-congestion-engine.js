@@ -91,9 +91,9 @@
     try {
       // Primary: Etherscan V2 proxy gasPrice
       const etherscanProxy = await Promise.race([
-        fetch(_etherscanV2Url('proxy', 'eth_gasPrice'), { signal: AbortSignal.timeout(8000) })
+        fetch(_etherscanV2Url('proxy', 'eth_gasPrice'), { signal: AbortSignal.timeout(30000) })
           .then(r => r.ok ? r.json() : null),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 30000))
       ]).catch(() => null);
 
       const proxyGasWei = etherscanProxy?.result ? parseInt(etherscanProxy.result, 16) || 0 : 0;
@@ -110,9 +110,9 @@
       // Fallback: Etherscan V2 GasTracker
       const etherscan = await Promise.race([
         fetch(_etherscanV2Url('gastracker', 'gasoracle'),
-          { signal: AbortSignal.timeout(8000) })
+          { signal: AbortSignal.timeout(30000) })
           .then(r => r.json()),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 30000))
       ]).catch(() => null);
 
       if (etherscan?.result?.FastGasPrice) {
@@ -127,9 +127,9 @@
       // Fallback: Polygonscan (coarse L1 estimate)
       const polygonscan = await Promise.race([
         fetch('https://api.polygonscan.com/api?module=gastracker&action=gasoracle',
-          { signal: AbortSignal.timeout(8000) })
+          { signal: AbortSignal.timeout(30000) })
           .then(r => r.json()),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 30000))
       ]).catch(() => null);
 
       if (polygonscan?.result) {
@@ -154,7 +154,7 @@
       // Primary: mempool.space with resilientFetch (adds fallback to blockchain.info)
       const mempoolRes = window.resilientFetch
         ? await window.resilientFetch('https://mempool.space/api/mempool').catch(() => null)
-        : await fetch('https://mempool.space/api/mempool', { signal: AbortSignal.timeout(8000) })
+        : await fetch('https://mempool.space/api/mempool', { signal: AbortSignal.timeout(30000) })
           .then(r => r.json())
           .catch(() => null);
 
@@ -221,9 +221,9 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getRecentPerformanceSamples', params: [10] }),
-            signal: AbortSignal.timeout(8000)
+            signal: AbortSignal.timeout(30000)
           }).then(r => r.json()),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 30000))
         ]).catch(() => null);
 
         if (perfSamples?.result?.length) {

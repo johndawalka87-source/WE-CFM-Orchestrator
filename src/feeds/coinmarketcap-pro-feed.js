@@ -17,12 +17,12 @@
   'use strict';
 
   // ── Config ──────────────────────────────────────────────────────
-  const CMC_PRO_QUOTES_BASE_URL = 'https://pro-api.coinmarketcap.com/v3';  // Requires API key
+  const CMC_PRO_QUOTES_BASE_URL = 'https://pro-api.coinmarketcap.com/v1';  // Requires API key
   const CMC_PRO_GLOBAL_BASE_URL = 'https://pro-api.coinmarketcap.com/v1';  // Requires API key
   const CMC_PRO_FNG_BASE_URL = 'https://pro-api.coinmarketcap.com/v3';  // Requires API key
-  const CMC_TRIAL_QUOTES_BASE_URL = 'https://pro-api.coinmarketcap.com/trial-pro-api/v3';  // ★ No API key!
-  const CMC_TRIAL_GLOBAL_BASE_URL = 'https://pro-api.coinmarketcap.com/trial-pro-api/v1';  // ★ No API key!
-  const CMC_TRIAL_FNG_BASE_URL = 'https://pro-api.coinmarketcap.com/trial-pro-api/v3';  // ★ No API key!
+  const CMC_TRIAL_QUOTES_BASE_URL = 'https://pro-api.coinmarketcap.com/v1';  // Requires API key
+  const CMC_TRIAL_GLOBAL_BASE_URL = 'https://pro-api.coinmarketcap.com/v1';  // Requires API key
+  const CMC_TRIAL_FNG_BASE_URL = 'https://pro-api.coinmarketcap.com/v3';  // Requires API key
   const CMC_QUOTES_PATH = '/cryptocurrency/quotes/latest';
   const CMC_GLOBAL_PATH = '/global-metrics/quotes/latest';
   const CMC_FEAR_INDEX_PATH = '/fear-and-greed/latest';
@@ -41,12 +41,12 @@
   // ── Credential helpers ──────────────────────────────────────────────────────
   function getApiKey() {
     try {
-      const stored = localStorage.getItem('cmc_pro_api_key');
-      if (stored && stored.trim()) return stored.trim();
-    } catch (_) { }
-    try {
       const env = window.__env?.CMC_PRO_API_KEY || window.__env?.COINMARKETCAP_API_KEY || window.desktopApp?.publicEnv?.CMC_PRO_API_KEY || window.desktopApp?.publicEnv?.COINMARKETCAP_API_KEY;
       if (env && String(env).trim()) return String(env).trim();
+    } catch (_) { }
+    try {
+      const stored = localStorage.getItem('cmc_pro_api_key');
+      if (stored && stored.trim()) return stored.trim();
     } catch (_) { }
     return '';
   }
@@ -92,6 +92,9 @@
     if (status === 401 || /api key|unauthorized/i.test(message || '')) {
       cmcProDisabledUntil = Date.now() + CMC_AUTH_COOLDOWN_MS;
       console.warn('[CMC] Pro key rejected; using keyless trial mode for this session window.');
+      try {
+        localStorage.removeItem('cmc_pro_api_key');
+      } catch (_) { }
     }
   }
 

@@ -44,6 +44,7 @@
   const STATUS_EMIT_MIN_MS = 1_000;
   const MESSAGE_STATUS_EMIT_MIN_MS = 5_000;
   const LOG_THROTTLE_MS = 5_000;
+  const TRANSPORT_FAIL_LOG_THROTTLE_MS = 60_000;
   let _heartbeatTimer = null;
   let _staleTimer = null;
   let _lastStatusEmitTs = 0;
@@ -234,6 +235,17 @@
   function _logTransport(type, detail = {}) {
     try {
       if (/ok|success/i.test(String(type || ''))) return;
+      const errorText = String(detail.error || '');
+      const normalizedError = errorText
+        .replace(/\b\d{1,6}\b/g, '#')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 120);
+      const throttleKey = `transport:${type}:${detail.failureClass || ''}:${normalizedError}`;
+      const now = Date.now();
+      const last = _throttledLogTs.get(throttleKey) || 0;
+      if ((now - last) < TRANSPORT_FAIL_LOG_THROTTLE_MS) return;
+      _throttledLogTs.set(throttleKey, now);
       window.NetworkLog?.record?.(type, {
         provider: 'Kalshi',
         url: 'kalshi://wss',

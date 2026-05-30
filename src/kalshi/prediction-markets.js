@@ -152,6 +152,14 @@
       }
     }
 
+<<<<<<< Updated upstream
+=======
+    if (!data && usedEndpointTransport) {
+      markKalshiRateLimit(series, { status: 429, message: 'Transport Cooldown' });
+      return getSeriesCache(series);
+    }
+
+>>>>>>> Stashed changes
     if (!data) {
       try {
         data = await apiFetch(url);
@@ -406,6 +414,7 @@
   async function fetchKalshi15M() {
     const result = {};
     const coins = Object.keys(KALSHI_15M_SERIES);
+<<<<<<< Updated upstream
     for (let i = 0; i < coins.length; i++) {
       const sym = coins[i];
       const series = KALSHI_15M_SERIES[sym];
@@ -414,6 +423,21 @@
         minTradableMs: MIN_TRADABLE_MS_15M,
         strictQuarterHour: true,
       });
+=======
+     // Fetch in parallel chunks of 3 to reduce latency while avoiding instant 429s
+    const CHUNK_SIZE = 3;
+    for (let i = 0; i < coins.length; i += CHUNK_SIZE) {
+      const chunk = coins.slice(i, i + CHUNK_SIZE);
+      const promises = chunk.map(sym => 
+        fetchKalshiSeriesForSym(KALSHI_15M_SERIES[sym], {
+          bucketMs: BUCKET_MS_15M,
+          minTradableMs: MIN_TRADABLE_MS_15M,
+          strictQuarterHour: true,
+        }).then(res => { result[sym] = res; })
+      );
+      await Promise.allSettled(promises);
+      if (i + CHUNK_SIZE < coins.length) await sleep(KALSHI_SERIES_FETCH_GAP_MS);
+>>>>>>> Stashed changes
     }
 
     if (_quarterDebugTicksRemaining > 0) {

@@ -35,6 +35,8 @@
             <div id="network-health-list"></div>
             <div style="font-size:12px;color:#8ab4f8;margin-top:10px;font-weight:600;">Transports (WSS → gRPC → RPC → HTTP)</div>
             <div id="network-transport-stats" style="margin-top:4px;padding-top:6px;border-top:1px solid #333;font-size:12px;"></div>
+            <div style="font-size:12px;color:#8ab4f8;margin-top:10px;font-weight:600;">Orbital Matrix (Redpanda)</div>
+            <div id="orbital-matrix-stats" style="margin-top:4px;padding-top:6px;border-top:1px solid #333;font-size:12px;"></div>
             <div id="network-health-lastupdate" style="font-size:12px;color:#aaa;margin-top:6px;"></div>
         </div>
     `;
@@ -98,6 +100,75 @@
         const min = Math.floor(sec / 60);
         const rem = sec % 60;
         return rem ? `${min}m ${rem}s` : `${min}m`;
+    }
+
+    function escapeHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    async function fetchJsonWithTimeout(url, timeoutMs = 2500) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(new Error(`timeout:${timeoutMs}`)), timeoutMs);
+        try {
+            const res = await fetch(url, {
+                signal: ctrl.signal,
+                headers: { Accept: 'application/json' }
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return await res.json();
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    async function probeOrbitalLocalEndpoints() {
+        const out = {
+            docker: 'unknown',
+            redpanda: 'unknown',
+            nodes: 0,
+            topics: [],
+            notifications: [],
+        };
+
+        try {
+            const brokers = await fetchJsonWithTimeout('http://localhost:9644/v1/brokers', 2500);
+            out.docker = 'healthy';
+            out.redpanda = 'healthy';
+            out.nodes = Array.isArray(brokers) ? brokers.length : 0;
+            out.notifications.push({
+                ts: Date.now(),
+                level: 'success',
+                source: 'renderer-probe',
+                message: `Redpanda admin API reachable (${out.nodes} node${out.nodes === 1 ? '' : 's'})`,
+            });
+        } catch (_) { }
+
+        try {
+            const topicData = await fetchJsonWithTimeout('http://localhost:8081/api/topics', 2500);
+            const topics = Array.isArray(topicData?.topics)
+                ? topicData.topics.map((topic) => topic?.topicName).filter((name) => name && name.includes('wecrypto.orbital'))
+                : [];
+            if (topics.length || out.redpanda === 'healthy') {
+                out.docker = 'healthy';
+                out.redpanda = 'healthy';
+            }
+            out.topics = topics;
+            if (topics.length) {
+                out.notifications.push({
+                    ts: Date.now(),
+                    level: 'info',
+                    source: 'renderer-probe',
+                    message: `Topic API reachable (${topics.length} orbital topics)`,
+                });
+            }
+        } catch (_) { }
+
+        return out;
     }
 
     function renderTransport() {
@@ -228,6 +299,7 @@
         document.getElementById('network-health-list').innerHTML = list;
         document.getElementById('network-health-lastupdate').textContent = 'Updated ' + formatAgo(Date.now());
         renderTransport();
+        renderOrbital();
 
         const alertDiv = document.getElementById('network-health-alert');
         let alertMsg = '';
@@ -250,5 +322,76 @@
     setInterval(render, 2000);
     setTimeout(render, 100);
 
-    window.NetworkHealthDashboard = { render };
+        async function renderOrbital() {
+        const el = document.getElementById('orbital-matrix-stats');
+        if (!el) return;
+
+        try {
+            let status = null;
+            if (window._orbitalBroadcaster?.getOrbitalStatus) {
+                status = await window._orbitalBroadcaster.getOrbitalStatus();
+            } else if (window.electron?.invoke) {
+                status = await window.electron.invoke('orbital:status');
+            }
+            status = status || { ready: false };
+            if (status.redpanda !== 'healthy' || status.docker !== 'healthy' || !Array.isArray(status.topics) || !status.topics.length) {
+                const probed = await probeOrbitalLocalEndpoints();
+                if (probed.redpanda === 'healthy') {
+                    status = {
+                        ...status,
+                        docker: probed.docker || status.docker,
+                        redpanda: probed.redpanda || status.redpanda,
+                        nodes: Number.isFinite(probed.nodes) && probed.nodes > 0 ? probed.nodes : status.nodes,
+                        topics: Array.isArray(probed.topics) && probed.topics.length ? probed.topics : (status.topics || []),
+                        notifications: [...(probed.notifications || []), ...(Array.isArray(status.notifications) ? status.notifications : [])].slice(0, 8),
+                    };
+                }
+            }
+            const dotColor = status.redpanda === 'healthy' ? '#3ecf8e' : (status.redpanda === 'degraded' ? '#ffd166' : '#ff5e5e');
+            const dockerStatus = status.docker === 'healthy' ? '<span style="color:#3ecf8e;">Docker UP</span>' : '<span style="color:#ff5e5e;">Docker DOWN</span>';
+            const topicsCount = Array.isArray(status.topics) ? status.topics.length : 0;
+            const nodeCount = Number.isFinite(status.nodes) ? status.nodes : 0;
+            const bridge = status.bridge || {};
+            const activity = status.activity || {};
+            const totalMessages = Number(activity.totalMessages || bridge.totalMessages || 0);
+            const activeOrbitals = Array.isArray(activity.activeOrbitals) ? activity.activeOrbitals : [];
+            const bridgeState = bridge.connected ? '<span style="color:#3ecf8e;">Bridge live</span>' : '<span style="color:#ffd166;">Bridge idle</span>';
+            const orbitalCounts = Object.entries(bridge.messageCounts || {})
+                .map(([orbital, count]) => `<span style="color:#8ab4f8;">${escapeHtml(orbital)}:${Number(count || 0)}</span>`)
+                .join(' · ') || '<span style="color:#666;">no orbital ticks yet</span>';
+            const notifications = Array.isArray(status.notifications) ? status.notifications.slice(0, 5) : [];
+            const notificationRows = notifications.length
+                ? notifications.map((event) => {
+                    const level = String(event?.level || 'info').toLowerCase();
+                    const color = level === 'error' ? '#ff5e5e' : (level === 'warn' ? '#ffd166' : (level === 'success' ? '#3ecf8e' : '#8ab4f8'));
+                    const source = event?.source ? `${escapeHtml(event.source)} · ` : '';
+                    return `<div style="margin-top:3px;color:${color};">• ${source}${escapeHtml(event?.message || '')} <span style="color:#666;">(${formatAgo(event?.ts)})</span></div>`;
+                }).join('')
+                : '<div style="margin-top:3px;color:#666;">No cluster notifications yet</div>';
+
+            el.innerHTML = `
+                <div style="display:flex;align-items:center;margin-bottom:4px;">
+                    <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${dotColor};margin-right:8px;"></span>
+                    <span style="font-weight:600;color:#e0e6f0;">Redpanda Cluster</span>
+                    <span style="margin-left:auto;color:#aaa;">${nodeCount} Nodes</span>
+                </div>
+                <div style="color:#9aa6b2;margin-left:18px;">
+                    <div>Status: <span style="color:${dotColor};">${status.redpanda?.toUpperCase() || 'OFFLINE'}</span> &middot; ${dockerStatus}</div>
+                    <div>Active Topics: <span style="color:#8ab4f8;">${topicsCount}</span></div>
+                    <div style="font-size:10px;color:#666;margin-top:2px;">${(status.topics || []).map(escapeHtml).join(', ') || 'no active topics'}</div>
+                    <div style="margin-top:5px;">${bridgeState} &middot; Messages: <span style="color:#8ab4f8;">${totalMessages}</span>${activeOrbitals.length ? ` &middot; Active orbitals: <span style="color:#e0e6f0;">${activeOrbitals.map(escapeHtml).join(', ')}</span>` : ''}</div>
+                    <div style="font-size:10px;color:#888;margin-top:2px;">Counts: ${orbitalCounts}</div>
+                    <div style="font-size:10px;color:#888;margin-top:2px;">Last activity: ${status.activity?.lastProducedAt ? formatAgo(new Date(status.activity.lastProducedAt).getTime()) : '—'}</div>
+                    <div style="margin-top:6px;padding-top:6px;border-top:1px dotted #3a3f4a;">
+                        <div style="color:#8ab4f8;font-size:11px;margin-bottom:2px;">Cluster notifications</div>
+                        <div style="font-size:10px;">${notificationRows}</div>
+                    </div>
+                </div>
+            `;
+        } catch (err) {
+            el.innerHTML = `<span style="color:#ff5e5e;">Failed to poll orbital status</span>`;
+        }
+    }
+
+window.NetworkHealthDashboard = { render };
 })();

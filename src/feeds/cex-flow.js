@@ -168,50 +168,21 @@
     const exchange = 'Coinbase';
     const ws = wsSnapshot(exchange, sym);
     if (ws) return ws;
-    // BNB and HYPE not on Coinbase
-    if (sym === 'BNB' || sym === 'HYPE') {
+    // BNB is not listed on Coinbase spot; skip it instead of burning requests.
+    if (sym === 'BNB') {
       return { exchange, available: false, reason: 'Not listed' };
     }
     try {
-      let jwtStrTrades = null;
-      let jwtStrTicker = null;
-      try {
-        if (window.desktopApp && window.desktopApp.generateCoinbaseJWT) {
-          const res1 = await window.desktopApp.generateCoinbaseJWT({
-            requestMethod: 'GET',
-            requestPath: `api.coinbase.com/api/v3/brokerage/products/${sym}-USD/ticker` // Note: limit is not part of the signature URI
-          });
-          if (res1 && res1.success && res1.jwt) jwtStrTrades = res1.jwt;
-          else console.warn(`[CEX] CB JWT 1 failed for ${sym}:`, res1?.error || 'unknown');
-          
-          const res2 = await window.desktopApp.generateCoinbaseJWT({
-            requestMethod: 'GET',
-            requestPath: `api.coinbase.com/api/v3/brokerage/products/${sym}-USD`
-          });
-          if (res2 && res2.success && res2.jwt) jwtStrTicker = res2.jwt;
-          else console.warn(`[CEX] CB JWT 2 failed for ${sym}:`, res2?.error || 'unknown');
-        }
-      } catch(e) { console.warn('[CEX] CB JWT failed:', e.message); }
-
-      const tradesOpts = jwtStrTrades ? { headers: { 'Authorization': `Bearer ${jwtStrTrades}` } } : {};
-      const tickerOpts = jwtStrTicker ? { headers: { 'Authorization': `Bearer ${jwtStrTicker}` } } : {};
-
-      const url1 = `https://api.coinbase.com/api/v3/brokerage/products/${sym}-USD/ticker?limit=100`;
-      const url2 = `https://api.coinbase.com/api/v3/brokerage/products/${sym}-USD`;
+      const publicHeaders = { headers: { 'Accept': 'application/json' } };
+      const url1 = `https://api.coinbase.com/api/v3/brokerage/market/products/${sym}-USD/ticker?limit=100`;
+      const url2 = `https://api.coinbase.com/api/v3/brokerage/market/products/${sym}-USD`;
 
       const [tradesRes, tickerRes] = await Promise.allSettled([
-        getJson(url1, tradesOpts).catch(async (e) => {
-          console.error(`[CEX DEBUG] ${sym} Trades Failed:`, e.message);
-          throw e;
-        }),
-        getJson(url2, tickerOpts).catch(async (e) => {
-          console.error(`[CEX DEBUG] ${sym} Ticker Failed:`, e.message);
-          throw e;
-        }),
+        getJson(url1, publicHeaders),
+        getJson(url2, publicHeaders),
       ]);
 
       if (tradesRes.status === 'rejected') {
-        console.error(`[CEX DEBUG] ${sym} Final Trades Reject:`, tradesRes.reason);
         throw new Error(tradesRes.reason?.message || 'trades failed');
       }
 

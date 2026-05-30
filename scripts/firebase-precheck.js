@@ -16,7 +16,10 @@ try {
 } catch (_) {}
 
 const fb = require('../src/cloud/firebase-admin-firestore');
-fb.startupCheck({ required: false, probe: true })
+const targetArg = process.argv.find((arg) => arg.startsWith('--target='));
+const target = targetArg ? targetArg.split('=').slice(1).join('=').trim() : null;
+
+fb.startupCheck({ required: false, probe: true, ...(target ? { target } : {}) })
   .then(r => {
     console.log('[firebase-precheck]', JSON.stringify(r, null, 2));
     if (r.success) process.exit(0);

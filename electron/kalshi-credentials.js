@@ -5,9 +5,47 @@ const path = require('path');
 const crypto = require('crypto');
 
 const CREDENTIAL_FILE_NAME = 'KALSHI-API-KEY.txt';
+const CREDENTIAL_FILE_NAMES = [
+  CREDENTIAL_FILE_NAME,
+  'KALSHI_API_SHA256_WeCrypto.txt',
+  'KALSHI_WEBSOCKETS and WORKER READ_ONLY.txt',
+  'KALSHI_SHA_API.txt',
+];
 
 function parseCredentialFile(content) {
   const rawLines = String(content || '').split(/\r?\n/);
+  const keys = [];
+  let currentKeyId = null;
+  let currentKeyPemLines = [];
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i].trim();
+    if (!line) continue;
+
+    if (line.includes('-----BEGIN')) {
+      currentKeyPemLines.push(rawLines[i]);
+    } else if (currentKeyPemLines.length > 0) {
+      currentKeyPemLines.push(rawLines[i]);
+      if (line.includes('-----END')) {
+        if (currentKeyId) {
+          keys.push({
+            apiKeyId: currentKeyId,
+            privateKeyPem: currentKeyPemLines.join('\n').trim()
+          });
+        }
+        currentKeyId = null;
+        currentKeyPemLines = [];
+      }
+    } else if (line.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      currentKeyId = line;
+    }
+  }
+
+  if (keys.length > 0) {
+    return keys[keys.length - 1];
+  }
+
+  // Fallback to original simple parsing if no structured keys found
   const nonEmpty = rawLines.map(line => line.trim()).filter(Boolean);
   const apiKeyId = nonEmpty[0] || null;
   const beginIdx = rawLines.findIndex(line => line.includes('-----BEGIN'));
@@ -27,7 +65,9 @@ function addCandidate(candidates, candidate) {
 
 function addSecretCandidate(candidates, baseDir) {
   if (!baseDir) return;
-  addCandidate(candidates, path.join(baseDir, 'secrets', CREDENTIAL_FILE_NAME));
+  for (const fileName of CREDENTIAL_FILE_NAMES) {
+    addCandidate(candidates, path.join(baseDir, 'secrets', fileName));
+  }
 }
 
 function addDirectCandidate(candidates, baseDir) {
@@ -85,7 +125,7 @@ function buildCredentialCandidates(options = {}) {
   }
 
   if (process.platform === 'win32') {
-    for (let code = 67; code <= 90; code += 1) {
+    for (let code = 65; code <= 90; code += 1) {
       const driveRoot = `${String.fromCharCode(code)}:\\`;
       addSecretCandidate(candidates, driveRoot);
       addDirectCandidate(candidates, driveRoot);

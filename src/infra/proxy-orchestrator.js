@@ -70,7 +70,7 @@ if (
     bitfinex: { reqs_per_second: 10, reqs_per_minute: 600, burst: 25, backoff_start: 1500, backoff_max: 25000 },
     cryptocom: { reqs_per_second: 10, reqs_per_minute: 600, burst: 25, backoff_start: 1400, backoff_max: 25000 },
     pyth: { reqs_per_second: 20, burst: 50, backoff_start: 1000, backoff_max: 10000 },
-    coingecko: { reqs_per_minute: 1, burst: 0, backoff_start: 30000, backoff_max: 900000 },
+    coingecko: { reqs_per_minute: 600, burst: 10, backoff_start: 3000, backoff_max: 90000 },
     blockchainraw: { reqs_per_second: 10, reqs_per_minute: 500, burst: 20, backoff_start: 1000, backoff_max: 20000 },
     default: { reqs_per_second: 5, reqs_per_minute: 240, burst: 10, backoff_start: 1500, backoff_max: 30000 },
   };
@@ -79,7 +79,7 @@ if (
   const PROVIDER_TIMING_AUDIT = {
     coingecko: {
       hostPatterns: ['coingecko.com'],
-      minRpm: 1, maxRpm: 2,
+      minRpm: 300, maxRpm: 600,
       minTimeoutMs: 15000, maxTimeoutMs: 45000,
       minIntervalMs: 30000, maxIntervalMs: 120000,
       maxPayloadBytes: 550000,

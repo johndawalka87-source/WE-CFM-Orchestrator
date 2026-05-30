@@ -1,5 +1,0 @@
-coin,horizon,sample_size,trades,win_rate,avg_edge,max_dd,equity_change,quality
---DAYS,1m,521,78,0.5297,0.0011,0.0328,0.0057,GOOD
---DAYS,5m,334,78,0.6086,0.0051,0.0344,0.0250,GOOD
---DAYS,10m,581,110,0.3564,0.0015,0.0313,0.0135,POOR
---DAYS,15m,476,45,0.5725,0.0125,0.0307,0.0166,GOOD

@@ -7,7 +7,7 @@
 //   queuedFetch(url)              — strict serial queue with 65ms breathing room between calls
 (function() {
   // ── 1. CONCURRENT THROTTLE ────────────────────────────────────────────────
-  const MAX_CONCURRENT   = 40;     // Balanced: high enough to avoid deadlock, low enough to protect proxy WSS
+  const MAX_CONCURRENT   = 6;      // Matched to Chromium per-host limit to prevent hidden timeouts
   const FETCH_TIMEOUT_MS = 10000;  // hard deadline per request (10 s)
   const SLOT_GAP_MS      = 25;     // breathing room between slots to protect proxy event loop
   const API_TIMEOUT_MS = {
@@ -126,44 +126,119 @@
   }
 
   async function throttledFetch(url, options = {}) {
-    if (activeFetches >= MAX_CONCURRENT) {
-      await new Promise(resolve => waitQueue.push(resolve));
+    const apiName = inferApiName(url);
+    
+    // 1. Wait for API rate limit BEFORE taking a global concurrency slot.
+    // This prevents slow APIs (e.g., CoinGecko) from hoarding all global slots.
+    if (apiName && window.ApiRateLimiter) {
+      await window.ApiRateLimiter.acquireToken(apiName, options.signal);
     }
+
+    // 2. If the caller aborted while we were waiting for the rate limit, exit early.
+    if (options.signal && options.signal.aborted) {
+      throw options.signal.reason || new DOMException('Aborted', 'AbortError');
+    }
+
+    // 3. Take a global concurrency slot.
+    if (activeFetches >= MAX_CONCURRENT) {
+      await new Promise((resolve, reject) => {
+        const entry = { resolve, reject, signal: options.signal };
+        waitQueue.push(entry);
+        if (options.signal) {
+          const onAbort = () => {
+            options.signal.removeEventListener('abort', onAbort);
+            const idx = waitQueue.indexOf(entry);
+            if (idx !== -1) {
+              waitQueue.splice(idx, 1);
+              reject(options.signal.reason || new DOMException('Aborted', 'AbortError'));
+            }
+          };
+          options.signal.addEventListener('abort', onAbort);
+        }
+      });
+    }
+    
+    // Check abort again just in case we waited a long time in the global queue
+    if (options.signal && options.signal.aborted) {
+      if (waitQueue.length > 0) setTimeout(() => { 
+        while (waitQueue.length) {
+          const entry = waitQueue.shift();
+          if (entry.signal && entry.signal.aborted) continue;
+          (entry.resolve || entry)();
+          break;
+        }
+      }, SLOT_GAP_MS);
+      throw options.signal.reason || new DOMException('Aborted', 'AbortError');
+    }
+    
     activeFetches++;
 
     // Promise.race provides a hard deadline even when the proxy ignores
     // the AbortController signal.  The underlying fetch may keep running
     // in the background but it won't hold a throttle slot.
+    let timeoutId = null;
+    let innerCtrl = null;
+    let abortHandler = null;
     const hardTimeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('[throttle] timeout')), (() => {
-        const apiName = inferApiName(url) || 'default';
-        const limiter = apiName && window.ApiRateLimiter ? window.ApiRateLimiter.getLimiter(apiName) : null;
+      timeoutId = setTimeout(() => {
+        if (options.signal && !options.signal.aborted) {
+          // Do not abort caller's signal, just reject our race. We will abort the inner fetch below.
+        }
+        reject(new Error('[throttle] timeout'));
+      }, (() => {
+        const fallbackApiName = apiName || 'default';
+        const limiter = fallbackApiName && window.ApiRateLimiter ? window.ApiRateLimiter.getLimiter(fallbackApiName) : null;
         const queuePenaltyMs = limiter ? Math.min(4000, limiter.getQueueLength() * 120) : 0;
-        const baseTimeout = API_TIMEOUT_MS[apiName] || API_TIMEOUT_MS.default;
+        const baseTimeout = API_TIMEOUT_MS[fallbackApiName] || API_TIMEOUT_MS.default;
         return baseTimeout + queuePenaltyMs;
       })())
     );
 
     try {
-      const apiName = inferApiName(url);
-      if (apiName && window.ApiRateLimiter) {
-        await window.ApiRateLimiter.acquireToken(apiName);
+      
+      // If caller already aborted while we were in rate limiter, throw immediately
+      if (options.signal && options.signal.aborted) {
+        throw options.signal.reason || new DOMException('Aborted', 'AbortError');
       }
+
       const finalUrl = apiName === 'coingecko' && typeof window.coinGeckoUrl === 'function'
         ? window.coinGeckoUrl(url)
         : url;
-      const finalOptions = apiName === 'coingecko' ? withCoinGeckoAuth(finalUrl, options) : options;
+      
+      innerCtrl = new AbortController();
+      if (options.signal) {
+        abortHandler = () => innerCtrl.abort(options.signal.reason);
+        options.signal.addEventListener('abort', abortHandler);
+      }
+      
+      // Ensure we abort the inner fetch if hardTimeout wins, to prevent socket leaks in Chrome
+      hardTimeout.catch((e) => innerCtrl.abort(e));
+
+      const authOptions = apiName === 'coingecko' ? withCoinGeckoAuth(finalUrl, options) : options;
+      const finalOptions = { ...authOptions, signal: innerCtrl.signal };
       const fetchUrl = finalOptions._rewrittenUrl || finalUrl;
+
       const res = await Promise.race([fetch(fetchUrl, finalOptions), hardTimeout]);
-      return res;   // ← return raw Response; callers use .ok / .json() themselves
+      return res;   //   return raw Response; callers use .ok / .json() themselves
     } catch (err) {
       console.warn('[ThrottledFetch] timeout/error:', url.slice(0, 100));
       throw err;    // ← re-throw so caller's .catch(() => []) handles it gracefully
     } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (options.signal && abortHandler) {
+        try { options.signal.removeEventListener('abort', abortHandler); } catch (_) { }
+      }
       activeFetches--;
       // Small gap before waking the next queued request — reduces proxy burst
       if (waitQueue.length > 0) {
-        setTimeout(() => { if (waitQueue.length) waitQueue.shift()(); }, SLOT_GAP_MS);
+        setTimeout(() => { 
+          while (waitQueue.length) {
+            const entry = waitQueue.shift();
+            if (entry.signal && entry.signal.aborted) continue;
+            (entry.resolve || entry)();
+            break;
+          }
+        }, SLOT_GAP_MS);
       }
     }
   }
@@ -203,7 +278,11 @@
     // Resolve all waiters — they will attempt to proceed but the underlying
     // fetch calls they were waiting on belong to the abandoned prior run.
     // Their individual coin-level timeouts will catch anything that slips through.
-    while (waitQueue.length) waitQueue.shift()();
+    while (waitQueue.length) {
+      const entry = waitQueue.shift();
+      if (typeof entry === 'function') entry();
+      else if (entry.resolve) entry.resolve();
+    }
     activeFetches = 0;
     if (drained) console.info(`[ThrottledFetch] reset — drained ${drained} stale queue entries`);
   }

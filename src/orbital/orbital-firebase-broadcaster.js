@@ -15,9 +15,28 @@ const ROOT_DOC_ID = 'root';
 const FIRESTORE_RATE_MS = 30_000;     // orbital state writes
 const TICK_RATE_MS = 1_000;           // per-market tick writes
 const VERTEX_RATE_MS = 2_000;         // per-kind execution logs
+const FIRESTORE_WRITE_TIMEOUT_MS = _readIntEnv('WECRYPTO_FIRESTORE_WRITE_TIMEOUT_MS', 6500, 1000, 60000);
+const FIRESTORE_WRITE_ATTEMPTS = _readIntEnv('WECRYPTO_FIRESTORE_WRITE_ATTEMPTS', 2, 1, 5);
+const FIRESTORE_BACKOFF_BASE_MS = _readIntEnv('WECRYPTO_FIRESTORE_BACKOFF_BASE_MS', 350, 50, 10000);
+const FIRESTORE_BACKOFF_MAX_MS = _readIntEnv('WECRYPTO_FIRESTORE_BACKOFF_MAX_MS', 5000, 250, 60000);
+const FIRESTORE_CIRCUIT_FAILURES = _readIntEnv('WECRYPTO_FIRESTORE_CIRCUIT_FAILURES', 3, 1, 20);
+const FIRESTORE_CIRCUIT_BASE_MS = _readIntEnv('WECRYPTO_FIRESTORE_CIRCUIT_BASE_MS', 30000, 1000, 300000);
+const FIRESTORE_CIRCUIT_MAX_MS = _readIntEnv('WECRYPTO_FIRESTORE_CIRCUIT_MAX_MS', 180000, 5000, 900000);
 const _lastWrite = {};                // { sym: ts }
 const _lastTickWrite = {};            // { market: ts }
 const _lastVertexWrite = {};          // { kind: ts }
+const _inFlightWrites = new Set();
+
+const _writeCircuit = {
+  failures: 0,
+  openUntil: 0,
+  lastError: null,
+  lastFailureAt: 0,
+  lastWarnAt: 0,
+  fallbackActivated: false,
+  fallbackReason: null,
+  skipped: 0,
+};
 
 function _initFirebase() {
   if (_firestore && (_rtdb || _initDone)) return;
@@ -69,6 +88,195 @@ function _isRateLimited(map, key, windowMs) {
   if (now - last < windowMs) return true;
   map[key] = now;
   return false;
+}
+
+function _readIntEnv(name, fallback, min, max) {
+  const raw = Number(process.env[name]);
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(raw)));
+}
+
+function _sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function _describeError(error) {
+  return String(error && (error.message || error.details || error.code) || error || 'unknown error');
+}
+
+function _isTransientFirestoreError(error) {
+  const msg = _describeError(error).toLowerCase();
+  return (
+    msg.includes('deadline')
+    || msg.includes('timeout')
+    || msg.includes('unavailable')
+    || msg.includes('econnrefused')
+    || msg.includes('socket')
+    || msg.includes('network')
+    || msg.includes('rst_stream')
+  );
+}
+
+function _withTimeout(promise, timeoutMs, label) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`${label} timed out after ${timeoutMs}ms`);
+      error.code = 'WECRYPTO_FIRESTORE_WRITE_TIMEOUT';
+      reject(error);
+    }, timeoutMs);
+  });
+  return Promise.race([
+    Promise.resolve(promise).finally(() => {
+      if (timer) clearTimeout(timer);
+    }),
+    timeout,
+  ]);
+}
+
+function _isCircuitOpen() {
+  const now = Date.now();
+  if (_writeCircuit.openUntil > now) {
+    _writeCircuit.skipped += 1;
+    return true;
+  }
+  if (_writeCircuit.openUntil && _writeCircuit.openUntil <= now) {
+    _writeCircuit.openUntil = 0;
+  }
+  return false;
+}
+
+function _recordWriteSuccess() {
+  _writeCircuit.failures = 0;
+  _writeCircuit.openUntil = 0;
+  _writeCircuit.lastError = null;
+}
+
+function _recordWriteFailure(label, error) {
+  const now = Date.now();
+  _writeCircuit.failures += 1;
+  _writeCircuit.lastFailureAt = now;
+  _writeCircuit.lastError = _describeError(error);
+
+  if (_writeCircuit.failures >= FIRESTORE_CIRCUIT_FAILURES) {
+    const exponent = Math.min(5, _writeCircuit.failures - FIRESTORE_CIRCUIT_FAILURES);
+    const cooldown = Math.min(FIRESTORE_CIRCUIT_MAX_MS, FIRESTORE_CIRCUIT_BASE_MS * Math.pow(2, exponent));
+    _writeCircuit.openUntil = now + cooldown;
+  }
+
+  const warnWindow = Math.max(5000, Math.min(FIRESTORE_CIRCUIT_BASE_MS, 30000));
+  if (now - _writeCircuit.lastWarnAt >= warnWindow) {
+    _writeCircuit.lastWarnAt = now;
+    const suffix = _writeCircuit.openUntil > now
+      ? `; circuit open for ${Math.ceil((_writeCircuit.openUntil - now) / 1000)}s`
+      : '';
+    console.warn(`[orbital-broadcaster] Firestore write failure (${label}): ${_writeCircuit.lastError}${suffix}`);
+  }
+}
+
+function _retryDelay(attempt) {
+  const base = Math.min(FIRESTORE_BACKOFF_MAX_MS, FIRESTORE_BACKOFF_BASE_MS * Math.pow(2, Math.max(0, attempt - 1)));
+  const jitter = Math.floor(Math.random() * Math.max(25, base * 0.25));
+  return Math.min(FIRESTORE_BACKOFF_MAX_MS, base + jitter);
+}
+
+function _docId(...parts) {
+  const raw = parts
+    .map((part) => String(part == null ? '' : part).trim())
+    .filter(Boolean)
+    .join('_');
+  const safe = raw.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_').slice(0, 180);
+  return safe || `doc_${Date.now()}`;
+}
+
+async function _activateLocalFallback(reason) {
+  if (!_adminModule || typeof _adminModule.switchToLocalEmulator !== 'function') return false;
+  const fallbackEnabled = typeof _adminModule.firestoreLocalFallbackEnabled === 'function'
+    ? _adminModule.firestoreLocalFallbackEnabled()
+    : envFlagEnabled(process.env.WECRYPTO_FIRESTORE_LOCAL_FALLBACK || '0');
+  if (!fallbackEnabled) return false;
+
+  try {
+    const result = await _adminModule.switchToLocalEmulator({ reason });
+    if (result && result.success) {
+      _firestore = typeof _adminModule.getFirestore === 'function'
+        ? _adminModule.getFirestore()
+        : _firestore;
+      _writeCircuit.failures = 0;
+      _writeCircuit.openUntil = 0;
+      _writeCircuit.fallbackActivated = true;
+      _writeCircuit.fallbackReason = reason || result.localFallbackReason || 'prod Firestore unavailable';
+      console.warn(`[orbital-broadcaster] Firestore local emulator fallback active (${result.emulatorHost || '127.0.0.1:8080'}).`);
+      return !!_firestore;
+    }
+    _initError = result && result.error ? result.error : 'Firestore emulator fallback failed';
+  } catch (error) {
+    _initError = _describeError(error);
+  }
+  return false;
+}
+
+async function _ensureFirestoreReady() {
+  _initFirebase();
+  if (_bootstrapInFlight) {
+    try {
+      await _bootstrapInFlight;
+    } catch (error) {
+      _initError = _describeError(error);
+    }
+  }
+  if (_firestore) return true;
+  return _activateLocalFallback(_initError || 'Firestore unavailable');
+}
+
+async function _writeWithRetry(label, operation, options = {}) {
+  const ready = await _ensureFirestoreReady();
+  if (!ready || !_firestore) {
+    return { success: false, skipped: true, error: _initError || 'Firestore unavailable' };
+  }
+
+  if (_isCircuitOpen()) {
+    return { success: false, skipped: true, circuitOpen: true, error: _writeCircuit.lastError || 'Firestore circuit open' };
+  }
+
+  const attempts = Math.max(1, options.attempts || FIRESTORE_WRITE_ATTEMPTS);
+  const token = Symbol(label);
+  _inFlightWrites.add(token);
+  let lastError = null;
+
+  try {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        const result = await _withTimeout(operation(), FIRESTORE_WRITE_TIMEOUT_MS, label);
+        _recordWriteSuccess();
+        return { success: true, result };
+      } catch (error) {
+        lastError = error;
+
+        const status = _adminModule && typeof _adminModule.getStatus === 'function'
+          ? _adminModule.getStatus()
+          : {};
+        if (
+          status.target === 'prod'
+          && _isTransientFirestoreError(error)
+          && await _activateLocalFallback(_describeError(error))
+        ) {
+          continue;
+        }
+
+        if (attempt < attempts && _isTransientFirestoreError(error)) {
+          await _sleep(_retryDelay(attempt));
+          continue;
+        }
+        break;
+      }
+    }
+  } finally {
+    _inFlightWrites.delete(token);
+  }
+
+  _recordWriteFailure(label, lastError);
+  return { success: false, error: _describeError(lastError) };
 }
 
 function _deriveAssetFromTicker(marketTicker) {
@@ -182,10 +390,9 @@ function _buildVertexExecutionPayload(kind, data = {}) {
 }
 
 async function _pushOrbitalState(sym, payload) {
-  if (!_firestore) return;
   const asset = _toUpper(sym, 'UNKNOWN');
-  const rootRef = _firestore.collection(ROOT_COLLECTION).doc(ROOT_DOC_ID);
-  try {
+  await _writeWithRetry(`orbital latest ${asset}`, async () => {
+    const rootRef = _firestore.collection(ROOT_COLLECTION).doc(ROOT_DOC_ID);
     const latestRef = rootRef.collection('orbital_states').doc(asset);
     await latestRef.set({
       latest_state: payload.exhaustion_profile?.structural_state || null,
@@ -194,25 +401,23 @@ async function _pushOrbitalState(sym, payload) {
       latest_confidence: payload?.qsp?.quantizer?.confidence || null,
       updated_at: payload.timestamp,
     }, { merge: true });
-  } catch (e) {
-    console.warn('[orbital-broadcaster] orbital state latest write error:', e.message);
-  }
+  });
 
-  try {
+  const tensorDocId = _docId(asset, payload.ts, payload.timestamp, 'tensor');
+  await _writeWithRetry(`tensor batch ${asset}`, async () => {
+    const rootRef = _firestore.collection(ROOT_COLLECTION).doc(ROOT_DOC_ID);
     const tensorRef = rootRef
       .collection('orbital_states').doc(asset)
-      .collection('tensor_batches');
-    await tensorRef.add(_buildTensorBatchPayload(payload));
-  } catch (e) {
-    console.warn('[orbital-broadcaster] tensor batch write error:', e.message);
-  }
+      .collection('tensor_batches')
+      .doc(tensorDocId);
+    await tensorRef.set(_buildTensorBatchPayload(payload), { merge: true });
+  });
 }
 
 async function _pushTick(tickPayload) {
-  if (!_firestore) return;
   const marketId = _deriveMarketId(tickPayload.market_id);
-  const rootRef = _firestore.collection(ROOT_COLLECTION).doc(ROOT_DOC_ID);
-  try {
+  await _writeWithRetry(`tick ${marketId}`, async () => {
+    const rootRef = _firestore.collection(ROOT_COLLECTION).doc(ROOT_DOC_ID);
     const streamRef = rootRef.collection('event_streams').doc(marketId);
     await streamRef.set({
       stream_status: tickPayload.stream_status || 'active',
@@ -220,7 +425,8 @@ async function _pushTick(tickPayload) {
       updated_at_ts: tickPayload.ts,
     }, { merge: true });
 
-    await streamRef.collection('ticks').add({
+    const tickDocId = _docId(marketId, tickPayload.ts, tickPayload.source, tickPayload.price);
+    await streamRef.collection('ticks').doc(tickDocId).set({
       price: tickPayload.price,
       vol: tickPayload.vol,
       ts: tickPayload.ts,
@@ -229,27 +435,23 @@ async function _pushTick(tickPayload) {
       no_bid: tickPayload.no_bid,
       no_ask: tickPayload.no_ask,
       source: tickPayload.source || 'kalshi-ws',
-    });
-  } catch (e) {
-    console.warn('[orbital-broadcaster] tick write error:', e.message);
-  }
+    }, { merge: true });
+  });
 }
 
 async function _pushVertexExecution(kind, data = {}) {
-  if (!_firestore) return;
   const bucket = String(kind || 'orbital_rebalances');
-  const rootRef = _firestore.collection(ROOT_COLLECTION).doc(ROOT_DOC_ID);
-  try {
+  const entryDocId = _docId(bucket, data.ts || Date.now(), data.asset, data.market_id, data.action);
+  await _writeWithRetry(`vertex execution ${bucket}`, async () => {
+    const rootRef = _firestore.collection(ROOT_COLLECTION).doc(ROOT_DOC_ID);
     const bucketRef = rootRef.collection('vertex_executions').doc(bucket);
     await bucketRef.set({
       last_ts: _toNum(data.ts, Date.now()),
       updated_at: new Date().toISOString(),
       kind: bucket,
     }, { merge: true });
-    await bucketRef.collection('entries').add(_buildVertexExecutionPayload(bucket, data));
-  } catch (e) {
-    console.warn('[orbital-broadcaster] vertex execution write error:', e.message);
-  }
+    await bucketRef.collection('entries').doc(entryDocId).set(_buildVertexExecutionPayload(bucket, data), { merge: true });
+  });
 }
 
 async function _pushToRTDB(sym, payload) {
@@ -289,8 +491,15 @@ async function pushBatch(results) {
   for (const orbital of results) push(orbital);
 }
 
+function envFlagEnabled(value) {
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value == null ? '' : value).trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on', 'enabled'].includes(normalized);
+}
+
 function pushMarketTick(tick) {
   if (!tick) return;
+  if (!envFlagEnabled(process.env.WECRYPTO_FIRESTORE_TICKS_ENABLED || '0')) return;
   _initFirebase();
   const marketId = _deriveMarketId(tick.market_id || tick.market_ticker || tick.ticker);
   if (_isRateLimited(_lastTickWrite, marketId, TICK_RATE_MS)) return;
@@ -306,10 +515,27 @@ function pushVertexExecution(kind, data) {
 }
 
 function getDiagnostics() {
+  const status = _adminModule && typeof _adminModule.getStatus === 'function'
+    ? _adminModule.getStatus()
+    : null;
   return {
     firestoreReady: !!_firestore,
     rtdbReady: !!_rtdb,
     initError: _initError,
+    firestoreStatus: status,
+    writeCircuit: {
+      failures: _writeCircuit.failures,
+      openUntil: _writeCircuit.openUntil,
+      openForMs: Math.max(0, _writeCircuit.openUntil - Date.now()),
+      lastError: _writeCircuit.lastError,
+      lastFailureAt: _writeCircuit.lastFailureAt,
+      fallbackActivated: _writeCircuit.fallbackActivated,
+      fallbackReason: _writeCircuit.fallbackReason,
+      skipped: _writeCircuit.skipped,
+      inFlight: _inFlightWrites.size,
+      writeTimeoutMs: FIRESTORE_WRITE_TIMEOUT_MS,
+      attempts: FIRESTORE_WRITE_ATTEMPTS,
+    },
     lastWrite: Object.assign({}, _lastWrite),
     lastTickWrite: Object.assign({}, _lastTickWrite),
     lastVertexWrite: Object.assign({}, _lastVertexWrite),

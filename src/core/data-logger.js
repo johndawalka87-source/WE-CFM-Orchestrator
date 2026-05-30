@@ -3,10 +3,10 @@
 // Hybrid JSONL logger + Ctrl+D debug overlay
 //
 // Writes every 60s to ALL available storage roots discovered at startup:
-//   F:\WECRYP\data\YYYY-MM-DD\{category}.jsonl          (primary dev drive)
-//   D:\WECRYP0-data\YYYY-MM-DD\{category}.jsonl         (local D: drive)
-//   C:\WECRYP0-data\...  E:\WECRYP0-data\...            (any other local drives)
-//   Z:\WECRYP0-data\...                                  (Google Drive mapped)
+//   G:\WECRYP\data\YYYY-MM-DD\{category}.jsonl          (primary dev drive on this machine)
+//   D:\WECRYP0-data\YYYY-MM-DD\{category}.jsonl         (legacy local data root)
+//   C:\WECRYP0-data\...  E:\WECRYP0-data\...            (other local drives)
+//   H:\My Drive\WECRYP\WECRYP0-data\...                 (Google Drive mirror)
 //   \\server\share\WECRYP0-data\...                      (UNC network shares)
 //   OneDrive\WECRYP0-data\...                            (personal OneDrive)
 //   OneDrive - Azure\WECRYP0-data\...                    (business OneDrive)
@@ -19,34 +19,70 @@
 (function () {
   'use strict';
 
-  const LOCAL_ROOT = 'F:\\WECRYP\\data';   // primary dev drive — always written first
+  let   LOCAL_ROOT = 'G:\\WECRYP\\data';   // primary dev drive — updated during discovery when needed
   let   DRIVE_PATHS = [];                   // populated by discoverDrives() on startup
   const FLUSH_MS   = 60_000;
+
+  function uniquePaths(paths) {
+    return [...new Set((paths || []).filter(Boolean))];
+  }
+
+  function normalizeRoot(root) {
+    return String(root || '').replace(/[\\/]+$/, '');
+  }
+
+  function localRootLetter() {
+    const match = String(LOCAL_ROOT || '').match(/^([A-Za-z]):\\/);
+    return match ? match[1].toUpperCase() : '';
+  }
+
+  function pickPrimaryLocalRoot(drives) {
+    const letters = (drives || [])
+      .filter(d => d && d.type === 'local' && d.letter)
+      .map(d => String(d.letter).toUpperCase());
+    const preferred = ['G', 'F', 'D', 'C'];
+    const picked = preferred.find(letter => letters.includes(letter)) || letters[0];
+    return picked ? `${picked}:\\WECRYP\\data` : LOCAL_ROOT;
+  }
+
+  function buildCloudMirrorRoots(root) {
+    const base = normalizeRoot(root);
+    if (!base) return [];
+    return uniquePaths([
+      `${base}\\WECRYP0-data`,
+      `${base}\\WECRYP\\WECRYP0-data`,
+    ]);
+  }
 
   // ── Async drive discovery — runs once on load ─────────────────────────────
   async function discoverDrives() {
     try {
       if (!window.desktopApp?.getDrives) return;
       const drives = await window.desktopApp.getDrives();
+      LOCAL_ROOT = pickPrimaryLocalRoot(drives);
+      const primaryLetter = localRootLetter();
       const paths  = [];
       for (const d of drives) {
         if (d.type === 'local' && d.letter) {
           const L = d.letter.toUpperCase();
-          if (L === 'F') continue;               // already covered by LOCAL_ROOT
+          if (L === primaryLetter) continue;     // already covered by LOCAL_ROOT
           paths.push(`${L}:\\WECRYP0-data`);
         } else if (d.type === 'network' && d.root) {
           // UNC path — root already ends with '\', e.g. \\server\share\
-          paths.push(`${d.root}WECRYP0-data`);
+          paths.push(`${normalizeRoot(d.root)}\\WECRYP0-data`);
         } else if (d.type === 'cloud' && d.root) {
-          paths.push(`${d.root}\\WECRYP0-data`);
+          paths.push(...buildCloudMirrorRoots(d.root));
         }
       }
-      DRIVE_PATHS = paths;
+      DRIVE_PATHS = uniquePaths(paths);
       console.log('[DataLogger] storage roots:', [LOCAL_ROOT, ...DRIVE_PATHS].join(' | '));
     } catch (e) {
       console.warn('[DataLogger] drive discovery failed:', e.message);
-      // Fallback to known drives
-      DRIVE_PATHS = ['D:\\WECRYP0-data', 'Z:\\WECRYP0-data'];
+      // Fallback to known machine-specific roots
+      DRIVE_PATHS = uniquePaths([
+        'D:\\WECRYP0-data',
+        'H:\\My Drive\\WECRYP\\WECRYP0-data',
+      ]);
       console.log('[DataLogger] fallback storage roots:', [LOCAL_ROOT, ...DRIVE_PATHS].join(' | '));
     }
   }
@@ -402,7 +438,7 @@
 
         <div style="margin-top:14px;padding:10px 12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:6px;font-size:10px;color:var(--color-text-muted);line-height:1.9">
           <div style="font-weight:700;color:var(--color-text,#e2e8f0);margin-bottom:4px">💾 Storage Paths (${1 + DRIVE_PATHS.length} roots)</div>
-          <div>📁 Primary: <code>F:\\WECRYP\\data\\${todayStr()}</code></div>
+          <div>📁 Primary: <code>${LOCAL_ROOT}\\${todayStr()}</code></div>
           ${DRIVE_PATHS.map(p => `<div>💾 Mirror: <code>${p}\\${todayStr()}</code></div>`).join('')}
           ${DRIVE_PATHS.length === 0 ? '<div style="color:var(--color-gold)">⚠ Discovering drives…</div>' : ''}
           <div style="margin-top:6px">Categories: predictions · decisions · cfm_snapshots · shell_events · resolver_outcomes · logic_debug · errors</div>

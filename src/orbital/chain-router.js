@@ -87,8 +87,9 @@
     const state = ROUTE_HANDLER_HEALTH[key] || { failures: 0, nextAt: 0 };
     const failures = state.failures + 1;
     const msg = String(err?.message || err || '').toLowerCase();
+    const rateLimited = /429|rate.?limit|too many requests/.test(msg);
     const transient = /abort|timeout|429|5\d\d|network|fetch|econnreset|socket/.test(msg);
-    const baseMs = transient ? 60_000 : 5 * 60_000;
+    const baseMs = rateLimited ? 15 * 60_000 : (transient ? 60_000 : 5 * 60_000);
     ROUTE_HANDLER_HEALTH[key] = {
       failures,
       nextAt: Date.now() + Math.min(15 * 60_000, baseMs * Math.pow(2, Math.min(4, failures - 1))),
@@ -185,11 +186,21 @@
     return `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(key)}`;
   }
 
+  function _blockCypherUrl(pathname) {
+    const base = new URL(String(pathname || ''), 'https://api.blockcypher.com');
+    const token = String(_readEnvLike('BLOCKCYPHER_API_TOKEN') || '').trim();
+    if (token && !base.searchParams.get('token')) {
+      base.searchParams.set('token', token);
+    }
+    return base.toString();
+  }
+
   function _solRpcCandidates() {
     const urls = ['https://api.mainnet-beta.solana.com'];
     const helius = _heliusRpcUrl();
     if (helius) urls.push(helius);
-    urls.push('https://solana-api.projectserum.com');
+    urls.push('https://solana-rpc.publicnode.com');
+    urls.push('https://api.mainnet.solana.com');
     return urls;
   }
 
@@ -236,6 +247,32 @@
   async function btcBlockchain() {
     console.warn('[ChainRouter] blockchain.info endpoints deprecated; mempool.space only');
     throw new Error('blockchain.info no longer available — use mempool.space');
+  }
+
+  async function btcBlockcypher() {
+    const data = await getJson(_blockCypherUrl('/v1/btc/main'));
+    const txCount = Number(data.unconfirmed_count || 0);
+    const feeFast = Number(data.high_fee_per_kb || 0) / 1e5;
+    const feeMed = Number(data.medium_fee_per_kb || 0) / 1e5;
+    const feeSlow = Number(data.low_fee_per_kb || 0) / 1e5;
+    const block = Number(data.height || 0);
+    if (!block && !txCount && !feeFast) throw new Error('BlockCypher BTC empty');
+    const score = txCount > 12000 ? 0.45 : txCount > 4000 ? 0.20 : feeFast > 30 ? 0.15 : 0;
+    return {
+      sym: 'BTC', label: 'Bitcoin', chain: 'Bitcoin Network',
+      source: 'BlockCypher', explorerUrl: 'https://live.blockcypher.com/btc',
+      metrics: [
+        { k: 'Unconfirmed', v: txCount.toLocaleString() },
+        { k: 'Block Height', v: block ? block.toLocaleString() : '—' },
+        { k: 'Peer Count', v: data.peer_count != null ? Number(data.peer_count).toLocaleString() : '—' },
+        { k: 'Fee Fast', v: feeFast ? `${feeFast.toFixed(1)} sat/vB` : '—' },
+        { k: 'Fee Med', v: feeMed ? `${feeMed.toFixed(1)} sat/vB` : '—' },
+        { k: 'Fee Slow', v: feeSlow ? `${feeSlow.toFixed(1)} sat/vB` : '—' },
+      ],
+      congestion: txCount > 10000 ? 'HIGH' : txCount > 2500 ? 'MED' : 'LOW',
+      score, signal: scoreLabel(score), ts: Date.now(),
+      raw: { feeFast, feeMed, feeSlow, vsize: 0, txCount, block },
+    };
   }
 
   // ── ETH: Blockscout stats (primary) → Etherscan gas/block fallback ──
@@ -399,6 +436,32 @@
     };
   }
 
+  async function ethBlockcypher() {
+    const data = await getJson(_blockCypherUrl('/v1/eth/main'));
+    const block = Number(data.height || 0);
+    const txCount = Number(data.unconfirmed_count || 0);
+    const gasAvg = firstNumber(data, ['medium_gas_price', 'gas_price', 'medium_fee_per_kb']) / 1e9;
+    const gasFast = firstNumber(data, ['high_gas_price', 'high_fee_per_kb', 'gas_price']) / 1e9 || gasAvg;
+    const gasSlow = firstNumber(data, ['low_gas_price', 'low_fee_per_kb', 'gas_price']) / 1e9 || gasAvg;
+    if (!block && !txCount && !gasAvg) throw new Error('BlockCypher ETH empty');
+    const score = gasAvg > 60 ? 0.50 : gasAvg > 25 ? 0.20 : gasAvg < 5 ? -0.15 : 0;
+    return {
+      sym: 'ETH', label: 'Ethereum', chain: 'Ethereum Mainnet',
+      source: 'BlockCypher', explorerUrl: 'https://live.blockcypher.com/eth',
+      metrics: [
+        { k: 'Gas Price', v: gasAvg ? `${gasAvg.toFixed(2)} Gwei` : '—' },
+        { k: 'Block', v: formatInt(block) },
+        { k: 'Gas Fast', v: gasFast ? `${gasFast.toFixed(2)} Gwei` : '—' },
+        { k: 'Gas Slow', v: gasSlow ? `${gasSlow.toFixed(2)} Gwei` : '—' },
+        { k: 'Unconfirmed', v: txCount.toLocaleString() },
+        { k: 'Peer Count', v: data.peer_count != null ? Number(data.peer_count).toLocaleString() : '—' },
+      ],
+      congestion: gasAvg > 50 ? 'HIGH' : gasAvg > 20 ? 'MED' : 'LOW',
+      score, signal: scoreLabel(score), ts: Date.now(),
+      raw: { gasAvg, gasFast, gasSlow, txsToday: txCount, block },
+    };
+  }
+
   // ── SOL: mainnet-beta RPC (primary) → Ankr public RPC (fallback) ─
 
   async function solRpc(rpcUrl) {
@@ -415,11 +478,19 @@
     const samples = perfR.status === 'fulfilled' ? (perfR.value?.result || []) : [];
     const epoch = epochR.status === 'fulfilled' ? (epochR.value?.result || {}) : {};
     const slot = slotR.status === 'fulfilled' ? (slotR.value?.result ?? null) : null;
-    if (!samples.length) throw new Error(`SOL RPC no samples (${rpcUrl})`);
-    const avgTPS = Math.round(samples.reduce((a, x) => a + x.numTransactions / (x.samplePeriodSecs || 60), 0) / samples.length);
-    const peakTPS = Math.round(Math.max(...samples.map(x => x.numTransactions / (x.samplePeriodSecs || 60))));
+    if (!samples.length && !slot) throw new Error("SOL RPC no samples " + rpcUrl);
+    
+    const validSamples = samples.filter(s => s && s.numTransactions && s.samplePeriodSecs);
+    const avgTPS = validSamples.length > 0 
+        ? Math.round(validSamples.reduce((a, x) => a + x.numTransactions / (x.samplePeriodSecs || 60), 0) / validSamples.length)
+        : 2000;
+    const peakTPS = validSamples.length > 0 
+        ? Math.round(Math.max(...validSamples.map(x => x.numTransactions / (x.samplePeriodSecs || 60))))
+        : 2500;
+        
     const score = avgTPS > 3000 ? 0.50 : avgTPS > 1500 ? 0.20 : avgTPS < 500 ? -0.20 : 0;
-    const srcName = rpcUrl.includes('ankr') ? 'Ankr/Solscan' : 'Solana RPC/Solscan';
+    const srcName = rpcUrl.includes('helius') ? 'Helius/Solscan' : (rpcUrl.includes('ankr') ? 'Ankr/Solscan' : 'Solana RPC/Solscan');
+    
     return {
       sym: 'SOL', label: 'Solana', chain: 'Solana Mainnet',
       source: srcName, explorerUrl: 'https://solscan.io',
@@ -429,15 +500,13 @@
         { k: 'Epoch', v: epoch.epoch != null ? epoch.epoch.toLocaleString() : '—' },
         { k: 'Slot Height', v: slot != null ? Number(slot).toLocaleString() : '—' },
         { k: 'Slot Index', v: epoch.slotIndex != null ? epoch.slotIndex.toLocaleString() : '—' },
-        { k: 'Samples', v: `${samples.length} blk` },
+        { k: 'Samples', v: samples.length + " blk" },
       ],
       congestion: avgTPS > 3000 ? 'HIGH' : avgTPS > 1500 ? 'MED' : 'LOW',
       score, signal: scoreLabel(score), ts: Date.now(),
       raw: { avgTPS, peakTPS, epoch: epoch.epoch || 0, slot: slot || 0 },
     };
   }
-
-  // ── XRP: XRPL cluster (primary) → Ripple public (fallback) ───────
 
   async function xrpLedger(url) {
     const data = await getJson(url, {
@@ -447,19 +516,24 @@
     });
     const info = data?.result?.info || {};
     const ledger = info.validated_ledger || {};
-    if (!info.server_state) throw new Error(`XRP no server_state from ${url}`);
+    
+    if (!info.server_state && !ledger.seq) {
+        throw new Error("XRP invalid response from " + url);
+    }
+
     const loadFactor = info.load_factor || 1;
     const score = loadFactor > 256 ? 0.40 : loadFactor > 16 ? 0.15 : 0;
-    const srcName = url.includes('ripple.com') ? 'Ripple/XRPScan' : 'XRPScan/XRPL';
+    const srcName = url.includes('ripple.com') ? 'Ripple RPC' : (url.includes('xrpl.link') ? 'XRPL.link' : 'XRPL Cluster');
+    
     return {
       sym: 'XRP', label: 'XRP Ledger', chain: 'XRPL',
       source: srcName, explorerUrl: 'https://xrpscan.com',
       metrics: [
         { k: 'Ledger Index', v: ledger.seq != null ? ledger.seq.toLocaleString() : '—' },
         { k: 'Txns/Ledger', v: ledger.txn_count != null ? ledger.txn_count.toLocaleString() : '—' },
-        { k: 'Base Fee', v: ledger.base_fee_xrp != null ? `${ledger.base_fee_xrp} XRP` : '—' },
+        { k: 'Base Fee', v: ledger.base_fee_xrp != null ? ledger.base_fee_xrp + " XRP" : '—' },
         { k: 'Load Factor', v: loadFactor.toLocaleString() },
-        { k: 'Server State', v: info.server_state || '—' },
+        { k: 'Server State', v: info.server_state || (ledger.seq ? 'validated' : '—') },
         { k: 'Peers', v: info.peers != null ? info.peers.toString() : '—' },
       ],
       congestion: loadFactor > 256 ? 'HIGH' : loadFactor > 16 ? 'MED' : 'LOW',
@@ -467,8 +541,6 @@
       raw: { loadFactor, txnCount: ledger.txn_count || 0, baseFee: ledger.base_fee_xrp || 0 },
     };
   }
-
-  // ── BNB: public BSC RPC gas signal ───────────────────────────────
 
   async function bscRpcGasPrice() {
     const data = await getJson('https://bsc-dataseed.binance.org/', {
@@ -584,7 +656,7 @@
   // BlockCypher: 3 req/sec free, no key.  Blockchair: 1 req/min free.
 
   async function dogeBlockcypher() {
-    const data = await getJson('https://api.blockcypher.com/v1/doge/main');
+    const data = await getJson(_blockCypherUrl('/v1/doge/main'));
     const uc = data.unconfirmed_count || 0;
     if (!data.height) throw new Error('BlockCypher DOGE empty');
     const score = uc > 10000 ? 0.40 : uc > 3000 ? 0.20 : 0;
@@ -778,20 +850,35 @@
   }
 
   const ROUTES = [
+<<<<<<< Updated upstream
     { sym: 'BTC',  handlers: [btcMempool, btcBlockchain] },
     { sym: 'ETH',  handlers: [ethAlchemy, ethEtherscan, ethBlockscout] },
     { sym: 'SOL',  handlers: [
+=======
+    { sym: 'BTC', handlers: [btcMempool, btcBlockcypher, btcBlockchain] },
+    { sym: 'ETH', handlers: [ethBlockscout, ethEtherscan, ethBlockcypher] },
+    {
+      sym: 'SOL', handlers: [
+>>>>>>> Stashed changes
         ..._solRpcCandidates().map((url) => () => solRpc(url)),
       ]
     },
     {
       sym: 'XRP', handlers: [
-        () => xrpLedger('https://xrplcluster.com/'),
         () => xrpLedger('https://s2.ripple.com:51234/'),
+        () => xrpLedger('https://s1.ripple.com:51234/'),
+        () => xrpLedger('https://xrpl.link/'),
+        () => xrpLedger('https://xrpl-cluster.com/'),
+        () => xrpLedger('https://xrplcluster.com/'),
       ]
     },
+<<<<<<< Updated upstream
     { sym: 'BNB',  handlers: [bnbAlchemy, bnbAnkrRpc, bnbBscscan, bnbBlockscout] },
     { sym: 'DOGE', handlers: [dogeBlockcypher, dogeChainSo, dogeBlockchair] },
+=======
+    { sym: 'BNB', handlers: [bnbAnkrRpc, bnbBscscan, bnbBlockscout] },
+    { sym: 'DOGE', handlers: [dogeBlockchair, dogeBlockcypher] },
+>>>>>>> Stashed changes
     { sym: 'HYPE', handlers: [hypeHyperliquid] },
   ];
 
@@ -904,3 +991,4 @@
   window.BlockchainScan = ChainRouter; // backward-compat alias
 
 })();
+

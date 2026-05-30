@@ -11,29 +11,61 @@ class TensorEngine {
     this.wasmModule = null;
     this.wasmMemory = null;
     this.isReady = false;
+    this.initPromise = null;
+    this.hasMctsWasm = false;
+    this._warnedMissingMctsExport = false;
   }
 
   async init() {
-    if (this.isReady) return;
-    
-    try {
-      const response = await fetch('tensor_math.wasm');
-      if (!response.ok && response.status !== 0) throw new Error(`WASM module fetch failed with status ${response.status}`);
-      
-      const wasmSource = await response.arrayBuffer();
-      const { instance } = await WebAssembly.instantiate(wasmSource, {
-        env: {
-          abort: () => console.error("WASM Aborted")
+    if (this.isReady) return this;
+    if (this.initPromise) return this.initPromise;
+
+    this.initPromise = (async () => {
+      try {
+        let wasmSource;
+        if (typeof process !== 'undefined' && process.type === 'renderer') {
+          const path = require('path');
+          const fs = require('fs');
+          const url = new URL(window.location.href);
+          let htmlDir = path.dirname(decodeURIComponent(url.pathname));
+          if (process.platform === 'win32' && htmlDir.startsWith('/')) {
+            htmlDir = htmlDir.slice(1);
+          }
+          const wasmPath = path.join(htmlDir, 'tensor_math.wasm');
+          wasmSource = fs.readFileSync(wasmPath);
+        } else {
+          const response = await fetch('tensor_math.wasm');
+          if (!response.ok && response.status !== 0) throw new Error(`WASM module fetch failed with status ${response.status}`);
+          wasmSource = await response.arrayBuffer();
         }
-      });
-      
-      this.wasmModule = instance.exports;
-      this.wasmMemory = instance.exports.memory;
-      this.isReady = true;
-      console.log('[TensorEngine] WebAssembly SIMD module initialized successfully.');
-    } catch (err) {
-      console.error('[TensorEngine] Failed to initialize WASM SIMD module:', err);
-    }
+        const { instance } = await WebAssembly.instantiate(wasmSource, {
+          env: {
+            abort: () => console.error('WASM Aborted')
+          }
+        });
+
+        this.wasmModule = instance.exports;
+        this.wasmMemory = instance.exports.memory;
+        this.hasMctsWasm = typeof instance.exports.runMcts === 'function';
+        this.isReady = true;
+        if (!this.hasMctsWasm && !this._warnedMissingMctsExport) {
+          console.warn('[TensorEngine] tensor_math.wasm loaded without runMcts export; falling back to JS MCTS.');
+          this._warnedMissingMctsExport = true;
+        }
+        console.log('[TensorEngine] WebAssembly SIMD module initialized successfully.');
+      } catch (err) {
+        console.error('[TensorEngine] Failed to initialize WASM SIMD module:', err);
+      } finally {
+        if (!this.isReady) this.initPromise = null;
+      }
+      return this;
+    })();
+
+    return this.initPromise;
+  }
+
+  canRunMcts() {
+    return !!(this.isReady && this.hasMctsWasm && this.wasmModule && typeof this.wasmModule.runMcts === 'function');
   }
 
   /**
@@ -82,10 +114,7 @@ class TensorEngine {
    * Executes a Monte Carlo Tree Search using WebAssembly Memory buffers
    */
   runMcts(state, sims = 1000, depth = 10, exploration = 1.414) {
-    if (!this.isReady || !this.wasmModule.runMcts) {
-      console.warn('[TensorEngine] WASM MCTS not ready. Returning flat zeros.');
-      return new Float64Array([0, 0, 0]);
-    }
+    if (!this.canRunMcts()) return null;
 
     // Regime tag to float mapping
     let regimeMap = { 'mixed': 0.0, 'trending': 1.0, 'range': 2.0, 'volatile': 3.0, 'chop': 4.0 };

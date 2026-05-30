@@ -12,7 +12,18 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
-const PythLazerWebSocketHandler = require('./pyth-lazer-websocket');
+let PythLazerWebSocketHandler;
+try {
+  PythLazerWebSocketHandler = require('../feeds/pyth-lazer-websocket');
+} catch (e) {
+  console.warn(`[PythLazerWS] Optional handler unavailable: ${e.message}`);
+  PythLazerWebSocketHandler = class {
+    addClient(ws) { try { ws.close(1013, 'Pyth Lazer handler unavailable'); } catch (_) { } }
+    removeClient() { }
+    async connect() { throw new Error('Pyth Lazer handler unavailable'); }
+    async disconnect() { }
+  };
+}
 
 function stripEnvValue(value) {
   let v = String(value ?? '').trim();
@@ -36,10 +47,116 @@ function readEnvValue(names) {
 
 function coinbaseCredentialFromObject(obj, source) {
   if (!obj || typeof obj !== 'object') return null;
-  const name = stripEnvValue(obj.name || obj.keyName || obj.key_name || obj.apiKeyName);
+  const name = stripEnvValue(obj.name || obj.keyName || obj.key_name || obj.apiKeyName || obj.api_key_name);
   const privateKey = stripEnvValue(obj.privateKey || obj.private_key || obj.CDP_API_KEY_PRIVATE_KEY);
+  if (privateKey && !/-----BEGIN (EC )?PRIVATE KEY-----/.test(privateKey)) return null;
   if (!name || !privateKey) return null;
   return { name, privateKey, source };
+}
+
+function uniqueExistingPaths(pathsToCheck) {
+  const seen = new Set();
+  const out = [];
+  for (const p of pathsToCheck.filter(Boolean)) {
+    const normalized = path.resolve(p);
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function getSecretDirCandidates() {
+  return uniqueExistingPaths([
+    path.join(process.cwd(), 'secrets'),
+    path.join(__dirname, '../../secrets'),
+    path.join(__dirname, '../../../secrets'),
+    'G:\\WECRYP\\secrets',
+    'g:\\WECRYP\\secrets',
+    'F:\\WECRYP\\secrets',
+  ]);
+}
+
+function isJwtLike(value) {
+  return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(String(value || '').trim());
+}
+
+function decodeJwtPayload(token) {
+  try {
+    const payload = String(token || '').split('.')[1];
+    if (!payload) return null;
+    return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+  } catch (_) {
+    return null;
+  }
+}
+
+function coinbaseJwtFromValue(value, source, requiredUri = '') {
+  const token = stripEnvValue(value);
+  if (!isJwtLike(token)) return null;
+  const payload = decodeJwtPayload(token) || {};
+  const now = Math.floor(Date.now() / 1000);
+  if (payload.exp && Number(payload.exp) <= now + 5) return null;
+  if (requiredUri) {
+    if (!payload.uri) return null;
+    if (String(payload.uri).trim() !== requiredUri) return null;
+  }
+  return { token, source, exp: payload.exp || null, uri: payload.uri || '' };
+}
+
+function readCoinbaseJwtFromObject(obj, source, requiredUri = '') {
+  if (!obj || typeof obj !== 'object') return null;
+  const value = obj.jwt || obj.JWT || obj.token || obj.accessToken || obj.access_token || obj.COINBASE_JWT;
+  return coinbaseJwtFromValue(value, source, requiredUri);
+}
+
+function loadCoinbaseStaticJwt(requiredUri = '') {
+  const direct = coinbaseJwtFromValue(readEnvValue([
+    'COINBASE_JWT',
+    'COINBASE_CDP_JWT',
+    'COINBASE_API_JWT',
+    'CDP_JWT',
+    'JWT',
+  ]), 'env-jwt', requiredUri);
+  if (direct) return direct;
+
+  const filePath = readEnvValue([
+    'COINBASE_JWT_FILE',
+    'COINBASE_CDP_JWT_FILE',
+    'COINBASE_API_JWT_FILE',
+    'CDP_JWT_FILE',
+  ]);
+  if (filePath) {
+    try {
+      const raw = fs.readFileSync(path.resolve(filePath), 'utf8');
+      const fromFile = coinbaseJwtFromValue(raw, 'env-jwt-file', requiredUri)
+        || readCoinbaseJwtFromObject(JSON.parse(raw), 'env-jwt-file-json', requiredUri);
+      if (fromFile) return fromFile;
+    } catch (_) { }
+  }
+
+  const jwtFileNames = [
+    'COINBASE_JWT.txt',
+    'COINBASE_CDP_JWT.txt',
+    'COINBASE_API_JWT.txt',
+    'CDP_JWT.txt',
+    'coinbase-jwt.txt',
+    'coinbase_jwt.txt',
+  ];
+  for (const dir of getSecretDirCandidates()) {
+    for (const fileName of jwtFileNames) {
+      try {
+        const p = path.join(dir, fileName);
+        if (!fs.existsSync(p)) continue;
+        const raw = fs.readFileSync(p, 'utf8');
+        const fromSecret = coinbaseJwtFromValue(raw, `secret-jwt:${p}`, requiredUri)
+          || readCoinbaseJwtFromObject(JSON.parse(raw), `secret-jwt-json:${p}`, requiredUri);
+        if (fromSecret) return fromSecret;
+      } catch (_) { }
+    }
+  }
+  return null;
 }
 
 function normalizeCoinbaseJwtUri(method, requestPath) {
@@ -89,6 +206,18 @@ function loadCoinbaseCredential() {
   const envCredential = coinbaseCredentialFromObject({ name, privateKey }, 'env-fields');
   if (envCredential) return envCredential;
 
+  const filePath = readEnvValue([
+    'CDP_API_KEY_FILE',
+    'COINBASE_CDP_API_KEY_FILE',
+    'COINBASE_API_KEY_FILE',
+  ]);
+  if (filePath) {
+    try {
+      const credential = coinbaseCredentialFromObject(JSON.parse(fs.readFileSync(path.resolve(filePath), 'utf8')), 'env-file');
+      if (credential) return credential;
+    } catch (_) { }
+  }
+
   try {
     const envContent = fs.readFileSync(path.join(__dirname, '../../.env'), 'utf-8');
     const jsonMatch = envContent.match(/\{[\s\S]*?"privateKey"\s*:[\s\S]*?\}/);
@@ -98,6 +227,27 @@ function loadCoinbaseCredential() {
       if (credential) return credential;
     }
   } catch (_) { }
+
+  const secretFileNames = [
+    'cdp_api_key-WECRYPTO-ECDSA.json',
+    'cdp_api_key-WECRYPTO-ECDSA.txt',
+    'COINBASE_CDP_API_KEY.json',
+    'COINBASE_CDP_API_KEY.txt',
+    'COINBASE_API_KEY.json',
+    'COINBASE_API_KEY.txt',
+    'CDP_API_KEY.json',
+    'CDP_API_KEY.txt',
+  ];
+  for (const dir of getSecretDirCandidates()) {
+    for (const fileName of secretFileNames) {
+      try {
+        const p = path.join(dir, fileName);
+        if (!fs.existsSync(p)) continue;
+        const credential = coinbaseCredentialFromObject(JSON.parse(fs.readFileSync(p, 'utf8')), `secret-file:${p}`);
+        if (credential) return credential;
+      } catch (_) { }
+    }
+  }
 
   return null;
 }
@@ -110,11 +260,8 @@ if (CDP_KEY_NAME && CDP_PRIVATE_KEY) {
 } else {
   console.warn('[Auth] Could not load Coinbase CDP credentials');
 }
-const PORT = 3011;
+const PORT = Number(process.env.WECRYPTO_WS_PROXY_PORT || process.env.WS_PROXY_PORT || 3011);
 const WSS_PORT = 3012;
-
-// Pyth API Key (from environment or hardcoded)
-const LAZER_TOKEN = process.env.LAZER_TOKEN || 'HjkdyqJTX45K7nrqtkiKwHPuCpDkh2gmvKNof29RwTW';
 
 // Initialize Pyth Lazer WebSocket handler (official SDK)
 const pythHandler = new PythLazerWebSocketHandler();
@@ -134,6 +281,20 @@ const UPSTREAM = {
   'pyth-lazer': 'POLLER', // Special marker - uses HTTP polling
   'coingecko': 'wss://stream.coingecko.com/v1/stream'
 };
+
+const DEFAULT_DISABLED_PRECONNECT = new Set(['mempool', 'coingecko', 'pyth']);
+
+function envFlag(name) {
+  const value = String(process.env[name] || '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+}
+
+function shouldPreconnect(service) {
+  const suffix = String(service || '').replace(/[^a-z0-9]/gi, '_').toUpperCase();
+  if (envFlag(`WECRYPTO_PROXY_ENABLE_${suffix}`)) return true;
+  if (envFlag(`WECRYPTO_PROXY_DISABLE_${suffix}`)) return false;
+  return !DEFAULT_DISABLED_PRECONNECT.has(service);
+}
 
 // Store upstream connections
 const upstreamConnections = new Map();
@@ -327,20 +488,31 @@ const server = http.createServer((req, res) => {
   }
 
   if (url.pathname === '/jwt/coinbase') {
-    if (!CDP_KEY_NAME || !CDP_PRIVATE_KEY) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ error: 'Coinbase credentials not configured in .env' }));
-    }
-
     try {
       const requestMethod = url.searchParams.get('method') || null;
       const requestPath = url.searchParams.get('path') || null;
 
       const algorithm = 'ES256';
       const uri = normalizeCoinbaseJwtUri(requestMethod, requestPath);
+
+      if (!CDP_KEY_NAME || !CDP_PRIVATE_KEY) {
+        const staticJwt = loadCoinbaseStaticJwt(uri);
+        if (staticJwt) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({
+            token: staticJwt.token,
+            source: staticJwt.source,
+            static: true,
+            exp: staticJwt.exp,
+            uri: staticJwt.uri || uri,
+          }));
+        }
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'Coinbase ECDSA credentials not configured in .env or secrets directory' }));
+      }
       
       const payload = {
-        iss: 'coinbase-cloud',
+        iss: 'cdp',
         nbf: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 120,
         sub: CDP_KEY_NAME,
@@ -350,10 +522,13 @@ const server = http.createServer((req, res) => {
         payload.uri = uri;
       }
 
-      const token = jwt.sign(payload, CDP_PRIVATE_KEY, { algorithm, header: { kid: CDP_KEY_NAME, nonce: crypto.randomBytes(16).toString('hex') } });
+      const token = jwt.sign(payload, CDP_PRIVATE_KEY, {
+        algorithm,
+        header: { kid: CDP_KEY_NAME, nonce: crypto.randomBytes(16).toString('hex'), typ: 'JWT' }
+      });
       
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ token }));
+      return res.end(JSON.stringify({ token, source: coinbaseCredential?.source || 'unknown', uri }));
     } catch (e) {
       console.error('[Auth] Error generating JWT:', e);
       res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -391,8 +566,8 @@ wss.on('connection', (ws, req) => {
 });
 
 // Start listening with Port Cascading (3030 - 3035)
-let currentPort = 3010;
-const maxPort = 3020;
+let currentPort = PORT;
+const maxPort = PORT + 10;
 
 function startServer(port) {
   server.listen(port, () => {
@@ -411,7 +586,7 @@ server.on('error', (e) => {
     if (currentPort <= maxPort) {
       setTimeout(() => startServer(currentPort), 100);
     } else {
-      log(`Could not find an open port between 3010 and ${maxPort}`, 'ERROR');
+      log(`Could not find an open port between ${PORT} and ${maxPort}`, 'ERROR');
       process.exit(1);
     }
   } else {
@@ -421,8 +596,9 @@ server.on('error', (e) => {
 
 startServer(currentPort);
 
-// Pre-connect to all upstream services
-Object.keys(UPSTREAM).forEach(service => {
+// Pre-connect only to healthy default upstreams. Stale/credentialed optional
+// services stay available for explicit client requests or env opt-in.
+Object.keys(UPSTREAM).filter(shouldPreconnect).forEach(service => {
   setTimeout(() => {
     proxy.connectUpstream(service).catch(err => {
       log(`Initial connection to ${service} failed: ${err.message}`, 'WARN');

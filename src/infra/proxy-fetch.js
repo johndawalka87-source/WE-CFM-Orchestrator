@@ -146,17 +146,15 @@
   (function discoverProxyPort() {
     let idx = 0;
 
-    // We previously trusted window.__PROXY_PORT__ here, but main.js sometimes injects
-    // a stale default (3010) before the Rust proxy has bound to a dynamic port (e.g. 3012).
     // To ensure 100% reliability, we ALWAYS ping the cascade ports to verify health.
+    // If the proxy is slow to start (e.g. due to OS/antivirus delay), we retry the sweep.
     function tryNext() {
       if (idx >= PORT_CASCADE.length) {
-        if (!window.__PROXY_PORT__) {
-          setTimeout(discoverProxyPort, 1000); // retry every 1s
-          return;
-        }
         PROXY_ORIGIN = null;
-        console.warn('[WE] proxy-fetch — proxy not found on any port; proxied calls will go direct');
+        proxyReady = false;
+        console.warn('[WE] proxy-fetch — proxy not found on cascade in this sweep; retrying sweep in 2s...');
+        idx = 0;
+        setTimeout(tryNext, 2000);
         return;
       }
       const port = PORT_CASCADE[idx++];

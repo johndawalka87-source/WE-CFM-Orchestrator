@@ -343,9 +343,9 @@
                 }
 
                 // Multi-drive cache (Windows)
-                if (typeof window !== 'undefined' && window.MultiDriveCache) {
-                    window.MultiDriveCache.set('trade_journal', jsonl);
-                }
+                // if (typeof window !== 'undefined' && window.MultiDriveCache) {
+                //     window.MultiDriveCache.set('trade_journal', jsonl);
+                // }
             } catch (err) {
                 console.error('[TradeJournal] Persist error:', err.message);
             }

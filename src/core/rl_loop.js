@@ -20,7 +20,7 @@ function update_indicator_weights(trade_result, current_weights, features_used) 
   } else {
     // If it lost, penalize proportionally to how badly it missed the expected EV
     const profitDelta = Math.abs(expected_profit - actual_profit);
-    const deviationPenalty = Math.min(profitDelta / Math.max(1, Math.abs(expected_profit)), 2.0);
+    const deviationPenalty = Math.min(profitDelta / Math.max(0.01, Math.abs(expected_profit)), 2.0);
     
     // Scale penalty by confidence. 
     // High confidence + big loss = huge penalty. Low confidence + loss = small penalty.
@@ -61,6 +61,8 @@ function update_indicator_weights(trade_result, current_weights, features_used) 
   };
 }
 
-module.exports = {
-  update_indicator_weights
-};
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { update_indicator_weights };
+} else if (typeof window !== 'undefined') {
+  window.update_indicator_weights = update_indicator_weights;
+}

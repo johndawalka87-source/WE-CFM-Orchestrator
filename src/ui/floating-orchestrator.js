@@ -2,7 +2,7 @@
 // Model-primary. Kalshi = house odds. Edge = modelProbUp vs kalshiYesPrice.
 // Divergence = OPPORTUNITY. Entry price = context + risk flags, never a gate.
 // Near-close trades: minimum gate is 5 seconds.
-// 
+//
 // Active orchestrator symbols are resolved from window.PREDICTION_COINS at runtime.
 // Any extra weights below remain dormant unless a symbol is part of the live prediction set.
 
@@ -10,6 +10,45 @@
 
 (function () {
   'use strict';
+
+  // --- Alert Audio System ---
+  var _audioCtx = null;
+  var _lastAlertTime = 0;
+  function playAlert(type) {
+    if (typeof window === 'undefined' || (!window.AudioContext && !window.webkitAudioContext)) return;
+    var now = Date.now();
+    if (now - _lastAlertTime < 8000) return; // Throttle 8s
+    try {
+      if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (_audioCtx.state === 'suspended') _audioCtx.resume();
+      var osc = _audioCtx.createOscillator();
+      var gainNode = _audioCtx.createGain();
+      osc.connect(gainNode);
+      gainNode.connect(_audioCtx.destination);
+      if (type === 'DIVERGENT') {
+        // High pitched urgent beep (Crowd is wrong)
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(880, _audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(1760, _audioCtx.currentTime + 0.1);
+        gainNode.gain.setValueAtTime(0.05, _audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, _audioCtx.currentTime + 0.2);
+        osc.start(_audioCtx.currentTime);
+        osc.stop(_audioCtx.currentTime + 0.2);
+      } else if (type === 'PRIME_OPPORTUNITY') {
+        // Chime for good payout / likely to win
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(523.25, _audioCtx.currentTime); // C5
+        osc.frequency.setValueAtTime(659.25, _audioCtx.currentTime + 0.1); // E5
+        gainNode.gain.setValueAtTime(0.1, _audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, _audioCtx.currentTime + 0.5);
+        osc.start(_audioCtx.currentTime);
+        osc.stop(_audioCtx.currentTime + 0.5);
+      }
+      _lastAlertTime = now;
+    } catch (e) {
+      console.warn("Audio alert failed", e);
+    }
+  }
 
   // Allocation weights (normalized; divide by sum for probability)
   // Physics-aligned to shell activation rates from ionization model
@@ -31,17 +70,21 @@
   }
 
   const MODEL_THRESHOLD = 0.06;
-  const FINAL_MODEL_CONF_MIN_TRADE = 10;
-  const FINAL_MODEL_CONF_MIN_NONALIGNED_TRADE = 12;
-  const MIN_SECONDS_LEFT = 5;
+  const BINARY_CDF_YES_THRESHOLD = 0.62;
+  const BINARY_CDF_NO_THRESHOLD = 0.38;
+  const FINAL_MODEL_CONF_MIN_TRADE = 58;
+  const FINAL_MODEL_CONF_MIN_NONALIGNED_TRADE = 68;
+  const MIN_SECONDS_LEFT = 35;
   const OPEN_WINDOW_GUARD_SECS = 15;
   const PREDICTION_STALE_WARN_MS = 45000;
   const MARKET_STALE_WARN_MS = 15000;
   const MAX_SECONDS_LEFT = 15 * 60 + 30;
-  const EDGE_MIN_CENTS = 7;
-  const EXCEPTIONAL_RECOVERY_TIMING_SCORE = 72;
-  const EXCEPTIONAL_RECOVERY_EDGE_CENTS = 16;
-  const EXCEPTIONAL_RECOVERY_MISPRICING = 0.14;
+  const EDGE_MIN_CENTS = 10;
+  const PRIME_PAYOUT_MAX_ENTRY_PRICE = 0.62;
+  const PRIME_PAYOUT_MIN_MISPRICING = 0.12;
+  const EXCEPTIONAL_RECOVERY_TIMING_SCORE = 68;
+  const EXCEPTIONAL_RECOVERY_EDGE_CENTS = 12;
+  const EXCEPTIONAL_RECOVERY_MISPRICING = 0.10;
   const INVERSION_THRESH = 30;
   const THIN_BOOK_THRESH = 0.05;
   const TAIL_RISK_THRESH = 0.80;
@@ -81,15 +124,15 @@
     if (txt === '0' || txt === 'false' || txt === 'no' || txt === 'off') return false;
     return !!fallback;
   }
-  const WAIT_GUARD_TIMING_SCORE_BASE = readNumberKnob('WECRYP_WAIT_GUARD_TIMING_SCORE_BASE', 68, 45, 95);
+  const WAIT_GUARD_TIMING_SCORE_BASE = readNumberKnob('WECRYP_WAIT_GUARD_TIMING_SCORE_BASE', 62, 45, 95);
   const WAIT_GUARD_BTC_ETH_RELAX = readNumberKnob('WECRYP_WAIT_GUARD_BTC_ETH_RELAX', 4, 0, 12);
   const WAIT_GUARD_REGIME_TREND_RELAX = readNumberKnob('WECRYP_WAIT_GUARD_REGIME_TREND_RELAX', 3, 0, 10);
   const WAIT_GUARD_REGIME_VOLATILE_PENALTY = readNumberKnob('WECRYP_WAIT_GUARD_REGIME_VOLATILE_PENALTY', 4, 0, 12);
   const WAIT_GUARD_MCTS_RELAX_MAX = readNumberKnob('WECRYP_WAIT_GUARD_MCTS_RELAX_MAX', 4, 0, 12);
-  const WAIT_GUARD_OPEN_BYPASS_ENABLED = readBoolKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_ENABLED', true);
-  const WAIT_GUARD_OPEN_BYPASS_MIN_CONF = readNumberKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_MIN_CONF', 14, 0, 99);
-  const WAIT_GUARD_OPEN_BYPASS_MIN_EDGE = readNumberKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_MIN_EDGE', 14, 0, 50);
-  const WAIT_GUARD_OPEN_BYPASS_MIN_MISPRICING = readNumberKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_MIN_MISPRICING', 0.14, 0.02, 0.5);
+  const WAIT_GUARD_OPEN_BYPASS_ENABLED = readBoolKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_ENABLED', false);
+  const WAIT_GUARD_OPEN_BYPASS_MIN_CONF = readNumberKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_MIN_CONF', 12, 0, 99);
+  const WAIT_GUARD_OPEN_BYPASS_MIN_EDGE = readNumberKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_MIN_EDGE', 11, 0, 50);
+  const WAIT_GUARD_OPEN_BYPASS_MIN_MISPRICING = readNumberKnob('WECRYP_WAIT_GUARD_OPEN_BYPASS_MIN_MISPRICING', 0.11, 0.02, 0.5);
   const MCTS_ENABLED = readBoolKnob('WECRYP_MCTS_ENABLED', true);
   const MCTS_SIMULATIONS = Math.round(readNumberKnob('WECRYP_MCTS_SIMULATIONS', 96, 16, 400));
   const MCTS_DEPTH = Math.round(readNumberKnob('WECRYP_MCTS_DEPTH', 6, 2, 16));
@@ -228,7 +271,8 @@
     if (regimeState) return String(regimeState);
     var liveRegime = pred && pred.liveRegime && (pred.liveRegime.regime || pred.liveRegime.state);
     if (liveRegime) return String(liveRegime);
-    return crowdFadeRegime(pred, cfm);
+    if (typeof crowdFadeRegime === 'function') return crowdFadeRegime(pred, cfm);
+    return 'mixed';
   }
   function normalizeRegimeTag(regimeTag) {
     var r = String(regimeTag || '').toLowerCase();
@@ -263,38 +307,117 @@
     };
   }
 
-  // --- DELEGATED TO WEBASSEMBLY SIMD ENGINE (tensor_math.wasm) ---
-  function runVanillaMcts(state, cfg) {
-    if (!state || typeof window === 'undefined' || !window.TensorEngine) {
-      return { ran: false, reason: 'missing-state-or-wasm' };
+  function rolloutRewardForAction(state, action, rng, depth) {
+    var bias = ((state.modelProbUp - 0.5) * 1.9) + (state.momentum * 0.5) + (state.trendDir * 0.3);
+    var path = 0;
+    var steps = Math.max(2, depth);
+    for (var i = 0; i < steps; i += 1) {
+      var shockScale = 0.12 + (state.volatility * 0.22) + (state.regime === 'chop' ? 0.08 : 0);
+      if (state.regime === 'volatile') shockScale += 0.05;
+      var shock = (rng() - 0.5) * 2 * shockScale;
+      path += (bias * 0.38) + shock;
     }
-    
+    var dirEdge = path / Math.max(1, steps);
+    var lateRisk = state.secsLeft != null ? clamp((90 - state.secsLeft) / 90, 0, 1) : 0.4;
+    var slippage = clamp((state.volatility * 0.4) + (state.liquidity < 1400 ? 0.25 : 0), 0, 1.3);
+    if (action === 'WAIT') {
+      var waitSafety = (0.35 * lateRisk) + (0.22 * slippage) + (state.regime === 'volatile' ? 0.18 : 0);
+      var waitOpportunityCost = Math.abs(dirEdge) * (0.45 + (state.confidence * 0.55));
+      return clamp(waitSafety - waitOpportunityCost, -1.5, 1.5);
+    }
+    var sign = action === 'UP' ? 1 : -1;
+    var directionalFit = sign * dirEdge;
+    var confidenceBoost = state.confidence * (0.30 + state.modelStrength * 0.20);
+    var mispricingBoost = state.mispricing * 1.3;
+    var wrongWayPenalty = (sign === 1 ? (0.5 - state.modelProbUp) : (state.modelProbUp - 0.5));
+    var regimePenalty = (state.regime === 'volatile' ? 0.14 : (state.regime === 'chop' ? 0.07 : 0));
+    var riskPenalty = (lateRisk * 0.28) + (slippage * 0.20) + regimePenalty + Math.max(0, wrongWayPenalty);
+    return clamp((directionalFit * 1.2) + confidenceBoost + mispricingBoost - riskPenalty, -1.5, 1.5);
+  }
+
+  // --- WASM-backed when available; deterministic JS fallback otherwise ---
+  function runVanillaMcts(state, cfg) {
+    if (!state) {
+      return { ran: false, reason: 'missing-state' };
+    }
+
     var sims = Math.max(8, Number(cfg && cfg.simulations) || MCTS_SIMULATIONS);
     var depth = Math.max(2, Number(cfg && cfg.depth) || MCTS_DEPTH);
     var c = Number.isFinite(Number(cfg && cfg.exploration)) ? Number(cfg.exploration) : MCTS_EXPLORATION;
-    
-    var scores = window.TensorEngine.runMcts(state, sims, depth, c);
-    
+    var seed = hash32([
+      state.sym,
+      state.modelProbUp.toFixed(5),
+      state.confidence.toFixed(4),
+      state.momentum.toFixed(4),
+      state.volatility.toFixed(4),
+      state.mispricing.toFixed(4),
+      state.secsLeft == null ? 'na' : String(Math.round(state.secsLeft)),
+      state.regime
+    ].join('|'));
+
+    var scores = null;
+    var engine = (typeof window !== 'undefined') ? window.TensorEngine : null;
+    if (engine && typeof engine.canRunMcts === 'function' && engine.canRunMcts()) {
+      scores = engine.runMcts(state, sims, depth, c);
+    }
+
+    if (!scores || scores.length < 3) {
+      var rng = seededRng(seed);
+      var children = {
+        UP: { action: 'UP', visits: 0, total: 0 },
+        DOWN: { action: 'DOWN', visits: 0, total: 0 },
+        WAIT: { action: 'WAIT', visits: 0, total: 0 },
+      };
+      var totalVisits = 0;
+      var actions = ['UP', 'DOWN', 'WAIT'];
+      for (var i = 0; i < sims; i += 1) {
+        var picked = null;
+        var bestUcb = -Infinity;
+        for (var j = 0; j < actions.length; j += 1) {
+          var child = children[actions[j]];
+          var ucb = child.visits === 0
+            ? Infinity
+            : (child.total / child.visits) + c * Math.sqrt(Math.log(totalVisits + 1) / child.visits);
+          if (ucb > bestUcb) {
+            bestUcb = ucb;
+            picked = child;
+          }
+        }
+        var reward = rolloutRewardForAction(state, picked.action, rng, depth);
+        picked.visits += 1;
+        picked.total += reward;
+        totalVisits += 1;
+      }
+      function avg(action) {
+        var node = children[action];
+        return node.visits > 0 ? (node.total / node.visits) : 0;
+      }
+      scores = new Float64Array([
+        avg('UP'),
+        avg('DOWN'),
+        avg('WAIT')
+      ]);
+    }
+
     if (!scores || scores.length < 3) return { ran: false };
-    
-    // INJECT JS INTERCEPTOR HERE TO RE-TUNE WAIT BIAS
+
     if (state.mispricing && state.mispricing >= 0.12 && state.modelStrength >= 0.05) {
       scores[2] -= (state.mispricing * 1.5);
     }
-    
+
     var upScore = scores[0];
     var downScore = scores[1];
     var waitScore = scores[2];
-    
+
     var ordered = [
       { action: 'UP', score: upScore },
       { action: 'DOWN', score: downScore },
       { action: 'WAIT', score: waitScore },
     ].sort(function (a, b) { return b.score - a.score; });
-    
+
     var best = ordered[0];
     var second = ordered[1];
-    
+
     try {
       if (typeof persistPrediction === 'function') {
         persistPrediction({
@@ -310,17 +433,58 @@
 
     return {
       ran: true,
-      seed: 0,
+      seed: seed,
       simulations: sims,
       depth: depth,
       exploration: c,
       voteAction: best.action,
-      voteStrength: Math.abs(best.score - second.score),
-      directionalGap: upScore - downScore,
-      waitScore: waitScore,
-      upScore: upScore,
-      downScore: downScore
+      voteStrength: parseFloat(Math.abs(best.score - second.score).toFixed(4)),
+      directionalGap: parseFloat((upScore - downScore).toFixed(4)),
+      waitScore: parseFloat(waitScore.toFixed(4)),
+      upScore: parseFloat(upScore.toFixed(4)),
+      downScore: parseFloat(downScore.toFixed(4))
     };
+  }
+
+  function computeWaitGuardThreshold(params) {
+    var base = WAIT_GUARD_TIMING_SCORE_BASE;
+    var sym = String(params && params.sym || '').toUpperCase();
+    var regime = normalizeRegimeTag(params && params.regimeTag);
+    var mcts = params && params.mctsResult ? params.mctsResult : null;
+    var conf = Number.isFinite(params && params.calibratedConfidence) ? params.calibratedConfidence : 0;
+    if (sym === 'BTC' || sym === 'ETH') base -= WAIT_GUARD_BTC_ETH_RELAX;
+    if (regime === 'trending') base -= WAIT_GUARD_REGIME_TREND_RELAX;
+    else if (regime === 'volatile' || regime === 'chop') base += WAIT_GUARD_REGIME_VOLATILE_PENALTY;
+    if (conf >= 18) base -= 2;
+    if (mcts && mcts.ran) {
+      if (mcts.voteAction === 'WAIT') base += 2;
+      else {
+        var relax = Math.round(clamp((mcts.voteStrength || 0) * 10, 0, WAIT_GUARD_MCTS_RELAX_MAX));
+        base -= relax;
+      }
+    }
+    return Math.round(clamp(base, 50, 92));
+  }
+
+  function shouldBypassOpenWindowGuard(params) {
+    if (!WAIT_GUARD_OPEN_BYPASS_ENABLED) return false;
+    var sym = String(params && params.sym || '').toUpperCase();
+    var regime = normalizeRegimeTag(params && params.regimeTag);
+    if (regime === 'volatile' || regime === 'chop') return false;
+    var conf = Number.isFinite(params && params.calibratedConfidence) ? params.calibratedConfidence : 0;
+    var edge = Number.isFinite(params && params.edgeCents) ? params.edgeCents : 0;
+    var mispricing = Number.isFinite(params && params.mispricing) ? params.mispricing : 0;
+    var mcts = params && params.mctsResult;
+    if (!mcts || !mcts.ran || mcts.voteAction === 'WAIT') return false;
+    if ((mcts.voteStrength || 0) < MCTS_DIRECTION_OVERRIDE_MIN_GAP) return false;
+    if (sym === 'BTC' || sym === 'ETH') {
+      return conf >= WAIT_GUARD_OPEN_BYPASS_MIN_CONF
+        && edge >= WAIT_GUARD_OPEN_BYPASS_MIN_EDGE
+        && mispricing >= WAIT_GUARD_OPEN_BYPASS_MIN_MISPRICING;
+    }
+    return conf >= (WAIT_GUARD_OPEN_BYPASS_MIN_CONF + 2)
+      && edge >= (WAIT_GUARD_OPEN_BYPASS_MIN_EDGE + 2)
+      && mispricing >= Math.max(WAIT_GUARD_OPEN_BYPASS_MIN_MISPRICING, 0.14);
   }
 
   function crowdFadeFlowScore(modelDir, pred, cfm) {
@@ -364,6 +528,12 @@
     return toxicity;
   }
 
+  function formatCrowdFadeWindowSecs(secs) {
+    var n = Number(secs);
+    if (!Number.isFinite(n)) return '?';
+    return n >= 60 ? Math.round(n / 60) + 'm' : Math.round(n) + 's';
+  }
+
   function buildCrowdFadeTimingProfile(params) {
     var secsLeft = params.secsLeft;
     var mispricing = params.mispricing;
@@ -374,7 +544,7 @@
     var cfm = params.cfm;
     var modelDir = params.modelDir;
 
-    var regime = crowdFadeRegime(pred, cfm);
+    var regime = normalizeRegimeTag(extractRegimeTag(pred, cfm));
     var flowScore = crowdFadeFlowScore(modelDir, pred, cfm);
     var toxicity = crowdFadeToxicity(pred, cfm, liquidity, flowScore);
     var activeMinSecs = CROWD_FADE_BASE_MIN_SECS;
@@ -638,6 +808,16 @@
       && !finalConfidenceWeak
       && !logTunedDowngradeReason;
 
+    var primeQualified = phase === 'PRIME'
+      && modelActive
+      && !!entry
+      && edgeCents >= closeEdgeCents
+      && (mispricing >= closeMinMisprice - 0.02 || payoutHeavy || flowScore >= 1)
+      && toxicity <= 2
+      && !entry.tailRisk
+      && !finalConfidenceWeak
+      && !logTunedDowngradeReason;
+
     if (phase === 'CLOSE_VALUE') {
       if (coreCloseValueWindow) reasons.push('core 2-3m value window');
       if (payoutHeavy) reasons.push('payout skew favorable');
@@ -658,6 +838,14 @@
         if (edgeCents < scalpEdgeCents) blocks.push('scalp edge below +' + scalpEdgeCents + 'c');
         if (flowScore < 2 && scalpScore < 2) blocks.push('no scalp impulse yet');
         if (entry && (entry.tailRisk || entry.thinBook)) blocks.push('bad scalp fill profile');
+      }
+    } else if (phase === 'PRIME') {
+      if (flowScore >= 1) reasons.push('book/tape supports prime entry');
+      if (edgeCents >= closeEdgeCents) reasons.push('sufficient edge for prime window');
+      if (!primeQualified) {
+        if (edgeCents < closeEdgeCents) blocks.push('prime edge below +' + closeEdgeCents + 'c');
+        if (toxicity > 2) blocks.push('prime microstructure toxicity elevated');
+        if (entry && entry.tailRisk) blocks.push('prime tail risk avoided');
       }
     } else if (phase === 'FINAL_SNIPE') {
       if (!finalSnipeQualified) blocks.push('final snipe requires exceptional edge, payout, and clean tape');
@@ -699,10 +887,11 @@
       phase: phase,
       timingLabel: timingLabel,
       timingScore: score,
-      promoteToTrade: closeValueQualified || finalSnipeQualified || scalpQualified,
+      promoteToTrade: closeValueQualified || finalSnipeQualified || scalpQualified || primeQualified,
       closeValueQualified: closeValueQualified,
       finalSnipeQualified: finalSnipeQualified,
       scalpQualified: scalpQualified,
+      primeQualified: primeQualified,
       scalpCandidate: phase === 'SCALP_EARLY',
       closeValueCandidate: phase === 'CLOSE_VALUE',
       coreCloseValueWindow: coreCloseValueWindow,
@@ -920,23 +1109,40 @@
     var modelHardVeto = modelVetoSeverity === 'hard' || !!(pred && pred.diagnostics && pred.diagnostics.hardVeto);
     var modelSoftVeto = !modelHardVeto && (modelVetoed || !!(pred && pred.diagnostics && pred.diagnostics.softVeto));
     var modelProbUpRaw = scoreToProbUp(modelScore);
-    var modelYesProb = null;
-    if (kAlign && Number.isFinite(kAlign.modelYesPct)) {
-      modelYesProb = clamp(kAlign.modelYesPct / 100, 0.02, 0.98);
-    } else {
-      modelYesProb = strikeDir === 'below' ? (1 - modelProbUpRaw) : modelProbUpRaw;
-    }
-    var modelProbUp = strikeDir === 'below' ? (1 - modelYesProb) : modelYesProb;
+    var signalGate = (pred && pred.gate) || (pred && pred.diagnostics && pred.diagnostics.signalGate) || null;
+    var signalGateBlocked = !!(signalGate && signalGate.gated);
+    var signalGateReasons = signalGate && Array.isArray(signalGate.reasons) ? signalGate.reasons : [];
+    // Model probability from raw blockchain signals only
+    var modelProbUp = modelProbUpRaw;
+    // Map model's UP/DOWN probability to YES/NO based on contract structure
+    var modelYesProb = strikeDir === 'below' ? (1 - modelProbUpRaw) : modelProbUpRaw;
+    // Keep CDF reference available for diagnostics but NOT for direction
+    var hasBinaryCdf = !!(kAlign && Number.isFinite(kAlign.modelYesPct));
     var scoreActive = Math.abs(modelScore) >= MODEL_THRESHOLD;
-    var cdfActive = Number.isFinite(kAlign && kAlign.modelYesPct)
-      ? Math.abs((kAlign.modelYesPct / 100) - 0.5) >= 0.08
-      : false;
-    var confidenceActive = (calibratedConfidence != null ? calibratedConfidence : 0) >= 12;
-    var modelActive = !modelHardVeto && (scoreActive || (cdfActive && confidenceActive));
-    var modelDir = modelYesProb >= 0.5 ? dirs.yesDir : dirs.noDir;
-    var modelBullish = modelDir === 'UP';
     var kalshiYesPrice = k15 ? k15.probability : null;
     var kalshiActive = kalshiYesPrice !== null && kalshiYesPrice !== undefined;
+    var kalshiYesProb = kalshiActive ? kalshiYesPrice : 0.5;
+
+    var evYesEdge = modelYesProb - kalshiYesProb;
+    var evNoEdge = (1 - modelYesProb) - (1 - kalshiYesProb);
+    var payoutYes = kalshiYesProb > 0 ? 1 / kalshiYesProb : 0;
+    var payoutNo = (1 - kalshiYesProb) > 0 ? 1 / (1 - kalshiYesProb) : 0;
+
+    // EV triggers for edge sizing only — do NOT use for direction override
+    var yesEVTrigger = false;  // disabled: Kalshi odds must not override model direction
+    var noEVTrigger = false;
+
+    var cdfActive = hasBinaryCdf
+      ? (modelYesProb >= BINARY_CDF_YES_THRESHOLD || modelYesProb <= BINARY_CDF_NO_THRESHOLD || yesEVTrigger || noEVTrigger)
+      : false;
+    var confidenceActive = (calibratedConfidence != null ? calibratedConfidence : 0) >= FINAL_MODEL_CONF_MIN_TRADE;
+    var modelActive = !modelHardVeto && !signalGateBlocked && scoreActive && confidenceActive;
+
+    // DIRECTION FROM RAW MODEL ONLY — blockchain signals, not Kalshi odds
+    var modelDir = null;
+    if (modelScore > MODEL_THRESHOLD) modelDir = 'UP';
+    else if (modelScore < -MODEL_THRESHOLD) modelDir = 'DOWN';
+    var modelBullish = modelDir === 'UP';
     var kalshiDirHint = !kalshiActive ? null
       : kalshiYesPrice >= 0.55 ? dirs.yesDir
         : kalshiYesPrice <= 0.45 ? dirs.noDir
@@ -1018,7 +1224,7 @@
       outcome.stageDiagnostics = stageDiagnostics;
       return outcome;
     }
-    addStage('model_input', modelActive || !modelHardVeto, {
+    addStage('model_input', modelActive, {
       modelActive: modelActive,
       modelHardVeto: modelHardVeto,
       modelSoftVeto: modelSoftVeto,
@@ -1029,15 +1235,17 @@
       confidenceActive: confidenceActive,
       predictionAgeMs: predictionAgeMs,
       stalePrediction: stalePrediction,
-      signalGate: pred && pred.gate ? {
-        passed: !!pred.gate.passed,
-        quality: pred.gate.quality || null,
-        label: pred.gate.label || null,
+      signalGate: signalGate ? {
+        passed: !!signalGate.passed,
+        gated: !!signalGate.gated,
+        quality: signalGate.quality || null,
+        label: signalGate.label || null,
       } : null,
     }, (modelHardVeto ? ['hard veto' + (modelVetoReason ? ': ' + modelVetoReason : '')] : [])
-      .concat(pred && pred.gate && pred.gate.gated && Array.isArray(pred.gate.reasons)
-        ? pred.gate.reasons.slice(0, 2).map(function (reason) { return 'signal gate: ' + reason; })
+      .concat(signalGateBlocked
+        ? signalGateReasons.slice(0, 3).map(function (reason) { return 'signal gate: ' + reason; })
         : [])
+      .concat(hasBinaryCdf && !cdfActive ? ['15m binary CDF neutral (' + Math.round(modelYesProb * 100) + '% YES)'] : [])
       .concat(stalePrediction ? ['prediction stale ' + Math.round(predictionAgeMs / 1000) + 's'] : []));
     addStage('market_window', !tooLate && (!kalshiActive || hasValid15mWindow), {
       kalshiActive: kalshiActive,
@@ -1138,6 +1346,7 @@
       && mctsVoteDirection !== direction
       && mctsResult.voteStrength >= MCTS_DIRECTION_OVERRIDE_MIN_GAP
       && !modelHardVeto
+      && false  // DISABLED: MCTS must not override raw model direction
       && (alignment !== 'KALSHI_ONLY' || mctsResult.voteStrength >= (MCTS_DIRECTION_OVERRIDE_MIN_GAP * 1.5))
       && alignment !== 'EARLY_EXIT'
     ) {
@@ -1164,6 +1373,11 @@
     if (alignment === 'KALSHI_ONLY') action = 'watch';
     else if (!entry || entry.edgeCents < EDGE_MIN_CENTS) action = (entry && entry.edgeCents < 0) ? 'skip' : 'watch';
     else action = modelActive ? 'trade' : 'watch';
+    var payoutNotPrime = !!(entry && (
+      entry.entryPrice > PRIME_PAYOUT_MAX_ENTRY_PRICE
+      || currentMispricing < PRIME_PAYOUT_MIN_MISPRICING
+    ));
+    if (action === 'trade' && payoutNotPrime) action = 'watch';
     var waitGuardThreshold = computeWaitGuardThreshold({
       sym: sym,
       regimeTag: regimeTag,
@@ -1208,6 +1422,8 @@
       && entry
       && Number.isFinite(entry.edgeCents)
       && entry.edgeCents >= LOG_TUNED_HIGH_EDGE_RISK_CENTS
+      && currentMispricing < 0.10
+      && (!Number.isFinite(calibratedConfidence) || calibratedConfidence < 18)
     ) {
       logTunedDowngradeReason = 'non-BTC non-aligned high-edge segment';
     } else if (
@@ -1217,6 +1433,8 @@
       && Number.isFinite(kalshiYesPrice)
       && kalshiYesPrice >= LOG_TUNED_DIVERGENT_YES_RISK_MIN
       && kalshiYesPrice < LOG_TUNED_DIVERGENT_YES_RISK_MAX
+      && currentMispricing < 0.12
+      && (!Number.isFinite(calibratedConfidence) || calibratedConfidence < 18)
     ) {
       logTunedDowngradeReason = 'non-BTC divergent 55-69% YES segment';
     }
@@ -1255,6 +1473,10 @@
       finalConfidenceWeak: finalConfidenceWeak,
       baseConfidence: baseConfidence,
       confidence: confidence,
+      payoutNotPrime: payoutNotPrime,
+      entryPrice: entry && Number.isFinite(entry.entryPrice) ? entry.entryPrice : null,
+      minMispricing: PRIME_PAYOUT_MIN_MISPRICING,
+      maxEntryPrice: PRIME_PAYOUT_MAX_ENTRY_PRICE,
       regimeTag: regimeTag,
       mctsVote: mctsResult && mctsResult.ran ? mctsResult.voteAction : null,
       mctsVoteStrength: mctsResult && mctsResult.ran ? mctsResult.voteStrength : null,
@@ -1263,6 +1485,7 @@
       softVetoDowngradeReason: softVetoDowngradeReason || null,
     }, [
       finalConfidenceWeak ? 'final confidence floor' : null,
+      payoutNotPrime ? 'payout not prime' : null,
       logTunedDowngradeReason,
       softVetoDowngradeReason,
       openWindowBlocked ? ('open-window guard (' + OPEN_WINDOW_GUARD_SECS + 's)') : null,
@@ -1278,14 +1501,16 @@
       ? Math.abs(modelYesProb - kalshiYesPrice)
       : 0;
     var canRecoverWithTiming = action !== 'trade'
-      && timingProfile.promoteToTrade
+      && modelActive
       && Number.isFinite(timingProfile.timingScore)
-      && timingProfile.timingScore >= waitGuardThreshold
+      && timingProfile.phase !== 'SETTLING'
+      && timingProfile.timingScore >= Math.min(waitGuardThreshold, EXCEPTIONAL_RECOVERY_TIMING_SCORE)
       && entry
       && Number.isFinite(entry.edgeCents)
       && entry.edgeCents >= EXCEPTIONAL_RECOVERY_EDGE_CENTS
       && mispricing >= EXCEPTIONAL_RECOVERY_MISPRICING
       && !modelHardVeto
+      && !signalGateBlocked
       && !tooLate;
     if (canRecoverWithTiming) {
       if (logTunedDowngradeReason) {
@@ -1377,6 +1602,17 @@
     var blockedBy = [];
     if (modelHardVeto) blockedBy.push('hard veto' + (modelVetoReason ? ': ' + modelVetoReason : ''));
     else if (modelSoftVeto) blockedBy.push('soft veto' + (modelVetoReason ? ': ' + modelVetoReason : ''));
+    if (signalGateBlocked) {
+      blockedBy.push('signal gate' + (signalGateReasons.length ? ': ' + signalGateReasons.slice(0, 2).join(', ') : ''));
+    }
+    if (hasBinaryCdf && !cdfActive) blockedBy.push('15m binary CDF neutral');
+    if (payoutNotPrime) {
+      blockedBy.push(
+        'payout not prime'
+        + (entry && Number.isFinite(entry.entryPrice) ? ': entry ' + Math.round(entry.entryPrice * 100) + 'c' : '')
+        + (Number.isFinite(currentMispricing) ? ', mispricing ' + Math.round(currentMispricing * 100) + 'pp' : '')
+      );
+    }
     if (finalConfidenceWeak) blockedBy.push('final confidence floor');
     if (logTunedDowngradeReason) blockedBy.push(logTunedDowngradeReason);
     if (softVetoDowngradeReason) blockedBy.push(softVetoDowngradeReason);
@@ -1388,17 +1624,20 @@
     if (timingProfile && filteredTimingBlocks.length) {
       blockedBy = blockedBy.concat(filteredTimingBlocks.slice(0, 3));
     }
-    var waitGuardBlocked = action !== 'trade'
-      && !modelHardVeto
-      && !tooLate
-      && (
-        openWindowBlocked
-        || finalConfidenceWeak
-        || (timingProfile && Number.isFinite(timingProfile.timingScore) && timingProfile.timingScore < waitGuardThreshold)
-      );
+    var timingScoreBelowGate = Number.isFinite(timingProfile && timingProfile.timingScore)
+      && timingProfile.timingScore < waitGuardThreshold;
+    var waitGuardBlocked = signalGateBlocked || (action === 'trade' && (
+      timingScoreBelowGate
+      || stalePrediction
+      || staleMarket
+      || schedulerCooldownRemainingMs > 0
+      || schedulerCircuitRemainingMs > 0
+    ));
+    if (action === 'trade' && waitGuardBlocked) action = 'watch';
     var waitGuardDiagnostics = {
       blocked: waitGuardBlocked,
       threshold: waitGuardThreshold,
+      timingScoreBelowGate: timingScoreBelowGate,
       confidence: calibratedConfidence,
       regime: regimeTag,
       openWindowBlocked: openWindowBlocked,
@@ -1409,13 +1648,16 @@
     };
     if (waitGuardBlocked) {
       blockedBy.push(
-        'wait-guard threshold '
-        + waitGuardThreshold
-        + ' (conf ' + (Number.isFinite(calibratedConfidence) ? calibratedConfidence : 'n/a')
-        + ', regime ' + String(regimeTag || 'mixed')
-        + ', mcts ' + (waitGuardDiagnostics.mctsVote || 'n/a')
-        + '/' + (Number.isFinite(waitGuardDiagnostics.mctsVoteStrength) ? waitGuardDiagnostics.mctsVoteStrength.toFixed(3) : 'n/a')
-        + ')'
+        signalGateBlocked
+          ? 'wait-guard: signal quality blocked'
+          : 'wait-guard threshold '
+            + waitGuardThreshold
+            + ' (timing ' + (Number.isFinite(timingProfile && timingProfile.timingScore) ? timingProfile.timingScore : 'n/a')
+            + ', conf ' + (Number.isFinite(calibratedConfidence) ? calibratedConfidence : 'n/a')
+            + ', regime ' + String(regimeTag || 'mixed')
+            + ', mcts ' + (waitGuardDiagnostics.mctsVote || 'n/a')
+            + '/' + (Number.isFinite(waitGuardDiagnostics.mctsVoteStrength) ? waitGuardDiagnostics.mctsVoteStrength.toFixed(3) : 'n/a')
+            + ')'
       );
     }
     addStage('wait_guard', !waitGuardBlocked, {
@@ -1451,6 +1693,9 @@
       modelHardVeto: modelHardVeto,
       modelSoftVeto: modelSoftVeto,
       modelVetoReason: modelVetoReason || null,
+      signalGateBlocked: signalGateBlocked,
+      binaryCdfActive: cdfActive,
+      binaryCdfThresholds: { yes: BINARY_CDF_YES_THRESHOLD, no: BINARY_CDF_NO_THRESHOLD },
       modelScore: modelScore, modelProbUp: parseFloat(modelProbUp.toFixed(4)),
       modelProbYes: parseFloat(modelYesProb.toFixed(4)),
       kalshiYesPrice: kalshiYesPrice, kalshiActive: kalshiActive,
@@ -1465,10 +1710,14 @@
       secsLeft: secsLeft != null ? parseFloat(secsLeft.toFixed(1)) : null,
       minsLeft: minsLeft != null ? parseFloat(minsLeft.toFixed(3)) : null,
       minutesLeft: minsLeft,
+      preferredHorizonMin: Number.isFinite(pred?.diagnostics?.preferredHorizon) ? pred.diagnostics.preferredHorizon : 15,
       lastCall: lastCall, tooEarly: tooEarly,
       targetPrice: k15 ? k15.targetPrice : null, targetPriceNum: k15 ? k15.targetPriceNum : null,
       liquidity: k15 ? k15.liquidity : 0, closeTime: k15 ? k15.closeTime : null,
       humanReason: reasonMap[alignment] || (sym + ' ' + direction),
+      aiInferenceReason: pred?.llm?.notes || pred?.diagnostics?.llmNotes || null,
+      aiInferenceProvider: pred?.llm?.provider || null,
+      aiInferenceConfidence: Number.isFinite(pred?.llm?.confidence) ? pred.llm.confidence : (Number.isFinite(pred?.diagnostics?.llmConfidence) ? pred.diagnostics.llmConfidence : null),
       sweetSpot: sweetSpot,
       timingRegime: timingProfile.phase,
       timingLabel: timingProfile.timingLabel,
@@ -1510,6 +1759,14 @@
       stageDiagnostics: stageDiagnostics,
     };
     if (entry) Object.assign(result, entry);
+    if (result.aiInferenceReason) {
+      var horizonLabel = Number.isFinite(result.preferredHorizonMin) ? result.preferredHorizonMin + 'm' : '15m';
+      var providerLabel = result.aiInferenceProvider ? String(result.aiInferenceProvider).toUpperCase() : 'AI';
+      var aiTail = providerLabel + ' ' + horizonLabel
+        + (Number.isFinite(result.aiInferenceConfidence) ? (' · ' + result.aiInferenceConfidence + '%') : '')
+        + ' · ' + result.aiInferenceReason;
+      result.humanReason = result.humanReason ? (result.humanReason + ' · ' + aiTail) : aiTail;
+    }
 
     // --- WECRYPTO cross-chain orbital diagnostics (additive, never vetoes) ---
     try {
@@ -1525,6 +1782,7 @@
           oeq: orbital.oeq,
           pDelta: orbital.pDelta,
           qsp: orbital.qsp || null,
+          temporalEdge: orbital.temporalEdge || null,
           state: orbital.state,
           action: orbital.action,
           fadeDirection: orbital.fadeDirection,
@@ -1604,7 +1862,14 @@
       cfm: cfm,
     });
 
-    if (fadeEval && fadeEval.confirmed && ENABLE_CROWD_FADE_OVERRIDE) {
+    if (
+      fadeEval
+      && fadeEval.confirmed
+      && ENABLE_CROWD_FADE_OVERRIDE
+      && !waitGuardBlocked
+      && !signalGateBlocked
+      && result.action === 'trade'
+    ) {
       // Persistent, model-confirmed mispricing fade.
       result.direction = fadeEval.direction;
       result.side = fadeEval.side;
@@ -1638,14 +1903,15 @@
       result.humanReason += ' · crowd-fade setup ' + Math.round((fadeEval.mispricing || 0) * 100) +
         'pp/' + Math.round((fadeEval.minMispricing || CROWD_FADE_MIN_MISPRICE) * 100) + 'pp (' +
         (fadeEval.timingLabel || 'adaptive') + ', confirm ' + confirmLeft + 's)';
-    } else if (result.action === 'trade') {
+    } else if (result.action === 'trade' && !waitGuardBlocked && !signalGateBlocked) {
       // New trade signal — lock it
       _locks[lockKey] = { direction: result.direction, side: result.side, ts: nowTs, closeTimeMs: closeTimeMs, predTs: (pred && (pred.ts || pred.timestamp)) || nowTs };
     } else if (lock && lock.closeTimeMs === closeTimeMs && (nowTs - lock.ts) < LOCK_MS) {
       // Signal drifted off trade but lock is still fresh — hold it
       // However, invalidate the lock when a newer model prediction is present
       var latestPredTs = pred && (pred.ts || pred.timestamp) ? Number(pred.ts || pred.timestamp) : null;
-      if (latestPredTs && lock.predTs && latestPredTs > lock.predTs) {
+      var lockInvalid = waitGuardBlocked || signalGateBlocked || modelHardVeto || stalePrediction || staleMarket || !modelActive;
+      if (lockInvalid || (latestPredTs && lock.predTs && latestPredTs > lock.predTs)) {
         // Newer prediction arrived — drop stale lock
         delete _locks[lockKey];
       } else {
@@ -1659,6 +1925,15 @@
           result.signalLocked = true;
           result.humanReason = sym + ' [LOCKED ' + Math.round((nowTs - lock.ts) / 1000) + 's ago] ' + lock.direction;
         }
+      }
+    }
+
+    // Trigger audio alerts based on the synthesized result
+    if (result.action === 'trade') {
+      if (result.alignment === 'DIVERGENT' && !result.payoutNotPrime) {
+        playAlert('DIVERGENT');
+      } else if (result.alignment === 'ALIGNED' && !result.payoutNotPrime && result.payoutMult >= 1.5 && result.modelProbYes > 0.65) {
+        playAlert('PRIME_OPPORTUNITY');
       }
     }
 
@@ -1836,3 +2111,4 @@
   };
   console.log('[KalshiOrchestrator] v2.0 loaded — EV engine | gate=5s | ms-precision clock');
 })();
+

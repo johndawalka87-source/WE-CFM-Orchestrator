@@ -2,15 +2,13 @@
  * ════════════════════════════════════════════════════════════════════════════
  * MULTI-DRIVE INSTANT CACHE SYSTEM
  * 
- * Writes predictions/settlements/errors INSTANTLY to:
- *   1. Z:\ (network primary)
- *   2. D:\ (local backup)
- *   3. F:\ (secondary backup)
- *   4. D:\Users\admin (secondary network)
- *   5. C:\Users\user (local cache)
- *   6. localStorage (browser persistence)
- *   7. OneDrive (cloud)
- *   8. Google Drive (cloud)
+ * Writes predictions/settlements/errors INSTANTLY to every mounted target the
+ * Electron bridge exposes:
+ *   - all mounted local drives
+ *   - mapped/UNC network shares
+ *   - OneDrive mirrors
+ *   - Google Drive mirrors
+ *   - localStorage (browser persistence)
  * 
  * No async delays — synchronous to each drive before returning
  * ════════════════════════════════════════════════════════════════════════════
@@ -23,18 +21,17 @@
   class MultiDriveCache {
     constructor() {
       this.cacheFile = 'contract-cache-2h.json';
+      const username = (typeof process !== 'undefined' && process.env && process.env.USERNAME)
+        ? process.env.USERNAME
+        : 'user';
 
       // Detect Electron via contextBridge (works with contextIsolation:true + nodeIntegration:false)
       this.isElectron = typeof window !== 'undefined' && window.desktopApp?.isElectron === true;
 
-      // Drive paths (Windows)
-      this.drivePaths = [
-        'Z:\\WE-CRYPTO-CACHE',
-        'D:\\WE-CRYPTO-CACHE',
-        'F:\\WE-CRYPTO-CACHE',
-        'D:\\Users\\admin\\WE-CRYPTO-CACHE',
-        'C:\\Users\\user\\AppData\\Local\\WE-CRYPTO-CACHE',
-      ];
+      // Drive paths (Windows) — mounted roots discovered asynchronously
+      this.drivePaths = this._uniquePaths([
+        `C:\\Users\\${username}\\AppData\\Local\\WE-CRYPTO-CACHE`,
+      ]);
       this.networkDrivePaths = [];
 
       // Cloud folders discovered async during _initAsync
@@ -74,36 +71,67 @@
       return normalized;
     }
 
-    _prioritizeZDrive(paths = []) {
-      const unique = [...new Set((paths || []).map(p => this._normalizePath(p)).filter(Boolean))];
-      const zFirst = unique.filter(p => /^Z:\\/i.test(p));
-      const remaining = unique.filter(p => !/^Z:\\/i.test(p));
-      return [...zFirst, ...remaining];
+    _uniquePaths(paths = []) {
+      return [...new Set((paths || []).map(p => this._normalizePath(p)).filter(Boolean))];
+    }
+
+    _candidateCacheDirs(root) {
+      const base = this._normalizePath(root);
+      if (!base) return [];
+      return this._uniquePaths([
+        this._join(base, 'WECRYP', 'WE-CRYPTO-CACHE'),
+        this._join(base, 'WE-CRYPTO-CACHE'),
+      ]);
+    }
+
+    _allDrivePaths() {
+      return this._uniquePaths([
+        ...this.drivePaths,
+        ...this.networkDrivePaths,
+        ...this.onedriveFolders,
+        ...(this.googleDriveFolder ? [this.googleDriveFolder] : []),
+      ]);
     }
 
     async _initAsync() {
-      await this._discoverNetworkDrives();
+      await this._discoverMountedDrives();
       await this._discoverCloudFolders();
       await this._ensureDirectories();
       await this._loadFromDrives();
     }
 
-    async _discoverNetworkDrives() {
+    async _discoverMountedDrives() {
       if (!this.isElectron || !window.desktopApp?.getDrives) return;
       try {
         const drives = await window.desktopApp.getDrives();
-        const roots = [];
+        const localRoots = [];
+        const networkRoots = [];
         for (const drive of drives || []) {
-          if (drive?.type === 'network' && drive?.root) {
-            roots.push(this._join(drive.root, 'WE-CRYPTO-CACHE'));
+          if (!drive?.root) continue;
+          const root = this._normalizePath(drive.root);
+          if (!root) continue;
+
+          if (drive.type === 'local') {
+            localRoots.push(this._join(root, 'WE-CRYPTO-CACHE'));
+          } else if (drive.type === 'network') {
+            networkRoots.push(this._join(root, 'WE-CRYPTO-CACHE'));
           }
         }
-        this.networkDrivePaths = roots;
-        if (roots.length) {
-          console.log('[MultiDriveCache] Network shares discovered:', roots.join(' | '));
+
+        this.drivePaths = this._uniquePaths([
+          ...this.drivePaths,
+          ...localRoots,
+        ]);
+        this.networkDrivePaths = this._uniquePaths(networkRoots);
+
+        if (localRoots.length) {
+          console.log('[MultiDriveCache] Local drives discovered:', localRoots.join(' | '));
+        }
+        if (networkRoots.length) {
+          console.log('[MultiDriveCache] Network shares discovered:', networkRoots.join(' | '));
         }
       } catch (e) {
-        console.warn('[MultiDriveCache] Network drive discovery error:', e.message);
+        console.warn('[MultiDriveCache] Mounted drive discovery error:', e.message);
       }
     }
 
@@ -111,30 +139,35 @@
       if (!this.isElectron || !window.dataStore?.listDir) return;
       try {
         // Discover OneDrive folders under common user home paths
-        const homeCandidates = ['C:\\Users\\user', 'C:\\Users\\admin', 'C:\\Users\\Public'];
+        const username = (typeof process !== 'undefined' && process.env && process.env.USERNAME)
+          ? process.env.USERNAME
+          : 'user';
+        const homeCandidates = this._uniquePaths([
+          `C:\\Users\\${username}`,
+          'C:\\Users\\Public',
+        ]);
         for (const home of homeCandidates) {
           const res = await window.dataStore.listDir(home);
           if (!res?.ok) continue;
           for (const entry of (res.entries || [])) {
             if (entry.startsWith('OneDrive')) {
-              this.onedriveFolders.push(this._join(home, entry, 'WE-CRYPTO-CACHE'));
+              this.onedriveFolders.push(...this._candidateCacheDirs(this._join(home, entry)));
             }
           }
         }
+        this.onedriveFolders = this._uniquePaths(this.onedriveFolders);
         if (this.onedriveFolders.length) {
           this.onedriveFolder = this.onedriveFolders[0];
         }
 
-        // Google Drive — scan all mounted drives and prioritize Z:\My Drive
+        // Google Drive — scan mounted roots and prefer the WECRYP cache mirror
         const googleCandidates = new Set([
-          'Z:\\My Drive',
-          'Z:\\Google Drive',
+          'H:\\My Drive',
+          'H:\\Google Drive',
           'G:\\My Drive',
           'G:\\Google Drive',
-          'G:\\',
-          'Z:\\',
         ]);
-        const driveRoots = new Set(['Z:\\', 'G:\\']);
+        const driveRoots = new Set(['H:\\', 'G:\\']);
 
         if (window.desktopApp?.getDrives) {
           try {
@@ -158,11 +191,14 @@
           googleCandidates.add(`${base}\\Google Drive`);
         }
 
-        for (const candidate of this._prioritizeZDrive([...googleCandidates])) {
-          const res = await window.dataStore.listDir(candidate);
-          if (res?.ok) {
-            this.googleDriveFolder = this._join(candidate, 'WE-CRYPTO-CACHE');
-            break;
+        findGoogleDrive:
+        for (const candidate of this._uniquePaths([...googleCandidates])) {
+          for (const dir of this._candidateCacheDirs(candidate)) {
+            const res = await window.dataStore.listDir(dir);
+            if (res?.ok) {
+              this.googleDriveFolder = dir;
+              break findGoogleDrive;
+            }
           }
         }
       } catch (e) {
@@ -172,8 +208,7 @@
 
     async _ensureDirectories() {
       if (!this.isElectron || !window.dataStore?.ensureDir) return;
-      const allPaths = [...this.drivePaths, ...this.networkDrivePaths, ...this.onedriveFolders];
-      if (this.googleDriveFolder) allPaths.push(this.googleDriveFolder);
+      const allPaths = this._allDrivePaths();
       await Promise.allSettled(allPaths.map(p => window.dataStore.ensureDir(p)));
     }
 
@@ -350,12 +385,7 @@
       if (!this.isElectron || !window.dataStore?.writeFile) return;
 
       const cacheJson = JSON.stringify(this.data, null, 2);
-      const allPaths = [
-        ...this.drivePaths,
-        ...this.networkDrivePaths,
-        ...this.onedriveFolders,
-        ...(this.googleDriveFolder ? [this.googleDriveFolder] : []),
-      ];
+      const allPaths = this._allDrivePaths();
 
       this.data.lastSyncTime = Date.now();
 
@@ -379,12 +409,7 @@
     async _loadFromDrives() {
       if (!this.isElectron || !window.dataStore?.readFile) return;
 
-      const allPaths = [
-        ...this.drivePaths,
-        ...this.networkDrivePaths,
-        ...this.onedriveFolders,
-        ...(this.googleDriveFolder ? [this.googleDriveFolder] : []),
-      ];
+      const allPaths = this._allDrivePaths();
 
       for (const dirPath of allPaths) {
         try {

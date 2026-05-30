@@ -89,6 +89,35 @@
     );
   }
 
+<<<<<<< Updated upstream
+=======
+  function _isRateLimitError(err) {
+    return /(?:^|\b)(?:http\s*)?429\b|too many requests|rate limit/i.test(String(err?.message || err || ''));
+  }
+
+  function _markProviderRateLimited(provider, err) {
+    if (err && typeof err === 'object' && err._endpointRateLimitMarked) {
+      return _providerRateLimitRemaining(provider);
+    }
+    const now = Date.now();
+    const state = providerRateLimit[provider] || { count: 0, until: 0 };
+    state.count = now < state.until ? state.count + 1 : 1;
+    // Exponential backoff with a higher cap and a lower base for smoother retry\n    const baseMs = 15000;\n    const wait = Math.min(PROVIDER_RATE_LIMIT_MAX_MS, baseMs * (2 ** Math.max(0, state.count - 1)));
+    state.until = now + wait;
+    providerRateLimit[provider] = state;
+    if (err && typeof err === 'object') {
+      try { err._endpointRateLimitMarked = true; } catch (_) { }
+    }
+    console.warn(`[EndpointTransport] ${provider} rate-limited; cooling down ${wait}ms (${String(err?.message || err || '429')})`);
+    return wait;
+  }
+
+  function _providerRateLimitRemaining(provider) {
+    const until = providerRateLimit[provider]?.until || 0;
+    return Math.max(0, until - Date.now());
+  }
+
+>>>>>>> Stashed changes
   function _classifyTransportBucket(err, provider, transport) {
     const text = String(err?.message || err || '').toLowerCase();
     if (/browser websocket cannot send|requires node ws|credential|crypto unavailable|signature generation|kalshi-api-key\.txt not found|auth-header-failed/.test(text)) {

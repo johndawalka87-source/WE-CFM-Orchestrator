@@ -19,7 +19,7 @@
   const RTI_POLL_MS_BASE = 5_000;
   const RTI_POLL_MS_NEAR = 2_000;
   const NEAR_BOUNDARY_MS = 75_000;
-  const EXCHANGE_FETCH_TIMEOUT_MS = 8_000;
+  const EXCHANGE_FETCH_TIMEOUT_MS = 30_000;
   const MAX_LEVELS = 200;
 
   const BUFFER_SECS   = 180;      // keep enough history for open/close windows
@@ -29,9 +29,9 @@
   // CME CF RTI constituent symbols per exchange.
   const EXCHANGE_CONFIG = {
     coinbase: {
-      url:    (pair) => `https://api.exchange.coinbase.com/products/${pair}/book?level=2`,
+      url:    (pair) => `https://api.coinbase.com/api/v3/brokerage/market/product_book?product_id=${encodeURIComponent(pair)}&limit=${MAX_LEVELS}`,
       pairs:  { BTC: 'BTC-USD', ETH: 'ETH-USD', SOL: 'SOL-USD', XRP: 'XRP-USD' },
-      parse:  (d) => ({ bids: d?.bids, asks: d?.asks }),
+      parse:  (d) => ({ bids: d?.pricebook?.bids || d?.bids, asks: d?.pricebook?.asks || d?.asks }),
     },
     kraken: {
       url:    (pair) => `https://api.kraken.com/0/public/Depth?pair=${pair}&count=${MAX_LEVELS}`,

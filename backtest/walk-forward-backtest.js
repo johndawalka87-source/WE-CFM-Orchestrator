@@ -10,6 +10,23 @@
 // ================================================================
 'use strict';
 
+// MOCK BROWSER ENVIRONMENT FOR QUANTCORE
+global.window = global;
+try {
+    require('../src/quant/statistical-utils.js');
+    require('../src/quant/kalman-filter.js');
+    require('../src/quant/hurst-exponent.js');
+    require('../src/quant/hmm-regime-classifier.js');
+    window.QuantCore = {
+        kalman: new window.KalmanFilter(),
+        hurst: new window.HurstExponent(),
+        hmm: new window.HMMRegimeClassifier()
+    };
+    console.log('[Backtest] Mocked window.QuantCore successfully');
+} catch (e) {
+    console.error('[Backtest] Failed to load QuantCore:', e.message);
+}
+
 const https = require('https');
 const fs    = require('fs');
 const path  = require('path');
@@ -537,6 +554,47 @@ function buildSignalModel(candles, sym = null) {
   };
 
   const coinBias = (sym && PER_COIN_INDICATOR_BIAS[sym]) ? PER_COIN_INDICATOR_BIAS[sym] : {};
+
+  // --- QUANT CORE INTEGRATION ---
+  let hurstRegime = 'mean_reversion';
+  let hmmPath = [];
+  if (global.window && global.window.QuantCore) {
+    if (global.window.QuantCore.kalman) {
+        const kalmanResult = global.window.QuantCore.kalman.process(closes);
+        const kVel = kalmanResult.velocities[kalmanResult.velocities.length - 1] || 0;
+        sv.momentum = clamp(sv.momentum + kVel * 5, -1, 1);
+    }
+    if (global.window.QuantCore.hurst) {
+        const h_exp = global.window.QuantCore.hurst.rolling(closes, 50);
+        hurstRegime = global.window.QuantCore.hurst.classify(h_exp).signal_gate;
+    }
+    if (global.window.QuantCore.hmm && sym) {
+        const obsSeq = closes.map((c, i) => {
+            const h = candles[i].h;
+            const l = candles[i].l;
+            return {
+                returns: i > 0 ? (c - closes[i-1])/(closes[i-1]||1) : 0,
+                volatility: (h - l)/(l||1)
+            };
+        });
+        global.window.QuantCore.hmm.classify(obsSeq);
+        hmmPath = global.window.QuantCore.hmm.lastViterbiPath || [];
+    }
+  }
+
+  let hmmState = hmmPath.length > 0 ? hmmPath[hmmPath.length - 1] : 0;
+  if (hmmState === 3 || hurstRegime === 'mean_reversion') {
+      sv.supertrend *= 0.5;
+      sv.ema *= 0.5;
+      sv.macd *= 0.5;
+      sv.vwma *= 0.5;
+  }
+  if (hmmState === 0 || hurstRegime === 'trending') {
+      sv.rsi *= 0.5;
+      sv.stochrsi *= 0.5;
+      sv.williamsR *= 0.5;
+  }
+  // --- END QUANT CORE INTEGRATION ---
   const keys = Object.keys(sv);
   const effW = k => (COMPOSITE_WEIGHTS[k] ?? OUTER_ORBITAL_WEIGHTS[k] ?? 0) * (coinBias[k] ?? 1.0);
   const totalWeight = keys.reduce((s, k) => s + effW(k), 0) || 1;

@@ -97,7 +97,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(balPayload),
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(30000),
       });
 
       if (!balRes.ok) {

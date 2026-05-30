@@ -1,62 +1,123 @@
 /**
  * orbital-startup-orchestrator.js
  * Manages the lifecycle of Redpanda and the Orbital Matrix services.
- * 
+ *
  * Responsibilities:
  * 1. Detect if Docker is available
  * 2. Spin up docker-compose (Redpanda cluster)
  * 3. Wait for Redpanda to be healthy
- * 4. Initialize the Redpanda bridge
- * 5. Start the Orbital Ingestor daemon
- * 6. Start the Matrix Processor (coherence loop)
- * 7. Handle graceful shutdown on app exit
+ * 4. Pre-create orbital topics (idempotent)
+ * 5. Initialize the Redpanda bridge (KafkaJS producer)
+ * 6. Start the Orbital Ingestor daemon (s, p, d, f producers)
+ * 7. Start the Matrix Processor (coherence loop / consumer)
+ * 8. Handle graceful shutdown on app exit
  */
 
 const { spawn, exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const fsp = fs.promises;
 const net = require('net');
+
+const REDPANDA_CONTAINER_NAME = 'redpanda-orbital';
+
+// Fix Windows PATH for Docker if missing
+if (process.platform === 'win32') {
+    const dockerPaths = [
+        'C:\\Program Files\\Docker\\Docker\\resources\\bin',
+        'C:\\ProgramData\\DockerDesktop\\version-bin'
+    ];
+    for (const dp of dockerPaths) {
+        if (!process.env.PATH.includes(dp) && fs.existsSync(dp)) {
+            process.env.PATH = process.env.PATH + ';' + dp;
+        }
+    }
+}
 
 let dockerComposeProcess = null;
 let ingestorProcess = null;
-let processorHandle = null;
+let processorIntervalHandle = null;
 let orchestratorReady = false;
+
+// Status cache — prevents concurrent docker exec pile-up from flipping display to DOWN
+const STATUS_CACHE_TTL_MS = 30000; // re-probe every 30s; return cached result between probes
+let _statusCache = null;           // { ts, value }
+let _statusInFlight = null;        // Promise while a probe is running
+const MAX_STATUS_EVENTS = 12;
+const recentStatusEvents = [];
+const lastProbeState = {
+    docker: null,
+    redpanda: null,
+    bridgeConnected: null,
+    nodes: null,
+    topicCount: null
+};
+
+function recordStatusEvent(level, message, meta = {}) {
+    recentStatusEvents.unshift({
+        ts: Date.now(),
+        level: level || 'info',
+        message: String(message || '').trim(),
+        source: 'orchestrator',
+        meta: meta && typeof meta === 'object' ? meta : {}
+    });
+    if (recentStatusEvents.length > MAX_STATUS_EVENTS) {
+        recentStatusEvents.length = MAX_STATUS_EVENTS;
+    }
+}
+
+function getBridgeStatsSafe() {
+    try {
+        const bridge = require('./orbital-redpanda-bridge');
+        return typeof bridge.getBridgeStats === 'function'
+            ? bridge.getBridgeStats()
+            : { connected: false, messageCounts: {}, lastTickAt: {}, totalMessages: 0, activeOrbitals: [], recentEvents: [] };
+    } catch (_) {
+        return { connected: false, messageCounts: {}, lastTickAt: {}, totalMessages: 0, activeOrbitals: [], recentEvents: [] };
+    }
+}
+
+function enrichStatus(baseStatus) {
+    const bridge = getBridgeStatsSafe();
+    const notifications = [...recentStatusEvents, ...(bridge.recentEvents || [])]
+        .sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0))
+        .slice(0, 8)
+        .map((event) => ({ ...event }));
+    return {
+        ...baseStatus,
+        bridge,
+        activity: {
+            totalMessages: Number(bridge.totalMessages || 0),
+            activeOrbitals: Array.isArray(bridge.activeOrbitals) ? bridge.activeOrbitals : [],
+            lastProducedAt: bridge.lastProducedAt || null,
+        },
+        notifications,
+        checkedAt: Date.now(),
+    };
+}
 
 // --- Health Check Utilities ---
 
 /**
- * Check if a port is open (Docker/Redpanda is listening).
+ * Check if a TCP port is open (used to probe Redpanda readiness).
  */
 function checkPort(port, host = 'localhost', timeout = 1000) {
     return new Promise((resolve) => {
         const socket = net.createConnection({ port, host });
-        
         socket.setTimeout(timeout);
-        socket.on('connect', () => {
-            socket.destroy();
-            resolve(true);
-        });
-        socket.on('timeout', () => {
-            socket.destroy();
-            resolve(false);
-        });
-        socket.on('error', () => {
-            resolve(false);
-        });
+        socket.on('connect', () => { socket.destroy(); resolve(true); });
+        socket.on('timeout', () => { socket.destroy(); resolve(false); });
+        socket.on('error', () => { resolve(false); });
     });
 }
 
 /**
  * Poll for Redpanda readiness via port 9092 (Kafka broker).
- * Max 60 seconds.
+ * Waits up to maxWaitMs (default 60 s).
  */
 async function waitForRedpandaReady(maxWaitMs = 60000) {
     const startTime = Date.now();
     const pollInterval = 2000;
-    
     console.log('[OrbitalOrchestrator] Waiting for Redpanda to be ready...');
-    
     while (Date.now() - startTime < maxWaitMs) {
         const isReady = await checkPort(9092, 'localhost', 1000);
         if (isReady) {
@@ -66,7 +127,6 @@ async function waitForRedpandaReady(maxWaitMs = 60000) {
         console.log('[OrbitalOrchestrator] Polling... (waiting for Redpanda on :9092)');
         await new Promise(resolve => setTimeout(resolve, pollInterval));
     }
-    
     throw new Error('Redpanda failed to start within 60 seconds');
 }
 
@@ -75,39 +135,31 @@ async function waitForRedpandaReady(maxWaitMs = 60000) {
  */
 async function isDockerAvailable() {
     return new Promise((resolve) => {
-        exec('docker ps', (err) => {
-            resolve(!err);
+        exec('docker ps', (err, stdout, stderr) => { 
+            if (err) {
+                console.error('[OrbitalOrchestrator] isDockerAvailable failed:', err.message, stderr);
+                try {
+                    fs.writeFileSync(require('path').join(process.cwd(), 'docker-error.log'), 'Docker err: ' + err.message + '\nStderr: ' + stderr);
+                } catch(e) {}
+            }
+            resolve(!err); 
         });
     });
 }
 
 /**
- * Spawn docker-compose up in the workspace.
+ * Spawn docker-compose up -d and wait for it to complete.
  */
 function spawnDockerCompose(workspacePath) {
     return new Promise((resolve, reject) => {
         console.log('[OrbitalOrchestrator] Spawning docker-compose...');
-        
-        // Use 'docker-compose up -d' on Windows/macOS/Linux
-        const composeDir = workspacePath;
         const proc = spawn('docker-compose', ['up', '-d'], {
-            cwd: composeDir,
+            cwd: workspacePath,
             stdio: ['ignore', 'pipe', 'pipe']
         });
-        
-        let stdout = '';
         let stderr = '';
-        
-        proc.stdout.on('data', (data) => {
-            stdout += data.toString();
-            console.log('[Docker-Compose]', data.toString().trim());
-        });
-        
-        proc.stderr.on('data', (data) => {
-            stderr += data.toString();
-            console.warn('[Docker-Compose]', data.toString().trim());
-        });
-        
+        proc.stdout.on('data', (data) => console.log('[Docker-Compose]', data.toString().trim()));
+        proc.stderr.on('data', (data) => { stderr += data.toString(); console.warn('[Docker-Compose]', data.toString().trim()); });
         proc.on('close', (code) => {
             if (code === 0) {
                 console.log('[OrbitalOrchestrator] docker-compose up completed successfully');
@@ -116,15 +168,31 @@ function spawnDockerCompose(workspacePath) {
                 reject(new Error(`docker-compose exited with code ${code}: ${stderr}`));
             }
         });
-        
-        proc.on('error', (err) => {
-            reject(err);
-        });
+        proc.on('error', (err) => reject(err));
     });
 }
 
 /**
- * Initialize the Redpanda bridge (connects to Kafka).
+ * Pre-create orbital topics via the init script (idempotent — safe every run).
+ */
+async function initTopics(workspacePath) {
+    try {
+        const topicScript = path.join(workspacePath, 'scripts', 'redpanda-init-topics.js');
+        if (fs.existsSync(topicScript)) {
+            const { createOrbitalTopics } = require(topicScript);
+            await createOrbitalTopics();
+            console.log('[OrbitalOrchestrator] ✓ Orbital topics created/verified');
+        } else {
+            console.warn('[OrbitalOrchestrator] Topic init script not found — skipping (topics must already exist)');
+        }
+    } catch (err) {
+        // Topics may already exist — not fatal
+        console.warn('[OrbitalOrchestrator] Topic init note:', err.message);
+    }
+}
+
+/**
+ * Initialize the Redpanda bridge (KafkaJS producer connects).
  */
 async function initBridge() {
     try {
@@ -138,7 +206,7 @@ async function initBridge() {
 }
 
 /**
- * Start the Orbital Ingestor daemon.
+ * Start the Orbital Ingestor daemon (connects CoinGecko, Coinbase, Hyperliquid, Kalshi WS/poll).
  */
 function startIngestor() {
     try {
@@ -153,12 +221,12 @@ function startIngestor() {
 }
 
 /**
- * Start the Matrix Processor (coherence loop).
+ * Start the Matrix Processor (KafkaJS consumer + 15-min Time-Windowed Barrier).
  */
 async function startProcessor() {
     try {
-        const { startProcessor } = require('../orbital/orbital-matrix-processor');
-        await startProcessor();
+        const { startProcessor: runProcessor } = require('../orbital/orbital-matrix-processor');
+        processorIntervalHandle = await runProcessor();
         console.log('[OrbitalOrchestrator] ✓ Matrix Processor coherence loop started');
     } catch (err) {
         console.error('[OrbitalOrchestrator] Failed to start processor:', err.message);
@@ -167,93 +235,108 @@ async function startProcessor() {
 }
 
 /**
- * Main orchestration: spin up entire Orbital system.
- * Called from Electron main process on app ready.
+ * Main orchestration entry point.
+ * Called from Electron main process on app-ready.
+ * @param {string} workspacePath - Absolute path to the project root (contains docker-compose.yml).
  */
 async function startOrbitalSystem(workspacePath) {
     if (orchestratorReady) {
         console.log('[OrbitalOrchestrator] System already running.');
         return true;
     }
-    
+
     try {
         console.log('[OrbitalOrchestrator] ===== Starting Orbital System =====');
-        
+
         // Step 1: Check Docker availability
         const dockerAvailable = await isDockerAvailable();
         if (!dockerAvailable) {
-            throw new Error('Docker daemon is not running. Please start Docker and try again.');
+            throw new Error('Docker daemon is not running. Please start Docker Desktop and try again.');
         }
         console.log('[OrbitalOrchestrator] ✓ Docker is available');
-        
-        // Step 2: Spin up docker-compose
+        recordStatusEvent('success', 'Docker daemon available');
+
+        // Step 2: Spin up docker-compose (Redpanda single-node cluster)
         dockerComposeProcess = await spawnDockerCompose(workspacePath);
-        
-        // Step 3: Wait for Redpanda to be ready
+        recordStatusEvent('info', 'docker-compose started', { workspacePath });
+
+        // Step 3: Wait for Redpanda broker to be reachable on :9092
         await waitForRedpandaReady();
-        
-        // Step 4: Initialize Redpanda bridge
+        recordStatusEvent('success', 'Redpanda broker reachable on localhost:9092');
+
+        // Step 4: Pre-create orbital topics (idempotent)
+        await initTopics(workspacePath);
+        recordStatusEvent('info', 'Orbital topics initialized');
+
+        // Step 5: Connect KafkaJS producer via the bridge
         await initBridge();
-        
-        // Step 5: Start Orbital Ingestor
+        recordStatusEvent('success', 'Kafka bridge initialized');
+
+        // Step 6: Start Orbital Ingestor (s, p, d, f producers → Redpanda)
         ingestorProcess = startIngestor();
-        
-        // Step 6: Start Matrix Processor
+        recordStatusEvent('success', 'Orbital ingestor started');
+
+        // Step 7: Start Matrix Processor (consumer + 15-min barrier → Firebase)
         await startProcessor();
-        
+        recordStatusEvent('success', 'Orbital processor started');
+
         orchestratorReady = true;
+        // Bust the status cache so the next UI poll immediately reflects healthy state
+        _statusCache = null;
         console.log('[OrbitalOrchestrator] ===== Orbital System Ready =====');
-        console.log('[OrbitalOrchestrator] All services online: Redpanda, Bridge, Ingestor, Processor');
-        
+        console.log('[OrbitalOrchestrator] Services online: Redpanda | Topics | Bridge | Ingestor | Processor');
+
         return true;
     } catch (err) {
         console.error('[OrbitalOrchestrator] FATAL: Failed to start Orbital System:', err.message);
+        recordStatusEvent('error', 'Orbital system failed to start', { error: err.message });
         await shutdownOrbitalSystem();
         throw err;
     }
 }
 
 /**
- * Graceful shutdown of all Orbital services and docker-compose.
+ * Graceful shutdown: stop all services and bring down docker-compose.
  */
 async function shutdownOrbitalSystem() {
     console.log('[OrbitalOrchestrator] Initiating graceful shutdown...');
-    
+
     try {
-        // Stop Matrix Processor and Ingestor
-        if (processorHandle) {
-            console.log('[OrbitalOrchestrator] Stopping Matrix Processor...');
-            // Processor is a setInterval; no direct stop needed in current impl
+        // Stop Matrix Processor interval
+        if (processorIntervalHandle) {
+            clearInterval(processorIntervalHandle);
+            processorIntervalHandle = null;
+            console.log('[OrbitalOrchestrator] Matrix Processor stopped');
         }
-        
-        if (ingestorProcess && ingestorProcess.connections) {
-            console.log('[OrbitalOrchestrator] Closing Ingestor WebSocket connections...');
+
+        // Close Ingestor WebSocket connections
+        if (ingestorProcess && typeof ingestorProcess.stop === 'function') {
+            ingestorProcess.stop();
+            console.log('[OrbitalOrchestrator] Ingestor connections closed');
+        } else if (ingestorProcess && ingestorProcess.connections) {
             for (const conn of ingestorProcess.connections.values()) {
-                if (conn && typeof conn.close === 'function') {
-                    conn.close();
-                }
+                if (conn && typeof conn.close === 'function') conn.close();
             }
         }
-        
-        // Disconnect Kafka producer
+
+        // Disconnect KafkaJS producer gracefully
         try {
-            const { Kafka } = require('kafkajs');
-            // Graceful disconnect handled by kafkajs internally; we just log
+            const { disconnectRedpanda } = require('./orbital-redpanda-bridge');
+            if (typeof disconnectRedpanda === 'function') {
+                await disconnectRedpanda();
+            }
             console.log('[OrbitalOrchestrator] Kafka producer disconnected');
         } catch (e) {
-            // Kafka not initialized yet
+            // Bridge not initialized — safe to ignore
         }
-        
-        // Stop docker-compose
+
+        // Bring down docker-compose
         if (dockerComposeProcess) {
-            console.log('[OrbitalOrchestrator] Stopping docker-compose...');
             dockerComposeProcess.kill('SIGTERM');
-            
-            // Also issue explicit docker-compose down
             await new Promise((resolve) => {
                 exec('docker-compose down', { cwd: process.env.WECRYP_ROOT || process.cwd() }, (err) => {
                     if (err) {
-                        console.warn('[OrbitalOrchestrator] docker-compose down returned error:', err.message);
+                        console.warn('[OrbitalOrchestrator] docker-compose down warning:', err.message);
                     } else {
                         console.log('[OrbitalOrchestrator] docker-compose down completed');
                     }
@@ -261,16 +344,131 @@ async function shutdownOrbitalSystem() {
                 });
             });
         }
-        
+
         orchestratorReady = false;
+        recordStatusEvent('info', 'Orbital system shutdown complete');
         console.log('[OrbitalOrchestrator] Orbital System shutdown complete');
     } catch (err) {
         console.error('[OrbitalOrchestrator] Error during shutdown:', err.message);
+        recordStatusEvent('warn', 'Orbital shutdown encountered an error', { error: err.message });
     }
+}
+
+/**
+ * Get the current status of the Orbital system for the UI (IPC: redpanda:status).
+ *
+ * Uses a 30-second cache + in-flight guard so rapid 2-second UI polls never
+ * pile up concurrent docker exec calls that could flip the display to DOWN.
+ */
+async function getOrbitalStatus() {
+    const now = Date.now();
+
+    // Return cached result if fresh enough
+    if (_statusCache && (now - _statusCache.ts) < STATUS_CACHE_TTL_MS) {
+        return enrichStatus(_statusCache.value);
+    }
+
+    // If a probe is already running, wait for it (don't launch a second one)
+    if (_statusInFlight) {
+        return _statusInFlight;
+    }
+
+    // Launch a new probe and cache the promise so concurrent callers share it
+    _statusInFlight = (async () => {
+        const status = {
+            ready: orchestratorReady,
+            redpanda: 'unknown',
+            docker: 'unknown',
+            ingestor: !!ingestorProcess,
+            processor: !!processorIntervalHandle,
+            nodes: 0,
+            topics: []
+        };
+
+        try {
+            const dockerAvailable = await isDockerAvailable();
+            status.docker = dockerAvailable ? 'healthy' : 'down';
+            if (lastProbeState.docker !== status.docker) {
+                lastProbeState.docker = status.docker;
+                recordStatusEvent(
+                    status.docker === 'healthy' ? 'success' : 'error',
+                    status.docker === 'healthy' ? 'Docker daemon reachable' : 'Docker daemon unavailable'
+                );
+            }
+
+            const redpandaReady = await checkPort(9092, 'localhost', 5000);
+            status.redpanda = redpandaReady ? 'healthy' : 'down';
+            if (lastProbeState.redpanda !== status.redpanda) {
+                lastProbeState.redpanda = status.redpanda;
+                recordStatusEvent(
+                    status.redpanda === 'healthy' ? 'success' : 'warn',
+                    status.redpanda === 'healthy' ? 'Redpanda broker reachable' : 'Redpanda broker offline'
+                );
+            }
+
+            if (redpandaReady) {
+                // Node count via Redpanda Admin REST API
+                try {
+                    const res = await fetch('http://localhost:9644/v1/brokers', { signal: AbortSignal.timeout(4000) });
+                    if (res.ok) {
+                        const brokers = await res.json();
+                        status.nodes = Array.isArray(brokers) ? brokers.length : 0;
+                    }
+                } catch (e) {
+                    console.warn('[OrbitalOrchestrator] Failed to fetch brokers:', e.message);
+                }
+
+                // Orbital topic list via Redpanda Console REST API
+                try {
+                    const res = await fetch('http://localhost:8081/api/topics', { signal: AbortSignal.timeout(4000) });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data && Array.isArray(data.topics)) {
+                            status.topics = data.topics
+                                .map(t => t.topicName)
+                                .filter(name => name && name.includes('wecrypto.orbital'));
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[OrbitalOrchestrator] Failed to fetch topics:', e.message);
+                }
+            }
+        } catch (err) {
+            console.warn('[OrbitalOrchestrator] Status check failed:', err.message);
+            recordStatusEvent('warn', 'Orbital status probe failed', { error: err.message });
+        }
+
+        const bridge = getBridgeStatsSafe();
+        const topicCount = Array.isArray(status.topics) ? status.topics.length : 0;
+        if (lastProbeState.topicCount !== topicCount) {
+            lastProbeState.topicCount = topicCount;
+            recordStatusEvent('info', `Orbital topics visible: ${topicCount}`, { topics: status.topics });
+        }
+        if (lastProbeState.nodes !== status.nodes) {
+            lastProbeState.nodes = status.nodes;
+            recordStatusEvent('info', `Redpanda broker nodes: ${status.nodes}`, { nodes: status.nodes });
+        }
+        if (lastProbeState.bridgeConnected !== bridge.connected) {
+            lastProbeState.bridgeConnected = bridge.connected;
+            recordStatusEvent(
+                bridge.connected ? 'success' : 'warn',
+                bridge.connected ? 'Kafka bridge connected' : 'Kafka bridge disconnected'
+            );
+        }
+
+        // Store in cache
+        _statusCache = { ts: Date.now(), value: status };
+        return enrichStatus(status);
+    })().finally(() => {
+        _statusInFlight = null;
+    });
+
+    return _statusInFlight;
 }
 
 module.exports = {
     startOrbitalSystem,
     shutdownOrbitalSystem,
+    getOrbitalStatus,
     isOrchestrationReady: () => orchestratorReady
 };

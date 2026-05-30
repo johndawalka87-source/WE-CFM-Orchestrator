@@ -8090,25 +8090,8 @@
       return; // guard: stale render version or superseded CFM render
     }
 
-    content.innerHTML = `
-      <div class="cfm-view-root">
-      ${loadingBanner}
-      <div class="engine-hero">
-        <div>
-          <div class="engine-eyebrow">CFM Benchmark Orchestrator</div>
-          <h2 class="engine-title">Constituent-driven benchmarks for short-horizon UP/DOWN calls</h2>
-          <p class="engine-copy">This surface consolidates spot, venue premium, and on-chain liquidity into a defensible benchmark, then layers microstructure and derivatives context on top so each market can be staged as UP, DOWN, or NO BET.</p>
-        </div>
-        <div class="engine-meta-grid">
-          <div class="engine-meta-card"><span>Targets</span><strong>${PREDICTION_COINS.length}</strong><small>benchmark markets</small></div>
-          <div class="engine-meta-card"><span>Constituents</span><strong>4</strong><small>CDC · CB · GKO · DEX</small></div>
-          <div class="engine-meta-card"><span>Cadence</span><strong>15s</strong><small>rolling 15m partitions</small></div>
-          <div class="engine-meta-card"><span>Decision Horizon</span><strong>1-15m</strong><small>predictive UP/DOWN ladder</small></div>
-        </div>
-      </div>
-
-      <!-- Orchestrator Status Bar -->
-      <div class="cfm-orch-bar">
+    const orchBarHTML = `
+      <div class="cfm-orch-bar" id="cfm-orch-bar">
         <div class="cfm-orch-item"><span class="cfm-orch-dot ${status.running ? 'ok' : 'off'}"></span><span>${status.running ? 'Live' : 'Off'}</span></div>
         <div class="cfm-orch-item">Cycle <span class="cfm-orch-val">#${status.cycle ?? '—'}</span></div>
         <div class="cfm-orch-item">\u0394 <span class="cfm-orch-val">${status.lastMs != null ? status.lastMs + 'ms' : '—'}</span></div>
@@ -8123,49 +8106,78 @@
           `).join('')}
         </div>
       </div>
-
-      <!-- Shell Legend + Weight Classes -->
-      <div style="display:flex;gap:10px;margin-bottom:10px;font-size:10px;color:var(--color-text-muted);flex-wrap:wrap;align-items:center">
-        <span style="font-weight:600;color:var(--color-text)">Shells:</span>
-        <span><span class="cfm-shell s" style="position:static">1s</span> Price</span>
-        <span><span class="cfm-shell s" style="position:static">2s</span> Momentum</span>
-        <span><span class="cfm-shell p" style="position:static">2p</span> Trend</span>
-        <span><span class="cfm-shell s" style="position:static">3s</span> Volume</span>
-        <span><span class="cfm-shell p" style="position:static">3p</span> Book</span>
-        <span><span class="cfm-shell d" style="position:static">3d</span> Arb</span>
-        <span><span class="cfm-shell s" style="position:static">4s</span> CB Prem</span>
-        <span><span class="cfm-shell f" style="position:static">4f</span> DEX Deep</span>
-        <span style="border-left:1px solid var(--color-border);padding-left:8px;margin-left:4px">
-          <span style="color:var(--color-gold)">\u25cf</span> Heavy (22)
-          <span style="color:var(--color-primary)">\u25cf</span> Mid (18)
-          <span style="color:var(--color-text-faint)">\u25cf</span> Light (12)
-        </span>
-        <span style="margin-left:auto;font-size:9px"><span style="color:#1a6eff">\u25cf</span> CDC <span style="color:#0052ff">\u25cf</span> CB <span style="color:#8dc63f">\u25cf</span> GKO <span style="color:#a259ff">\u25cf</span> DEX</span>
-      </div>
-
-      <!-- Opportunities Panel placeholder — filled async below -->
-      <div id="cfm-opp-slot"></div>
-
-      <!-- Per-coin periodic table placeholders — filled async below -->
-      ${PREDICTION_COINS.map(coin => `<div id="cfm-coin-slot-${coin.sym}" class="cfm-coin-skeleton"><div class="cfm-coin-skel-bar" style="border-left:3px solid ${coin.color}"><span style="color:${coin.color};font-weight:700;font-size:13px">${coin.sym}</span><span style="color:var(--color-text-muted);font-size:11px;margin-left:8px">loading orbital data…</span><div style="width:18px;height:18px;border:2px solid rgba(255,255,255,0.15);border-top-color:${coin.color};border-radius:50%;animation:spin 0.8s linear infinite;margin-left:auto"></div></div></div>`).join('')}
-
-      <!-- Methodology -->
-      <div class="card" style="margin-top:8px" id="cfm-methodology">
-        <div class="card-title">CFM Methodology</div>
-        <div style="font-size:11px;color:var(--color-text-muted);line-height:1.5">
-          Each coin's periodic table maps the benchmark, microstructure, and conviction layers used to issue short-horizon UP/DOWN calls.
-          <strong>1s</strong> establishes the benchmark via <a href="https://docs.cfbenchmarks.com" target="_blank" style="color:var(--color-primary)">CF Benchmarks style VWM partitions</a>.
-          <strong>2s / 2p</strong> score momentum and trend alignment.
-          <strong>3s / 3p / 3d</strong> capture flow, book pressure, and cross-venue dispersion.
-          <strong>4s / 4f</strong> add institutional premium, derivatives crowding, and DEX depth.
-          The result is a benchmark-backed decision surface for UP, DOWN, or stand-aside execution.
-        </div>
-      </div>
-      </div>
     `;
-    requestAnimationFrame(() => {
-      if (currentView === 'cfm' && content) content.scrollTop = scrollTopSnapshot;
-    });
+
+    const existingRoot = content.querySelector('.cfm-view-root');
+    if (!existingRoot) {
+      content.innerHTML = `
+        <div class="cfm-view-root">
+        ${loadingBanner}
+        <div class="engine-hero">
+          <div>
+            <div class="engine-eyebrow">CFM Benchmark Orchestrator</div>
+            <h2 class="engine-title">Constituent-driven benchmarks for short-horizon UP/DOWN calls</h2>
+            <p class="engine-copy">This surface consolidates spot, venue premium, and on-chain liquidity into a defensible benchmark, then layers microstructure and derivatives context on top so each market can be staged as UP, DOWN, or NO BET.</p>
+          </div>
+          <div class="engine-meta-grid">
+            <div class="engine-meta-card"><span>Targets</span><strong>${PREDICTION_COINS.length}</strong><small>benchmark markets</small></div>
+            <div class="engine-meta-card"><span>Constituents</span><strong>4</strong><small>CDC · CB · GKO · DEX</small></div>
+            <div class="engine-meta-card"><span>Cadence</span><strong>15s</strong><small>rolling 15m partitions</small></div>
+            <div class="engine-meta-card"><span>Decision Horizon</span><strong>1-15m</strong><small>predictive UP/DOWN ladder</small></div>
+          </div>
+        </div>
+
+        <!-- Orchestrator Status Bar -->
+        ${orchBarHTML}
+
+        <!-- Shell Legend + Weight Classes -->
+        <div style="display:flex;gap:10px;margin-bottom:10px;font-size:10px;color:var(--color-text-muted);flex-wrap:wrap;align-items:center">
+          <span style="font-weight:600;color:var(--color-text)">Shells:</span>
+          <span><span class="cfm-shell s" style="position:static">1s</span> Price</span>
+          <span><span class="cfm-shell s" style="position:static">2s</span> Momentum</span>
+          <span><span class="cfm-shell p" style="position:static">2p</span> Trend</span>
+          <span><span class="cfm-shell s" style="position:static">3s</span> Volume</span>
+          <span><span class="cfm-shell p" style="position:static">3p</span> Book</span>
+          <span><span class="cfm-shell d" style="position:static">3d</span> Arb</span>
+          <span><span class="cfm-shell s" style="position:static">4s</span> CB Prem</span>
+          <span><span class="cfm-shell f" style="position:static">4f</span> DEX Deep</span>
+          <span style="border-left:1px solid var(--color-border);padding-left:8px;margin-left:4px">
+            <span style="color:var(--color-gold)">\u25cf</span> Heavy (22)
+            <span style="color:var(--color-primary)">\u25cf</span> Mid (18)
+            <span style="color:var(--color-text-faint)">\u25cf</span> Light (12)
+          </span>
+          <span style="margin-left:auto;font-size:9px"><span style="color:#1a6eff">\u25cf</span> CDC <span style="color:#0052ff">\u25cf</span> CB <span style="color:#8dc63f">\u25cf</span> GKO <span style="color:#a259ff">\u25cf</span> DEX</span>
+        </div>
+
+        <!-- Opportunities Panel placeholder — filled async below -->
+        <div id="cfm-opp-slot"></div>
+
+        <!-- Per-coin periodic table placeholders — filled async below -->
+        ${PREDICTION_COINS.map(coin => `<div id="cfm-coin-slot-${coin.sym}" class="cfm-coin-skeleton"><div class="cfm-coin-skel-bar" style="border-left:3px solid ${coin.color}"><span style="color:${coin.color};font-weight:700;font-size:13px">${coin.sym}</span><span style="color:var(--color-text-muted);font-size:11px;margin-left:8px">loading orbital data…</span><div style="width:18px;height:18px;border:2px solid rgba(255,255,255,0.15);border-top-color:${coin.color};border-radius:50%;animation:spin 0.8s linear infinite;margin-left:auto"></div></div></div>`).join('')}
+
+        <!-- Methodology -->
+        <div class="card" style="margin-top:8px" id="cfm-methodology">
+          <div class="card-title">CFM Methodology</div>
+          <div style="font-size:11px;color:var(--color-text-muted);line-height:1.5">
+            Each coin's periodic table maps the benchmark, microstructure, and conviction layers used to issue short-horizon UP/DOWN calls.
+            <strong>1s</strong> establishes the benchmark via <a href="https://docs.cfbenchmarks.com" target="_blank" style="color:var(--color-primary)">CF Benchmarks style VWM partitions</a>.
+            <strong>2s / 2p</strong> score momentum and trend alignment.
+            <strong>3s / 3p / 3d</strong> capture flow, book pressure, and cross-venue dispersion.
+            <strong>4s / 4f</strong> add institutional premium, derivatives crowding, and DEX depth.
+            The result is a benchmark-backed decision surface for UP, DOWN, or stand-aside execution.
+          </div>
+        </div>
+        </div>
+      `;
+    } else {
+      const existingOrchBar = document.getElementById('cfm-orch-bar');
+      if (existingOrchBar) {
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = orchBarHTML;
+        existingOrchBar.innerHTML = tempDiv.firstElementChild.innerHTML;
+        existingOrchBar.className = tempDiv.firstElementChild.className;
+      }
+    }
 
     // ── Progressive async fill — opportunities panel then coins one-by-one ──
     // Yields to the browser between each heavy build so the page is responsive immediately.
@@ -8176,7 +8188,7 @@
         if (isStaleCFMRender()) return;
         const oppSlot = document.getElementById('cfm-opp-slot');
         if (oppSlot) {
-          try { oppSlot.outerHTML = buildOpportunitiesPanel(cfmAll, predAll) || '<div id="cfm-opp-slot"></div>'; }
+          try { oppSlot.innerHTML = buildOpportunitiesPanel(cfmAll, predAll) || ''; }
           catch (e) { console.warn('[CFM] opp panel error:', e); }
         }
 
@@ -8188,12 +8200,22 @@
           const pred = predAll[coin.sym];
           const slot = document.getElementById(`cfm-coin-slot-${coin.sym}`);
           if (!slot) continue;
-          if (!cfm || cfm.cfmRate === 0) { slot.remove(); continue; }
+          if (!cfm || cfm.cfmRate === 0) { slot.style.display = 'none'; continue; }
           try {
-            slot.outerHTML = buildCoinPeriodicTable(coin, cfm, pred);
+            const h = slot.offsetHeight;
+            if (h > 0) slot.style.minHeight = h + 'px'; // prevent collapse during replace
+            const temp = document.createElement('div');
+            temp.innerHTML = buildCoinPeriodicTable(coin, cfm, pred);
+            const newEl = temp.firstElementChild;
+            if (newEl) {
+               slot.innerHTML = newEl.innerHTML;
+               slot.className = newEl.className;
+               slot.style.minHeight = '';
+               slot.style.display = '';
+            }
           } catch (e) {
             console.warn(`[CFM] coin table error ${coin.sym}:`, e);
-            slot.remove();
+            slot.style.display = 'none';
           }
         }
 
@@ -9338,7 +9360,7 @@
     `).join('');
 
     return `
-      <div class="cfm-coin-block ${expanded ? 'expanded' : ''}" data-cfm-sym="${coin.sym}">
+      <div id="cfm-coin-slot-${coin.sym}" class="cfm-coin-block ${expanded ? 'expanded' : ''}" data-cfm-sym="${coin.sym}">
         <button type="button" class="cfm-coin-header cfm-toggle" data-cfm-toggle="${coin.sym}" style="border-left:3px solid ${coin.color};flex-wrap:wrap">
           <div class="cfm-coin-icon" style="background:${coin.color}22;color:${coin.color}">${coinIcon(coin.sym)}</div>
           <div class="cfm-coin-meta">

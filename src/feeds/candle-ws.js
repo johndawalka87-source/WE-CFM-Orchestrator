@@ -15,7 +15,7 @@
   // Map Coinbase product_id → internal symbol
   const PRODUCTS = [
     'BTC-USD', 'ETH-USD', 'SOL-USD',
-    'XRP-USD', 'DOGE-USD', 'BNB-USD', 'HYPE-USD'
+    'XRP-USD', 'DOGE-USD', 'HYPE-USD'
   ];
   const SYM_MAP = {
     'BTC-USD':  'BTC',
@@ -23,7 +23,6 @@
     'SOL-USD':  'SOL',
     'XRP-USD':  'XRP',
     'DOGE-USD': 'DOGE',
-    'BNB-USD':  'BNB',
     'HYPE-USD': 'HYPE'
   };
 
@@ -169,10 +168,7 @@
   async function fetchCoinbaseJwt() {
     try {
       if (window.desktopApp?.generateCoinbaseJWT) {
-        const res = await window.desktopApp.generateCoinbaseJWT({
-          requestMethod: 'GET',
-          requestPath: 'api.coinbase.com/api/v3/brokerage/products',
-        });
+        const res = await window.desktopApp.generateCoinbaseJWT();
         if (res?.success && res.jwt) return res.jwt;
         if (res?.error) console.warn('[CandleWS] Coinbase JWT failed:', res.error);
       }
@@ -180,18 +176,16 @@
       console.warn('[CandleWS] Coinbase JWT failed:', e.message);
     }
 
-    try {
-      const qs = new URLSearchParams({
-        method: 'GET',
-        path: 'api.coinbase.com/api/v3/brokerage/products',
-      });
-      const res = await fetch(`http://localhost:3011/jwt/coinbase?${qs.toString()}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.token) return data.token;
+    for (const port of [3011, 3010]) {
+      try {
+        const res = await fetch(`http://localhost:${port}/jwt/coinbase`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.token) return data.token;
+        }
+      } catch (_) {
+        // Local proxy is optional when Electron can sign through IPC.
       }
-    } catch (_) {
-      // Local proxy is optional when Electron can sign through IPC.
     }
     return '';
   }
@@ -211,6 +205,7 @@
       ws.send(JSON.stringify(payload));
     };
     
+    sub('heartbeats');
     sub('candles');
     sub('ticker');
   }

@@ -6,7 +6,7 @@
 
 // Mock browser globals
 global.localStorage = {
-  getItem: () => '8e6b728e402b4fdab69fa87aed758ab1',
+  getItem: () => '2f84e1a8fd0346568a51bbc18657bd5f',
   setItem: () => {},
   removeItem: () => {}
 };

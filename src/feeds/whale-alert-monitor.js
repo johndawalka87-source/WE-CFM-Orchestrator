@@ -86,11 +86,11 @@
       const ctrl = new AbortController();
       const tid = setTimeout(() => {
         try {
-          ctrl.abort(new DOMException('Whale Alert fetch timed out after 8000ms', 'TimeoutError'));
+          ctrl.abort(new DOMException('Whale Alert fetch timed out after 30000ms', 'TimeoutError'));
         } catch (_) {
           try { ctrl.abort(); } catch (_) { }
         }
-      }, 8000);
+      }, 30000);
 
       const res = await fetch(url.toString(), { signal: ctrl.signal });
       clearTimeout(tid);

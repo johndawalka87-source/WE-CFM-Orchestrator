@@ -33,11 +33,7 @@
   }
 
   const SYNC_TARGETS = {
-    network_drives: [
-      'Z:\\WECRYP\\settlement-logs',
-      'F:\\WECRYP\\settlement-logs',
-      'Y:\\WECRYP\\settlement-logs'
-    ],
+    network_drives: [],
     onedrive: [
       // Personal OneDrive
       process.env.ONEDRIVE || '',
@@ -54,7 +50,7 @@
     ],
     google_drive: [
       // Google Drive via Backup and Sync
-      'Z:\\My Drive',
+      'H:\\My Drive',
       'C:\\Users\\' + (process.env.USERNAME || 'user') + '\\Google Drive',
       'C:\\Users\\' + (process.env.USERNAME || 'user') + '\\My Drive',
       'G:\\My Drive',
@@ -73,24 +69,14 @@
   };
   let isLogging = true;
 
-  function prioritizeNetworkTargets(targets) {
-    const unique = [...new Set((targets || []).filter(Boolean))];
-    const zTargets = unique.filter(t => /^Z:\\/i.test(String(t)));
-    const nonZTargets = unique.filter(t => !/^Z:\\/i.test(String(t)));
-    return [...zTargets, ...nonZTargets];
-  }
-
   /**
    * Initialize all target directories
    */
   function initializeTargets() {
     discoverNetworkShareTargets().then(extraTargets => {
       if (extraTargets.length) {
-        const merged = new Set([...(SYNC_TARGETS.network_drives || []), ...extraTargets]);
-        SYNC_TARGETS.network_drives = prioritizeNetworkTargets([...merged]);
+        SYNC_TARGETS.network_drives = [...new Set([...(SYNC_TARGETS.network_drives || []), ...extraTargets].filter(Boolean))];
         console.log('[SettlementLogger] Network shares discovered:', extraTargets.join(' | '));
-      } else {
-        SYNC_TARGETS.network_drives = prioritizeNetworkTargets(SYNC_TARGETS.network_drives);
       }
 
       ipcRenderer.send('multi-drive:init-directories', {
@@ -108,16 +94,6 @@
     ipcRenderer.on('multi-drive:init-complete', (event, results) => {
       console.log('[SettlementLogger] Directory initialization complete:', results);
       syncStatus = results;
-
-      const zTargets = (SYNC_TARGETS.network_drives || []).filter(t => /^Z:\\/i.test(String(t)));
-      for (const zTarget of zTargets) {
-        const ok = !!results?.network_drives?.[zTarget]?.success;
-        if (!ok) {
-          console.warn(`[SettlementLogger] Z-drive backup target not ready: ${zTarget}`);
-        } else {
-          console.log(`[SettlementLogger] Z-drive backup ready: ${zTarget}`);
-        }
-      }
     });
   }
 
@@ -171,14 +147,6 @@
       console.log('[SettlementLogger] Multi-drive write complete:', results);
       // Update sync status
       syncStatus = results.syncStatus || syncStatus;
-
-      const zTargets = (SYNC_TARGETS.network_drives || []).filter(t => /^Z:\\/i.test(String(t)));
-      for (const zTarget of zTargets) {
-        const zWrite = results?.syncStatus?.network_drives?.[zTarget];
-        if (!zWrite?.success) {
-          console.warn(`[SettlementLogger] Z-drive write failed: ${zTarget} | ${zWrite?.message || 'unknown error'}`);
-        }
-      }
     });
 
     window._settlementLogHeaderWritten = true;

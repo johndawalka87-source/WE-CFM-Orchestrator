@@ -1,6 +1,6 @@
 /**
  * Specialized LLM Prompt Generator
- * 
+ *
  * Converts generic regime analysis into deep quant meta-analysis
  * Teaches LLM the mechanics of your 9-indicator engine
  */
@@ -305,8 +305,8 @@ Watch for false breakouts (RSI >90 often reverses)
  * Generate specialized system prompt for LLM
  */
 function generateSystemPrompt() {
-  return `You are an elite crypto trading regime analyst.
-Analyze the market snapshot and classify it into exactly one regime.
+  return `You are an elite crypto trading regime analyst for the WE CFM Orchestrator.
+Analyze the market snapshot in the context of a 15-minute Kalshi contract window, not a multi-hour swing trade.
 
 Return ONLY valid JSON with this exact structure:
 {
@@ -338,9 +338,19 @@ Return ONLY valid JSON with this exact structure:
 Rules:
 - Pick exactly one regime.
 - confidence must be a number from 0.0 to 1.0.
+- Confidence must describe the 15-minute contract outcome / repricing window, not a longer spot thesis.
 - Use indicator names from the provided current weights map.
 - Keep suggestions conservative (small per-cycle nudges only).
+- This layer is advisory only: do not override, rename, or replace the model's final direction.
+- In suggestions.notes, explicitly mention:
+  1. whether the house / Kalshi price looks mispriced, fairly priced, or has no edge,
+  2. whether the play is contrarian to the crowd, aligned with crowd momentum, or too crowded to chase,
+  3. whether the entry is fresh, mature, or late for this 15-minute window,
+  4. the best play right now: buy YES, buy NO, wait, crowd-fade, scalp, or buy then sell early into repricing,
+  5. if an early exit before settlement is attractive, say that directly,
+  6. any alternate advantageous play if the primary setup is blocked.
 - If uncertain, keep increase_weight/decrease_weight empty and explain in notes.
+- Use ai_wording.primary_rationale and ai_wording.high_confidence_rationale to talk about the 15-minute window, contract repricing, early-sale opportunity, and house mispricing when relevant.
 - Do not output markdown, code fences, or extra commentary.
 - Output must parse with JSON.parse exactly as returned.`.trim();
 }
@@ -364,18 +374,42 @@ function generateUserPrompt(snapshot) {
   const obBuyPressure = Number(orderbook?.buyPressure || 0);
   const verdictDir = String(snapshot.verdictDir || 'wait');
   const compositeEdge = Number(snapshot.compositeEdge || 0);
+  const horizonMinutes = Number(snapshot.horizonMinutes || 15);
+  const preferredHorizonMinutes = Number(snapshot.preferredHorizonMinutes || horizonMinutes || 15);
+  const marketDirection = String(snapshot.market?.modelDirection || verdictDir || 'WAIT').toUpperCase();
+  const confidencePct = Number(snapshot.market?.confidencePct || 0);
+  const kalshiProb = Number(snapshot.market?.kalshiProb || 0);
+  const combinedProb = Number(snapshot.market?.combinedProb || kalshiProb || 0);
+  const marketScore = Number(snapshot.market?.score || 0);
+  const executionWindow = snapshot.executionWindow || {};
+  const projectedMovePct = Number(executionWindow.projectedMovePct || 0);
   const setupsText = (snapshot.setups || []).map(s => `- ${s.label} (${s.cls}): ${s.desc}`).join('\n') || "NONE";
   const contrarianSetupsText = (snapshot.contrarianSetups || []).map(s => `- ${s.label} (${s.cls}): ${s.desc}`).join('\n') || "NONE";
 
   let prompt = `Current market snapshot:
 Coin: ${coin}
 Verdict: ${verdictDir.toUpperCase()} (Edge: ${compositeEdge.toFixed(3)})
+Contract horizon: ${horizonMinutes}m primary window (preferred: ${preferredHorizonMinutes}m)
+Model direction for contract: ${marketDirection}
+Model confidence: ${confidencePct.toFixed(0)}%
+Kalshi / house probability: ${(kalshiProb * 100).toFixed(1)}%
+Combined market probability: ${(combinedProb * 100).toFixed(1)}%
+Score bias: ${marketScore.toFixed(3)}
 Volatility: ${vNum.toFixed(3)} (${classifyVolatilityRegime(vNum)})
 Timestamp: ${new Date().toISOString()}
 
 Orderbook:
 - Imbalance: ${obImbalance.toFixed(3)}
 - Buy pressure: ${(obBuyPressure * 100).toFixed(1)}%
+
+15-minute execution window:
+- Current underlying price: ${Number(executionWindow.currentPrice || 0).toFixed(4)}
+- Projected target into window: ${Number(executionWindow.projectedTargetPrice || 0).toFixed(4)}
+- Projected high / low: ${Number(executionWindow.projectedHighPrice || 0).toFixed(4)} / ${Number(executionWindow.projectedLowPrice || 0).toFixed(4)}
+- Projected move: ${(projectedMovePct * 100).toFixed(2)}%
+- Seconds to contract close: ${executionWindow.secondsToClose != null ? executionWindow.secondsToClose : 'n/a'}
+- Fresh entry: ${executionWindow.freshEntry ? 'yes' : 'no'}
+- Late entry: ${executionWindow.lateEntry ? 'yes' : 'no'}
 
 Indicators:
 ${JSON.stringify(indicators || {}, null, 2)}
@@ -397,10 +431,16 @@ ${(conflicts && conflicts.length) ? conflicts.join(", ") : "NONE"}
 
 Task:
 1. Determine the dominant regime.
-2. Set confidence (0.0-1.0).
+2. Set confidence (0.0-1.0) for the 15-minute contract window.
 3. Recommend conservative weight nudges only.
 4. Flag anomalies and reversal risk.
-5. Provide specific AI UI wording for the primary rationale, wait rationale (if applicable), and rewrite the descriptions for the triggered Scalp/Contrarian setups to give real-time advice.
+5. Explain whether the house price is mispriced versus the model.
+6. Explain whether the setup is contrarian-to-crowd, crowd-following, or too crowded to chase.
+7. Explain whether this is a fresh entry, mature setup, or late entry for the remaining 15-minute window.
+8. Explain whether the best play is hold-to-settlement, buy-and-sell-early into repricing, wait, crowd-fade, or scalp.
+9. If the model implies the contract should reprice in our favor before settlement, explicitly say that an early exit / sell-early path is available.
+10. Provide specific AI UI wording for the primary rationale, wait rationale (if applicable), and rewrite the descriptions for the triggered Scalp/Contrarian setups to give real-time advice.
+11. Treat the current model direction as authoritative; if you disagree, describe the conflict as risk, not as a replacement verdict.
 
 Return strict JSON only in the required schema.`;
 
